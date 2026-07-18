@@ -1,0 +1,276 @@
+name: Leer ZIP y crear APK automaticamente
+
+on:
+  push:
+    paths:
+      - "*.zip"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: zip-apk-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  importar-y-compilar:
+    name: Importar proyecto y compilar APK
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Descargar repositorio
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Encontrar ZIP subido
+        id: zip
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          ZIP_FILE="$(git diff-tree \
+            --no-commit-id \
+            --name-only \
+            -r "$GITHUB_SHA" |
+            grep -iE '^[^/]+\.zip$' |
+            head -n 1 || true)"
+
+          if [ -z "$ZIP_FILE" ] || [ ! -f "$ZIP_FILE" ]; then
+            ZIP_FILE="$(find . \
+              -maxdepth 1 \
+              -type f \
+              -iname '*.zip' \
+              -printf '%f\n' |
+              sort |
+              tail -n 1 || true)"
+          fi
+
+          if [ -z "$ZIP_FILE" ] || [ ! -f "$ZIP_FILE" ]; then
+            echo "::error::No se encontro ningun ZIP en la raiz del repositorio."
+            exit 1
+          fi
+
+          echo "file=$ZIP_FILE" >> "$GITHUB_OUTPUT"
+          echo "ZIP detectado: $ZIP_FILE"
+
+      - name: Revisar y descomprimir ZIP
+        shell: bash
+        env:
+          ZIP_FILE: ${{ steps.zip.outputs.file }}
+        run: |
+          set -euo pipefail
+
+          TEMP_DIR="$RUNNER_TEMP/proyecto_extraido"
+
+          rm -rf "$TEMP_DIR"
+          mkdir -p "$TEMP_DIR"
+
+          python3 - "$ZIP_FILE" "$TEMP_DIR" <<'PY'
+          import stat
+          import sys
+          import zipfile
+          from pathlib import Path, PurePosixPath
+
+          zip_path = Path(sys.argv[1])
+          destino = Path(sys.argv[2])
+
+          limite_descomprimido = 3 * 1024 * 1024 * 1024
+          total_descomprimido = 0
+
+          with zipfile.ZipFile(zip_path, "r") as archivo:
+              elementos = archivo.infolist()
+
+              if not elementos:
+                  raise SystemExit("El ZIP esta vacio.")
+
+              for elemento in elementos:
+                  nombre = elemento.filename.replace("\\", "/")
+                  ruta = PurePosixPath(nombre)
+
+                  if ruta.is_absolute() or ".." in ruta.parts:
+                      raise SystemExit(
+                          f"El ZIP contiene una ruta insegura: {elemento.filename}"
+                      )
+
+                  modo = elemento.external_attr >> 16
+
+                  if stat.S_ISLNK(modo):
+                      raise SystemExit(
+                          f"El ZIP contiene un enlace simbolico no permitido: "
+                          f"{elemento.filename}"
+                      )
+
+                  total_descomprimido += elemento.file_size
+
+                  if total_descomprimido > limite_descomprimido:
+                      raise SystemExit(
+                          "El contenido descomprimido supera el limite de 3 GB."
+                      )
+
+              archivo.extractall(destino)
+
+          print("ZIP revisado y extraido correctamente.")
+          PY
+
+          rm -rf "$TEMP_DIR/__MACOSX"
+          find "$TEMP_DIR" -name ".DS_Store" -delete
+
+          echo "Contenido extraido:"
+          find "$TEMP_DIR" -maxdepth 2 -type f | head -n 30
+
+      - name: Detectar carpeta principal del proyecto
+        id: project
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          TEMP_DIR="$RUNNER_TEMP/proyecto_extraido"
+
+          mapfile -t ELEMENTOS < <(
+            find "$TEMP_DIR" \
+              -mindepth 1 \
+              -maxdepth 1 \
+              -printf '%f\n'
+          )
+
+          if [ "${#ELEMENTOS[@]}" -eq 1 ] &&
+             [ -d "$TEMP_DIR/${ELEMENTOS[0]}" ]; then
+            ORIGEN="$TEMP_DIR/${ELEMENTOS[0]}"
+          else
+            ORIGEN="$TEMP_DIR"
+          fi
+
+          echo "source=$ORIGEN" >> "$GITHUB_OUTPUT"
+          echo "Carpeta principal: $ORIGEN"
+
+      - name: Reemplazar archivos del repositorio
+        shell: bash
+        env:
+          ORIGEN: ${{ steps.project.outputs.source }}
+        run: |
+          set -euo pipefail
+
+          rsync -a --delete \
+            --exclude=".git/" \
+            --exclude=".github/" \
+            --exclude="*.zip" \
+            "$ORIGEN"/ ./
+
+          echo "El proyecto fue copiado al repositorio."
+
+      - name: Comprobar proyecto Android
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ ! -f "gradlew" ]; then
+            echo "::error::No existe gradlew. El ZIP debe contener el proyecto Android completo."
+            exit 1
+          fi
+
+          if [ ! -d "app" ]; then
+            echo "::error::No existe la carpeta app."
+            exit 1
+          fi
+
+          if [ ! -f "settings.gradle" ] &&
+             [ ! -f "settings.gradle.kts" ]; then
+            echo "::error::No existe settings.gradle ni settings.gradle.kts."
+            exit 1
+          fi
+
+          if [ ! -f "build.gradle" ] &&
+             [ ! -f "build.gradle.kts" ]; then
+            echo "::error::No existe build.gradle ni build.gradle.kts."
+            exit 1
+          fi
+
+          chmod +x gradlew
+
+          echo "Proyecto Android encontrado correctamente."
+
+      - name: Preparar Java
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: gradle
+
+      - name: Mostrar versiones
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          java -version
+          ./gradlew --version
+
+      - name: Compilar APK
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          ./gradlew \
+            --no-daemon \
+            assembleDebug \
+            --stacktrace
+
+      - name: Comprobar APK creada
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          APK_COUNT="$(find . \
+            -type f \
+            -path '*/build/outputs/apk/debug/*.apk' |
+            wc -l)"
+
+          if [ "$APK_COUNT" -eq 0 ]; then
+            echo "::error::La compilacion termino, pero no se encontro ninguna APK."
+            exit 1
+          fi
+
+          echo "APK encontrada:"
+          find . \
+            -type f \
+            -path '*/build/outputs/apk/debug/*.apk' \
+            -print
+
+      - name: Guardar APK para descargar
+        uses: actions/upload-artifact@v7
+        with:
+          name: Geo-Videos-APK-${{ github.run_number }}
+          path: |
+            **/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+
+      - name: Eliminar ZIP y guardar proyecto
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          rm -f -- ./*.zip
+
+          git config user.name "github-actions[bot]"
+          git config user.email \
+            "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add -A
+
+          if git diff --cached --quiet; then
+            echo "No hay cambios nuevos para guardar."
+            exit 0
+          fi
+
+          git commit -m "Importar Geo Videos desde ZIP"
+
+          git pull \
+            --rebase \
+            origin \
+            "$GITHUB_REF_NAME"
+
+          git push \
+            origin \
+            "HEAD:$GITHUB_REF_NAME"
