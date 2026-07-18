@@ -1,41 +1,36 @@
-# Geo Videos
+# Geo Videos V5
 
-Proyecto Android nativo en Kotlin y Jetpack Compose.
+Aplicación Android con interfaz propia para consultar y reproducir contenido autorizado mediante YouTube Data API v3.
 
 ## Funciones incluidas
 
-- Nombre e identidad visual original: **Geo Videos**.
-- Creacion de cuenta e inicio de sesion local.
-- Contrasena guardada como hash con sal aleatoria; no se almacena en texto plano.
-- Sesion persistente en el dispositivo.
-- Inicio, buscador, biblioteca, favoritos, historial y perfil.
-- Reproduccion con Jetpack Media3 / ExoPlayer.
-- Selector de videos locales mediante el explorador de Android.
-- Reproduccion de enlaces directos `http` o `https` autorizados.
-- Tres videos publicos de muestra para probar el reproductor.
-- Eliminacion de videos agregados y borrado completo de cuenta/datos.
+- Selector real de cuenta Google mediante Google Identity Services.
+- Perfil y canal de YouTube.
+- Inicio con tendencias, transmisiones en vivo y gaming.
+- Búsqueda de videos.
+- Clips cortos.
+- Suscripciones, playlists y videos con Me gusta.
+- Historial y Ver después guardados localmente.
+- Campana de actividad disponible mediante la API pública.
+- Reproductor incrustado de YouTube.
+- Descarga de enlaces directos a archivos autorizados mediante DownloadManager.
 
-## Limite importante
+## Configuración obligatoria de Google
 
-La cuenta de esta version es local y funciona solo en el telefono donde se instala. No es inicio de sesion con Google, YouTube ni Firebase. Un inicio de sesion real entre varios dispositivos necesita un servidor o Firebase y credenciales propias del proyecto.
+Antes de que el inicio de sesión funcione:
 
-La app no bloquea anuncios, no extrae videos de YouTube y no descarga contenido protegido. Los enlaces admitidos deben apuntar directamente a archivos o transmisiones que el usuario tenga derecho a reproducir.
+1. Crea un proyecto en Google Cloud.
+2. Activa `YouTube Data API v3`.
+3. Configura la pantalla de consentimiento OAuth.
+4. Crea un cliente OAuth de tipo Android con:
+   - Paquete: `com.geovideos.app`
+   - SHA-1: `61:39:FF:D0:D5:6B:DC:06:FA:13:AD:3D:7A:88:93:9F:6D:4A:52:7F`
+5. Agrega tu cuenta como usuario de prueba mientras la aplicación esté en modo Testing.
 
-## Compilar
+La APK se firma con una clave de desarrollo incluida para mantener el mismo SHA-1 en GitHub Actions. No uses esta clave pública para una publicación comercial. Para producción se debe crear una firma privada y registrar su nueva huella SHA-1.
 
-```bash
-./gradlew assembleDebug
-```
+## Límites reales
 
-La APK queda en:
+La API pública no entrega el historial oficial completo, `Ver más tarde` ni toda la bandeja privada de notificaciones. Esas partes se gestionan localmente o con la actividad que la API sí expone.
 
-```text
-app/build/outputs/apk/debug/app-debug.apk
-```
-
-## Requisitos
-
-- JDK 17
-- Android SDK 35
-- Gradle 8.13 (incluido mediante wrapper)
-- Min SDK 23
+Geo Videos no elimina anuncios ni extrae archivos de videos de YouTube. La descarga incluida funciona con enlaces directos autorizados.

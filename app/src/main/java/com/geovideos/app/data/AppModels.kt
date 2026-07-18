@@ -1,22 +1,55 @@
 package com.geovideos.app.data
 
-data class UserSession(
+enum class MediaKind {
+    YOUTUBE,
+    DIRECT,
+    LOCAL
+}
+
+data class GoogleProfile(
+    val name: String,
     val email: String,
-    val displayName: String
+    val pictureUrl: String,
+    val channelTitle: String = "",
+    val channelId: String = ""
 )
 
 data class VideoItem(
     val id: String,
     val title: String,
-    val creator: String,
-    val source: String,
-    val isBuiltIn: Boolean = false
+    val channelTitle: String,
+    val thumbnailUrl: String,
+    val publishedAt: String = "",
+    val description: String = "",
+    val isLive: Boolean = false,
+    val mediaKind: MediaKind = MediaKind.YOUTUBE,
+    val source: String = id
 )
 
-data class StoredSnapshot(
-    val hasAccount: Boolean = false,
-    val session: UserSession? = null,
-    val customVideos: List<VideoItem> = emptyList(),
-    val favoriteIds: Set<String> = emptySet(),
-    val historyIds: List<String> = emptyList()
+data class ChannelItem(
+    val id: String,
+    val title: String,
+    val thumbnailUrl: String,
+    val description: String = ""
+)
+
+data class PlaylistItem(
+    val id: String,
+    val title: String,
+    val thumbnailUrl: String,
+    val itemCount: Int = 0
+)
+
+data class NotificationItem(
+    val id: String,
+    val title: String,
+    val subtitle: String,
+    val thumbnailUrl: String,
+    val video: VideoItem? = null
+)
+
+data class ChannelDetails(
+    val profile: GoogleProfile,
+    val likesPlaylistId: String = "",
+    val uploadsPlaylistId: String = ""
 )

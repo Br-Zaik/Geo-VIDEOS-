@@ -1,12 +1,19 @@
 package com.geovideos.app.ui
 
+import android.Manifest
+import android.app.DownloadManager
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
-import android.provider.OpenableColumns
+import android.os.Build
+import android.os.Environment
+import android.webkit.WebChromeClient
+import android.webkit.WebView
+import android.webkit.WebViewClient
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -17,7 +24,6 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -32,30 +38,46 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.AccountCircle
 import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.Email
+import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.ErrorOutline
+import androidx.compose.material.icons.filled.Explore
 import androidx.compose.material.icons.filled.Favorite
-import androidx.compose.material.icons.filled.FavoriteBorder
-import androidx.compose.material.icons.filled.FolderOpen
+import androidx.compose.material.icons.filled.Games
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Home
-import androidx.compose.material.icons.filled.Link
-import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.LiveTv
 import androidx.compose.material.icons.filled.Logout
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.PlaylistPlay
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Share
+import androidx.compose.material.icons.filled.Subscriptions
 import androidx.compose.material.icons.filled.VideoLibrary
+import androidx.compose.material.icons.filled.WatchLater
+import androidx.compose.material.icons.outlined.Notifications
+import androidx.compose.material.icons.outlined.WatchLater
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.AssistChip
+import androidx.compose.material3.Badge
+import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.FilledIconButton
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -63,11 +85,13 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedCard
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -89,155 +113,160 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.media3.common.MediaItem
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.PlayerView
+import coil.compose.AsyncImage
 import com.geovideos.app.R
+import com.geovideos.app.data.ChannelItem
+import com.geovideos.app.data.GoogleProfile
+import com.geovideos.app.data.MediaKind
+import com.geovideos.app.data.NotificationItem
+import com.geovideos.app.data.PlaylistItem
 import com.geovideos.app.data.VideoItem
 
+private const val PACKAGE_NAME = "com.geovideos.app"
+private const val DEV_SHA1 = "61:39:FF:D0:D5:6B:DC:06:FA:13:AD:3D:7A:88:93:9F:6D:4A:52:7F"
+
 @Composable
-fun GeoVideosApp(viewModel: GeoVideosViewModel) {
+fun GeoVideosApp(
+    viewModel: GeoVideosViewModel,
+    onConnectGoogle: () -> Unit,
+    onSwitchGoogleAccount: (String) -> Unit
+) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
-    val snackbarHostState = remember { SnackbarHostState() }
+    val snackbar = remember { SnackbarHostState() }
 
     LaunchedEffect(state.message) {
-        state.message?.let { message ->
-            snackbarHostState.showSnackbar(message)
+        state.message?.let {
+            snackbar.showSnackbar(it)
             viewModel.clearMessage()
         }
     }
 
     val selectedVideo = state.selectedVideo
-
     Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
         when {
-            state.loading -> LoadingScreen()
-            state.session == null -> AuthScreen(
-                hasAccount = state.hasAccount,
-                snackbarHostState = snackbarHostState,
-                onCreateAccount = viewModel::createAccount,
-                onLogin = viewModel::login
-            )
             selectedVideo != null -> PlayerScreen(
                 video = selectedVideo,
-                isFavorite = selectedVideo.id in state.favoriteIds,
-                snackbarHostState = snackbarHostState,
+                isWatchLater = state.watchLater.any { it.id == selectedVideo.id },
                 onBack = viewModel::closePlayer,
-                onToggleFavorite = { viewModel.toggleFavorite(selectedVideo.id) }
+                onWatchLater = { viewModel.toggleWatchLater(selectedVideo) },
+                onMessage = viewModel::showMessage
+            )
+            state.authStatus != AuthStatus.CONNECTED -> GoogleConnectScreen(
+                status = state.authStatus,
+                error = state.authError,
+                onConnect = onConnectGoogle
             )
             else -> MainShell(
                 state = state,
-                snackbarHostState = snackbarHostState,
-                onSection = viewModel::changeSection,
+                snackbar = snackbar,
+                onConnectGoogle = onConnectGoogle,
+                onSwitchGoogleAccount = onSwitchGoogleAccount,
+                onSection = viewModel::selectSection,
+                onCategory = viewModel::selectHomeCategory,
                 onPlay = viewModel::play,
-                onFavorite = viewModel::toggleFavorite,
-                onAddDirect = viewModel::addDirectVideo,
-                onAddLocal = viewModel::addLocalVideo,
-                onRemove = viewModel::removeVideo,
-                onLogout = viewModel::logout,
-                onDeleteAccount = viewModel::deleteAccount
+                onWatchLater = viewModel::toggleWatchLater,
+                onSearch = viewModel::search,
+                onRefresh = viewModel::refresh,
+                onOpenChannel = viewModel::openChannel,
+                onCloseChannel = viewModel::closeChannel,
+                onDisconnect = viewModel::disconnect,
+                onClearData = viewModel::clearLocalData,
+                onRegisterDownload = viewModel::registerDownload,
+                onMessage = viewModel::showMessage
             )
         }
     }
 }
 
 @Composable
-private fun LoadingScreen() {
-    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-        CircularProgressIndicator()
-    }
-}
-
-@Composable
-private fun AuthScreen(
-    hasAccount: Boolean,
-    snackbarHostState: SnackbarHostState,
-    onCreateAccount: (String, String, String) -> Unit,
-    onLogin: (String, String) -> Unit
+private fun GoogleConnectScreen(
+    status: AuthStatus,
+    error: String,
+    onConnect: () -> Unit
 ) {
-    var name by rememberSaveable { mutableStateOf("") }
-    var email by rememberSaveable { mutableStateOf("") }
-    var password by rememberSaveable { mutableStateOf("") }
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(horizontal = 24.dp, vertical = 34.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Image(
+            painter = painterResource(R.drawable.ic_logo),
+            contentDescription = "Geo Videos",
+            modifier = Modifier.size(112.dp)
+        )
+        Text("Geo Videos", style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.ExtraBold)
+        Text(
+            "Videos, directos, Shorts, suscripciones y listas en una interfaz propia.",
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(top = 10.dp),
+            textAlign = androidx.compose.ui.text.style.TextAlign.Center
+        )
 
-    Scaffold(snackbarHost = { SnackbarHost(snackbarHostState) }) { padding ->
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(padding)
-                .padding(horizontal = 26.dp)
-                .verticalScroll(rememberScrollState()),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.Center
+        Spacer(Modifier.height(34.dp))
+        Button(
+            onClick = onConnect,
+            enabled = status != AuthStatus.CONNECTING,
+            modifier = Modifier.fillMaxWidth()
         ) {
-            androidx.compose.foundation.Image(
-                painter = painterResource(R.drawable.ic_logo),
-                contentDescription = "Logo Geo Videos",
-                modifier = Modifier.size(112.dp),
-                contentScale = ContentScale.Fit
-            )
-            Text(
-                text = "Geo Videos",
-                style = MaterialTheme.typography.headlineLarge,
-                fontWeight = FontWeight.ExtraBold
-            )
-            Text(
-                text = if (hasAccount) "Inicia sesion en tu cuenta del dispositivo" else "Crea una cuenta para guardar tu biblioteca",
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(top = 8.dp, bottom = 28.dp)
-            )
-
-            if (!hasAccount) {
-                OutlinedTextField(
-                    value = name,
-                    onValueChange = { name = it },
-                    label = { Text("Nombre") },
-                    leadingIcon = { Icon(Icons.Default.Person, null) },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
-                Spacer(Modifier.height(12.dp))
+            if (status == AuthStatus.CONNECTING) {
+                CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+                Spacer(Modifier.width(12.dp))
+                Text("Abriendo Google…")
+            } else {
+                Icon(Icons.Default.AccountCircle, null)
+                Spacer(Modifier.width(10.dp))
+                Text("Continuar con Google")
             }
+        }
+        Text(
+            "La contraseña se escribe únicamente en la pantalla oficial de Google. Geo Videos no la recibe ni la guarda.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(top = 14.dp),
+            textAlign = androidx.compose.ui.text.style.TextAlign.Center
+        )
 
-            OutlinedTextField(
-                value = email,
-                onValueChange = { email = it },
-                label = { Text("Correo") },
-                leadingIcon = { Icon(Icons.Default.Email, null) },
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth()
-            )
-            Spacer(Modifier.height(12.dp))
-            OutlinedTextField(
-                value = password,
-                onValueChange = { password = it },
-                label = { Text("Contrasena") },
-                leadingIcon = { Icon(Icons.Default.Lock, null) },
-                visualTransformation = PasswordVisualTransformation(),
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth()
-            )
-            Spacer(Modifier.height(20.dp))
-            Button(
-                onClick = {
-                    if (hasAccount) onLogin(email, password)
-                    else onCreateAccount(name, email, password)
-                },
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Text(if (hasAccount) "Iniciar sesion" else "Crear cuenta")
+        if (status == AuthStatus.NEEDS_CLOUD_SETUP || status == AuthStatus.ERROR) {
+            Spacer(Modifier.height(26.dp))
+            OutlinedCard(modifier = Modifier.fillMaxWidth()) {
+                Column(modifier = Modifier.padding(18.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Default.ErrorOutline, null, tint = MaterialTheme.colorScheme.error)
+                        Spacer(Modifier.width(10.dp))
+                        Text(
+                            if (status == AuthStatus.NEEDS_CLOUD_SETUP) "Falta registrar la APK en Google" else "No se pudo conectar",
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                    if (error.isNotBlank()) {
+                        Text(error, modifier = Modifier.padding(top = 10.dp), color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    if (status == AuthStatus.NEEDS_CLOUD_SETUP) {
+                        HorizontalDivider(modifier = Modifier.padding(vertical = 14.dp))
+                        Text("Datos que debes registrar en Google Cloud:", fontWeight = FontWeight.SemiBold)
+                        Text("Paquete: $PACKAGE_NAME", modifier = Modifier.padding(top = 8.dp))
+                        Text("SHA-1: $DEV_SHA1", modifier = Modifier.padding(top = 5.dp))
+                        Text(
+                            "Activa YouTube Data API v3 y crea un cliente OAuth de Android con esos dos datos.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(top = 10.dp)
+                        )
+                    }
+                }
             }
-            Text(
-                text = "La cuenta se guarda solo en este telefono. No es una cuenta de Google.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(top = 18.dp)
-            )
         }
     }
 }
@@ -246,28 +275,65 @@ private fun AuthScreen(
 @Composable
 private fun MainShell(
     state: GeoVideosUiState,
-    snackbarHostState: SnackbarHostState,
+    snackbar: SnackbarHostState,
+    onConnectGoogle: () -> Unit,
+    onSwitchGoogleAccount: (String) -> Unit,
     onSection: (MainSection) -> Unit,
+    onCategory: (HomeCategory) -> Unit,
     onPlay: (VideoItem) -> Unit,
-    onFavorite: (String) -> Unit,
-    onAddDirect: (String, String, String) -> Unit,
-    onAddLocal: (String, String) -> Unit,
-    onRemove: (String) -> Unit,
-    onLogout: () -> Unit,
-    onDeleteAccount: () -> Unit
+    onWatchLater: (VideoItem) -> Unit,
+    onSearch: (String) -> Unit,
+    onRefresh: () -> Unit,
+    onOpenChannel: (ChannelItem) -> Unit,
+    onCloseChannel: () -> Unit,
+    onDisconnect: () -> Unit,
+    onClearData: () -> Unit,
+    onRegisterDownload: (String, String) -> Unit,
+    onMessage: (String) -> Unit
 ) {
-    var showAddDialog by rememberSaveable { mutableStateOf(false) }
     val context = LocalContext.current
-    val localVideoPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        uri?.let {
-            runCatching {
-                context.contentResolver.takePersistableUriPermission(
-                    it,
-                    Intent.FLAG_GRANT_READ_URI_PERMISSION
-                )
+    var showNotifications by rememberSaveable { mutableStateOf(false) }
+    var showDownloadDialog by rememberSaveable { mutableStateOf(false) }
+    var pendingDownload by remember { mutableStateOf<Pair<String, String>?>(null) }
+    val storagePermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        val pending = pendingDownload
+        pendingDownload = null
+        if (granted && pending != null) {
+            if (enqueueDirectDownload(context, pending.first, pending.second)) {
+                onRegisterDownload(pending.first, pending.second)
+                showDownloadDialog = false
+            } else {
+                onMessage("El enlace debe empezar con http:// o https://")
             }
-            onAddLocal(getDisplayName(context, it), it.toString())
+        } else if (!granted) {
+            onMessage("Android necesita permiso de almacenamiento para descargar en esta versión.")
         }
+    }
+
+    if (showNotifications) {
+        NotificationsScreen(
+            notifications = state.notifications,
+            onBack = { showNotifications = false },
+            onPlay = {
+                showNotifications = false
+                onPlay(it)
+            }
+        )
+        return
+    }
+
+    if (state.selectedChannelTitle.isNotBlank()) {
+        ChannelScreen(
+            title = state.selectedChannelTitle,
+            videos = state.channelVideos,
+            loading = state.loading,
+            onBack = onCloseChannel,
+            onPlay = onPlay,
+            onWatchLater = onWatchLater
+        )
+        return
     }
 
     Scaffold(
@@ -276,89 +342,120 @@ private fun MainShell(
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background),
                 title = {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        androidx.compose.foundation.Image(
-                            painter = painterResource(R.drawable.ic_logo),
-                            contentDescription = null,
-                            modifier = Modifier.size(38.dp)
-                        )
-                        Spacer(Modifier.width(10.dp))
-                        Text("Geo Videos", fontWeight = FontWeight.Bold)
+                        Image(painterResource(R.drawable.ic_logo), null, modifier = Modifier.size(38.dp))
+                        Spacer(Modifier.width(9.dp))
+                        Text("Geo Videos", fontWeight = FontWeight.ExtraBold)
                     }
+                },
+                actions = {
+                    IconButton(onClick = onRefresh) {
+                        if (state.refreshing) CircularProgressIndicator(modifier = Modifier.size(22.dp), strokeWidth = 2.dp)
+                        else Icon(Icons.Default.Refresh, contentDescription = "Actualizar")
+                    }
+                    IconButton(onClick = { showNotifications = true }) {
+                        BadgedBox(badge = {
+                            if (state.notifications.isNotEmpty()) Badge { Text(state.notifications.size.coerceAtMost(99).toString()) }
+                        }) {
+                            Icon(Icons.Outlined.Notifications, contentDescription = "Notificaciones")
+                        }
+                    }
+                    ProfileAvatar(profile = state.profile, size = 34.dp, onClick = { onSection(MainSection.ACCOUNT) })
+                    Spacer(Modifier.width(8.dp))
                 }
             )
         },
         bottomBar = {
             NavigationBar {
-                NavigationItem(MainSection.HOME, state.section, "Inicio", Icons.Default.Home, onSection)
-                NavigationItem(MainSection.SEARCH, state.section, "Buscar", Icons.Default.Search, onSection)
-                NavigationItem(MainSection.LIBRARY, state.section, "Biblioteca", Icons.Default.VideoLibrary, onSection)
-                NavigationItem(MainSection.PROFILE, state.section, "Perfil", Icons.Default.Person, onSection)
+                BottomItem(MainSection.HOME, state.section, "Inicio", Icons.Default.Home, onSection)
+                BottomItem(MainSection.SHORTS, state.section, "Shorts", Icons.Default.AutoAwesome, onSection)
+                BottomItem(MainSection.SEARCH, state.section, "Buscar", Icons.Default.Search, onSection)
+                BottomItem(MainSection.LIBRARY, state.section, "Colección", Icons.Default.VideoLibrary, onSection)
+                BottomItem(MainSection.ACCOUNT, state.section, "Cuenta", Icons.Default.Person, onSection)
             }
         },
-        floatingActionButton = {
-            if (state.section != MainSection.PROFILE) {
-                ExtendedFloatingActionButton(
-                    onClick = { showAddDialog = true },
-                    icon = { Icon(Icons.Default.Add, null) },
-                    text = { Text("Agregar video") }
-                )
-            }
-        },
-        snackbarHost = { SnackbarHost(snackbarHostState) }
+        snackbarHost = { SnackbarHost(snackbar) }
     ) { padding ->
         when (state.section) {
             MainSection.HOME -> HomeScreen(
                 modifier = Modifier.padding(padding),
-                videos = state.videos,
-                favoriteIds = state.favoriteIds,
-                historyIds = state.historyIds,
+                category = state.homeCategory,
+                popular = state.popular,
+                live = state.live,
+                gaming = state.gaming,
+                loading = state.loading,
+                watchLater = state.watchLater,
+                onCategory = onCategory,
                 onPlay = onPlay,
-                onFavorite = onFavorite
+                onWatchLater = onWatchLater
+            )
+            MainSection.SHORTS -> ShortsScreen(
+                modifier = Modifier.padding(padding),
+                videos = state.shorts,
+                loading = state.loading,
+                onPlay = onPlay,
+                onWatchLater = onWatchLater
             )
             MainSection.SEARCH -> SearchScreen(
                 modifier = Modifier.padding(padding),
-                videos = state.videos,
-                favoriteIds = state.favoriteIds,
+                results = state.searchResults,
+                history = state.searchHistory,
+                loading = state.loading,
+                onSearch = onSearch,
                 onPlay = onPlay,
-                onFavorite = onFavorite
+                onWatchLater = onWatchLater
             )
             MainSection.LIBRARY -> LibraryScreen(
                 modifier = Modifier.padding(padding),
-                videos = state.videos,
-                customVideoIds = state.customVideoIds,
-                favoriteIds = state.favoriteIds,
-                historyIds = state.historyIds,
+                history = state.history,
+                watchLater = state.watchLater,
+                liked = state.liked,
+                playlists = state.playlists,
+                subscriptions = state.subscriptions,
+                downloads = state.downloads,
                 onPlay = onPlay,
-                onFavorite = onFavorite,
-                onRemove = onRemove
+                onWatchLater = onWatchLater,
+                onOpenChannel = onOpenChannel,
+                onAddDownload = { showDownloadDialog = true }
             )
-            MainSection.PROFILE -> ProfileScreen(
+            MainSection.ACCOUNT -> AccountScreen(
                 modifier = Modifier.padding(padding),
-                name = state.session?.displayName.orEmpty(),
-                email = state.session?.email.orEmpty(),
-                onLogout = onLogout,
-                onDeleteAccount = onDeleteAccount
+                profile = state.profile,
+                onReconnect = onConnectGoogle,
+                onSwitchAccount = { onSwitchGoogleAccount(state.profile?.email.orEmpty()) },
+                onDisconnect = onDisconnect,
+                onClearData = onClearData
             )
         }
     }
 
-    if (showAddDialog) {
-        AddVideoDialog(
-            onDismiss = { showAddDialog = false },
-            onAddDirect = { title, creator, url ->
-                onAddDirect(title, creator, url)
-                showAddDialog = false
-            },
-            onPickLocal = {
-                showAddDialog = false
-                localVideoPicker.launch(arrayOf("video/*"))
+    if (showDownloadDialog) {
+        DirectDownloadDialog(
+            onDismiss = { showDownloadDialog = false },
+            onDownload = { title, url ->
+                val needsLegacyPermission = Build.VERSION.SDK_INT <= Build.VERSION_CODES.P &&
+                    ContextCompat.checkSelfPermission(
+                        context,
+                        Manifest.permission.WRITE_EXTERNAL_STORAGE
+                    ) != android.content.pm.PackageManager.PERMISSION_GRANTED
+                if (needsLegacyPermission) {
+                    pendingDownload = title to url
+                    storagePermissionLauncher.launch(Manifest.permission.WRITE_EXTERNAL_STORAGE)
+                } else {
+                    val result = enqueueDirectDownload(context, title, url)
+                    if (result) {
+                        onRegisterDownload(title, url)
+                        showDownloadDialog = false
+                    } else {
+                        onMessage("El enlace debe empezar con http:// o https://")
+                    }
+                }
             }
         )
     }
 }
 
 @Composable
-private fun RowScope.NavigationItem(
+private fun RowScope.BottomItem(
     section: MainSection,
     selected: MainSection,
     label: String,
@@ -366,86 +463,140 @@ private fun RowScope.NavigationItem(
     onSection: (MainSection) -> Unit
 ) {
     NavigationBarItem(
-        selected = section == selected,
+        selected = selected == section,
         onClick = { onSection(section) },
-        icon = { Icon(icon, contentDescription = label) },
-        label = { Text(label) }
+        icon = { Icon(icon, label) },
+        label = { Text(label, maxLines = 1) }
     )
 }
 
 @Composable
 private fun HomeScreen(
     modifier: Modifier,
-    videos: List<VideoItem>,
-    favoriteIds: Set<String>,
-    historyIds: List<String>,
+    category: HomeCategory,
+    popular: List<VideoItem>,
+    live: List<VideoItem>,
+    gaming: List<VideoItem>,
+    loading: Boolean,
+    watchLater: List<VideoItem>,
+    onCategory: (HomeCategory) -> Unit,
     onPlay: (VideoItem) -> Unit,
-    onFavorite: (String) -> Unit
+    onWatchLater: (VideoItem) -> Unit
 ) {
-    val history = historyIds.mapNotNull { id -> videos.firstOrNull { it.id == id } }.take(8)
-
+    val videos = when (category) {
+        HomeCategory.DISCOVER -> popular
+        HomeCategory.LIVE -> live
+        HomeCategory.GAMING -> gaming
+    }
     LazyColumn(
         modifier = modifier.fillMaxSize(),
-        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 14.dp),
-        verticalArrangement = Arrangement.spacedBy(18.dp)
+        contentPadding = PaddingValues(bottom = 20.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
         item {
-            HeroCard(onClick = { videos.firstOrNull()?.let(onPlay) })
-        }
-        if (history.isNotEmpty()) {
-            item { SectionTitle("Continuar viendo") }
-            item {
-                LazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    items(history, key = { it.id }) { video ->
-                        CompactVideoCard(video = video, onPlay = { onPlay(video) })
-                    }
-                }
+            LazyRow(
+                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp),
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                item { CategoryChip("Descubrir", Icons.Default.Explore, category == HomeCategory.DISCOVER) { onCategory(HomeCategory.DISCOVER) } }
+                item { CategoryChip("En vivo", Icons.Default.LiveTv, category == HomeCategory.LIVE) { onCategory(HomeCategory.LIVE) } }
+                item { CategoryChip("Gaming", Icons.Default.Games, category == HomeCategory.GAMING) { onCategory(HomeCategory.GAMING) } }
             }
         }
-        item { SectionTitle("Para ti") }
-        items(videos, key = { it.id }) { video ->
-            VideoCard(
-                video = video,
-                isFavorite = video.id in favoriteIds,
-                onPlay = { onPlay(video) },
-                onFavorite = { onFavorite(video.id) }
-            )
+        if (category == HomeCategory.DISCOVER && videos.isNotEmpty()) {
+            item { FeaturedCard(videos.first(), onPlay) }
+            item { SectionHeader("Tendencias para ti", "Basadas en la región y actividad pública") }
+        } else if (category == HomeCategory.LIVE) {
+            item { SectionHeader("En vivo ahora", "Transmisiones disponibles para reproducir") }
+        } else if (category == HomeCategory.GAMING) {
+            item { SectionHeader("Zona gaming", "Videos populares de videojuegos") }
         }
-        item { Spacer(Modifier.height(72.dp)) }
+        if (loading && videos.isEmpty()) {
+            item { LoadingBlock() }
+        } else if (videos.isEmpty()) {
+            item { EmptyBlock("No se encontraron videos en esta sección.") }
+        } else {
+            items(videos.drop(if (category == HomeCategory.DISCOVER) 1 else 0), key = { "home-${category.name}-${it.id}" }) { video ->
+                VideoCard(
+                    video = video,
+                    isWatchLater = watchLater.any { it.id == video.id },
+                    onPlay = { onPlay(video) },
+                    onWatchLater = { onWatchLater(video) }
+                )
+            }
+        }
     }
 }
 
 @Composable
-private fun HeroCard(onClick: () -> Unit) {
-    Card(
+private fun CategoryChip(
+    label: String,
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    selected: Boolean,
+    onClick: () -> Unit
+) {
+    FilterChip(
+        selected = selected,
         onClick = onClick,
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(24.dp)
+        label = { Text(label) },
+        leadingIcon = { Icon(icon, null, modifier = Modifier.size(18.dp)) }
+    )
+}
+
+@Composable
+private fun FeaturedCard(video: VideoItem, onPlay: (VideoItem) -> Unit) {
+    Card(
+        modifier = Modifier.padding(horizontal = 14.dp).fillMaxWidth(),
+        shape = RoundedCornerShape(24.dp),
+        onClick = { onPlay(video) }
     ) {
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(190.dp)
-                .background(
-                    Brush.linearGradient(
-                        listOf(Color(0xFF3B1766), Color(0xFF8B5CF6), Color(0xFF22102F))
-                    )
+        Box(modifier = Modifier.fillMaxWidth().aspectRatio(16f / 10f)) {
+            Thumbnail(video.thumbnailUrl, Modifier.fillMaxSize())
+            Box(
+                modifier = Modifier.fillMaxSize().background(
+                    Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(alpha = 0.82f)))
                 )
-                .padding(22.dp)
-        ) {
-            Column(modifier = Modifier.align(Alignment.CenterStart)) {
-                Text("Tu biblioteca, a tu manera", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.ExtraBold)
-                Text(
-                    "Reproduce archivos locales y enlaces directos autorizados.",
-                    modifier = Modifier.padding(top = 8.dp),
-                    color = Color.White.copy(alpha = 0.82f)
-                )
+            )
+            Column(modifier = Modifier.align(Alignment.BottomStart).padding(18.dp)) {
+                if (video.isLive) AssistChip(onClick = {}, label = { Text("EN VIVO") }, leadingIcon = { Icon(Icons.Default.LiveTv, null) })
+                Text(video.title, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                Text(video.channelTitle, color = Color.White.copy(alpha = 0.78f), modifier = Modifier.padding(top = 5.dp))
             }
-            FilledIconButton(
-                onClick = onClick,
-                modifier = Modifier.align(Alignment.BottomEnd).size(58.dp)
-            ) {
-                Icon(Icons.Default.PlayArrow, contentDescription = "Reproducir", modifier = Modifier.size(34.dp))
+            FilledIconButton(onClick = { onPlay(video) }, modifier = Modifier.align(Alignment.BottomEnd).padding(18.dp)) {
+                Icon(Icons.Default.PlayArrow, "Reproducir")
+            }
+        }
+    }
+}
+
+@Composable
+private fun ShortsScreen(
+    modifier: Modifier,
+    videos: List<VideoItem>,
+    loading: Boolean,
+    onPlay: (VideoItem) -> Unit,
+    onWatchLater: (VideoItem) -> Unit
+) {
+    LazyColumn(
+        modifier = modifier.fillMaxSize(),
+        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 12.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp)
+    ) {
+        item { SectionHeader("Clips verticales", "Resultados cortos disponibles en YouTube") }
+        if (loading && videos.isEmpty()) item { LoadingBlock() }
+        else items(videos, key = { "short-${it.id}" }) { video ->
+            Card(onClick = { onPlay(video) }, shape = RoundedCornerShape(24.dp), modifier = Modifier.fillMaxWidth()) {
+                Box(modifier = Modifier.fillMaxWidth().aspectRatio(9f / 14f)) {
+                    Thumbnail(video.thumbnailUrl, Modifier.fillMaxSize())
+                    Box(modifier = Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(0.85f)))))
+                    Column(modifier = Modifier.align(Alignment.BottomStart).padding(18.dp).fillMaxWidth(0.82f)) {
+                        Text(video.title, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleLarge, maxLines = 3, overflow = TextOverflow.Ellipsis)
+                        Text(video.channelTitle, color = Color.White.copy(0.75f), modifier = Modifier.padding(top = 6.dp))
+                    }
+                    IconButton(onClick = { onWatchLater(video) }, modifier = Modifier.align(Alignment.BottomEnd).padding(10.dp)) {
+                        Icon(Icons.Outlined.WatchLater, "Ver después")
+                    }
+                }
             }
         }
     }
@@ -454,394 +605,600 @@ private fun HeroCard(onClick: () -> Unit) {
 @Composable
 private fun SearchScreen(
     modifier: Modifier,
-    videos: List<VideoItem>,
-    favoriteIds: Set<String>,
+    results: List<VideoItem>,
+    history: List<String>,
+    loading: Boolean,
+    onSearch: (String) -> Unit,
     onPlay: (VideoItem) -> Unit,
-    onFavorite: (String) -> Unit
+    onWatchLater: (VideoItem) -> Unit
 ) {
     var query by rememberSaveable { mutableStateOf("") }
-    val results = remember(query, videos) {
-        val cleaned = query.trim()
-        if (cleaned.isBlank()) videos
-        else videos.filter {
-            it.title.contains(cleaned, ignoreCase = true) ||
-                it.creator.contains(cleaned, ignoreCase = true)
-        }
-    }
-
     LazyColumn(
         modifier = modifier.fillMaxSize(),
-        contentPadding = PaddingValues(16.dp),
-        verticalArrangement = Arrangement.spacedBy(14.dp)
+        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 12.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         item {
             OutlinedTextField(
                 value = query,
                 onValueChange = { query = it },
                 modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
                 leadingIcon = { Icon(Icons.Default.Search, null) },
-                label = { Text("Buscar en tu biblioteca") },
-                singleLine = true
+                trailingIcon = {
+                    FilledIconButton(onClick = { onSearch(query) }, enabled = query.isNotBlank()) {
+                        Icon(Icons.Default.Search, "Buscar")
+                    }
+                },
+                label = { Text("Buscar videos, música, juegos…") },
+                keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(imeAction = ImeAction.Search),
+                keyboardActions = androidx.compose.foundation.text.KeyboardActions(onSearch = { onSearch(query) })
             )
         }
-        if (results.isEmpty()) {
-            item { EmptyState("No hay resultados para esa busqueda.") }
-        } else {
-            items(results, key = { it.id }) { video ->
-                VideoCard(
-                    video = video,
-                    isFavorite = video.id in favoriteIds,
-                    onPlay = { onPlay(video) },
-                    onFavorite = { onFavorite(video.id) }
-                )
+        if (query.isBlank() && results.isEmpty() && history.isNotEmpty()) {
+            item { SectionHeader("Búsquedas recientes", "Toca una para repetirla") }
+            items(history, key = { "history-$it" }) { item ->
+                Row(
+                    modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).clickable {
+                        query = item
+                        onSearch(item)
+                    }.padding(14.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(Icons.Default.History, null)
+                    Spacer(Modifier.width(14.dp))
+                    Text(item, modifier = Modifier.weight(1f))
+                    Icon(Icons.Default.Search, null)
+                }
             }
         }
-        item { Spacer(Modifier.height(72.dp)) }
+        if (loading) item { LoadingBlock() }
+        else items(results, key = { "search-${it.id}" }) { video ->
+            CompactVideoRow(video, { onPlay(video) }, { onWatchLater(video) })
+        }
     }
 }
 
 @Composable
 private fun LibraryScreen(
     modifier: Modifier,
-    videos: List<VideoItem>,
-    customVideoIds: Set<String>,
-    favoriteIds: Set<String>,
-    historyIds: List<String>,
+    history: List<VideoItem>,
+    watchLater: List<VideoItem>,
+    liked: List<VideoItem>,
+    playlists: List<PlaylistItem>,
+    subscriptions: List<ChannelItem>,
+    downloads: List<VideoItem>,
     onPlay: (VideoItem) -> Unit,
-    onFavorite: (String) -> Unit,
-    onRemove: (String) -> Unit
+    onWatchLater: (VideoItem) -> Unit,
+    onOpenChannel: (ChannelItem) -> Unit,
+    onAddDownload: () -> Unit
 ) {
-    val favorites = videos.filter { it.id in favoriteIds }
-    val history = historyIds.mapNotNull { id -> videos.firstOrNull { it.id == id } }
-    val added = videos.filter { it.id in customVideoIds }
-
     LazyColumn(
         modifier = modifier.fillMaxSize(),
-        contentPadding = PaddingValues(16.dp),
+        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 12.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
-        item { SectionTitle("Favoritos") }
-        if (favorites.isEmpty()) item { EmptyState("Todavia no marcaste videos como favoritos.") }
-        else items(favorites, key = { "fav-${it.id}" }) { video ->
-            VideoCard(video, true, { onPlay(video) }, { onFavorite(video.id) })
+        item { LibraryShortcutRow(history.size, watchLater.size, liked.size, onAddDownload) }
+        if (history.isNotEmpty()) {
+            item { SectionHeader("Continuar viendo", "Historial guardado por Geo Videos") }
+            item { HorizontalVideos(history.take(12), onPlay) }
         }
-
-        item { SectionTitle("Historial") }
-        if (history.isEmpty()) item { EmptyState("Los videos que reproduzcas apareceran aqui.") }
-        else items(history.take(12), key = { "history-${it.id}" }) { video ->
-            VideoCard(video, video.id in favoriteIds, { onPlay(video) }, { onFavorite(video.id) })
+        if (watchLater.isNotEmpty()) {
+            item { SectionHeader("Ver después", "Lista local disponible en esta app") }
+            items(watchLater.take(12), key = { "later-${it.id}" }) { video ->
+                CompactVideoRow(video, { onPlay(video) }, { onWatchLater(video) })
+            }
         }
-
-        item { SectionTitle("Agregados por ti") }
-        if (added.isEmpty()) item { EmptyState("Usa Agregar video para elegir un archivo o pegar un enlace directo.") }
-        else items(added, key = { "added-${it.id}" }) { video ->
-            VideoCard(
-                video = video,
-                isFavorite = video.id in favoriteIds,
-                onPlay = { onPlay(video) },
-                onFavorite = { onFavorite(video.id) },
-                onDelete = { onRemove(video.id) }
-            )
+        if (liked.isNotEmpty()) {
+            item { SectionHeader("Videos que te gustan", "Sincronizados con tu cuenta de YouTube") }
+            item { HorizontalVideos(liked.take(12), onPlay) }
         }
-        item { Spacer(Modifier.height(72.dp)) }
+        if (playlists.isNotEmpty()) {
+            item { SectionHeader("Tus playlists", "Listas visibles para la cuenta autorizada") }
+            item {
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    items(playlists, key = { "playlist-${it.id}" }) { playlist -> PlaylistCard(playlist) }
+                }
+            }
+        }
+        if (subscriptions.isNotEmpty()) {
+            item { SectionHeader("Suscripciones", "Abre un canal para ver sus publicaciones recientes") }
+            item {
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    items(subscriptions, key = { "sub-${it.id}" }) { channel -> ChannelCard(channel) { onOpenChannel(channel) } }
+                }
+            }
+        }
+        item { SectionHeader("Descargas directas", "Solo enlaces de archivos permitidos; no extrae videos de YouTube") }
+        item {
+            Button(onClick = onAddDownload, modifier = Modifier.fillMaxWidth()) {
+                Icon(Icons.Default.Download, null)
+                Spacer(Modifier.width(10.dp))
+                Text("Descargar desde enlace directo")
+            }
+        }
+        items(downloads, key = { "download-${it.id}" }) { video ->
+            CompactVideoRow(video, { onPlay(video) }, {})
+        }
+        item { Spacer(Modifier.height(12.dp)) }
     }
 }
 
 @Composable
-private fun ProfileScreen(
-    modifier: Modifier,
-    name: String,
-    email: String,
-    onLogout: () -> Unit,
-    onDeleteAccount: () -> Unit
+private fun LibraryShortcutRow(history: Int, later: Int, liked: Int, onDownload: () -> Unit) {
+    LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+        item { ShortcutCard(Icons.Default.History, "Historial", "$history videos") }
+        item { ShortcutCard(Icons.Default.WatchLater, "Ver después", "$later videos") }
+        item { ShortcutCard(Icons.Default.Favorite, "Me gustan", "$liked videos") }
+        item { ShortcutCard(Icons.Default.Download, "Descargas", "Agregar", onDownload) }
+    }
+}
+
+@Composable
+private fun ShortcutCard(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    title: String,
+    subtitle: String,
+    onClick: (() -> Unit)? = null
 ) {
-    var confirmDelete by rememberSaveable { mutableStateOf(false) }
+    Card(
+        modifier = Modifier.width(150.dp),
+        onClick = onClick ?: {},
+        enabled = onClick != null,
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Icon(icon, null, tint = MaterialTheme.colorScheme.primary)
+            Text(title, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 12.dp))
+            Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+    }
+}
+
+@Composable
+private fun AccountScreen(
+    modifier: Modifier,
+    profile: GoogleProfile?,
+    onReconnect: () -> Unit,
+    onSwitchAccount: () -> Unit,
+    onDisconnect: () -> Unit,
+    onClearData: () -> Unit
+) {
+    var autoplay by rememberSaveable { mutableStateOf(true) }
+    var dataSaver by rememberSaveable { mutableStateOf(false) }
+    var notifications by rememberSaveable { mutableStateOf(true) }
+    var confirmClear by rememberSaveable { mutableStateOf(false) }
 
     Column(
-        modifier = modifier
-            .fillMaxSize()
-            .padding(22.dp)
-            .verticalScroll(rememberScrollState()),
+        modifier = modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        Box(
-            modifier = Modifier
-                .size(96.dp)
-                .clip(CircleShape)
-                .background(MaterialTheme.colorScheme.primaryContainer),
-            contentAlignment = Alignment.Center
-        ) {
-            Text(name.take(1).uppercase(), style = MaterialTheme.typography.displaySmall, fontWeight = FontWeight.Bold)
-        }
-        Text(name, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 16.dp))
-        Text(email, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        ProfileAvatar(profile, 94.dp, null)
+        Text(profile?.channelTitle?.ifBlank { profile.name } ?: "Cuenta", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 14.dp))
+        Text(profile?.email.orEmpty(), color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 4.dp))
 
-        Card(
-            modifier = Modifier.fillMaxWidth().padding(top = 28.dp),
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
-        ) {
-            Column(Modifier.padding(18.dp)) {
-                Text("Cuenta local", fontWeight = FontWeight.Bold)
-                Text(
-                    "Tus datos, favoritos e historial se guardan en este dispositivo. Esta version no usa servidores ni Google.",
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(top = 6.dp)
-                )
-            }
-        }
+        Spacer(Modifier.height(24.dp))
+        SettingSwitch("Reproducción automática", "Continúa con el siguiente video", autoplay) { autoplay = it }
+        SettingSwitch("Ahorro de datos", "Prioriza menor consumo en redes móviles", dataSaver) { dataSaver = it }
+        SettingSwitch("Avisos en la app", "Muestra actividad reciente en la campana", notifications) { notifications = it }
 
-        Button(onClick = onLogout, modifier = Modifier.fillMaxWidth().padding(top = 24.dp)) {
+        Spacer(Modifier.height(18.dp))
+        OutlinedButton(onClick = onSwitchAccount, modifier = Modifier.fillMaxWidth()) {
+            Icon(Icons.Default.AccountCircle, null)
+            Spacer(Modifier.width(10.dp))
+            Text("Cambiar cuenta de Google")
+        }
+        OutlinedButton(onClick = onReconnect, modifier = Modifier.fillMaxWidth().padding(top = 10.dp)) {
+            Icon(Icons.Default.Refresh, null)
+            Spacer(Modifier.width(10.dp))
+            Text("Renovar acceso")
+        }
+        OutlinedButton(onClick = onDisconnect, modifier = Modifier.fillMaxWidth().padding(top = 10.dp)) {
             Icon(Icons.Default.Logout, null)
-            Spacer(Modifier.width(8.dp))
-            Text("Cerrar sesion")
+            Spacer(Modifier.width(10.dp))
+            Text("Desconectar")
         }
-        OutlinedButton(onClick = { confirmDelete = true }, modifier = Modifier.fillMaxWidth().padding(top = 12.dp)) {
+        TextButton(onClick = { confirmClear = true }, modifier = Modifier.padding(top = 12.dp)) {
             Icon(Icons.Default.Delete, null)
             Spacer(Modifier.width(8.dp))
-            Text("Eliminar cuenta y datos")
+            Text("Eliminar historial y datos locales")
         }
     }
 
-    if (confirmDelete) {
+    if (confirmClear) {
         AlertDialog(
-            onDismissRequest = { confirmDelete = false },
-            title = { Text("Eliminar todo") },
-            text = { Text("Se borraran la cuenta local, favoritos, historial y videos agregados.") },
+            onDismissRequest = { confirmClear = false },
+            title = { Text("Eliminar datos locales") },
+            text = { Text("Se borrarán el historial de Geo Videos, Ver después, búsquedas y descargas registradas. No se elimina nada de tu cuenta de Google.") },
             confirmButton = {
-                TextButton(onClick = {
-                    confirmDelete = false
-                    onDeleteAccount()
-                }) { Text("Eliminar") }
+                TextButton(onClick = { confirmClear = false; onClearData() }) { Text("Eliminar") }
             },
-            dismissButton = { TextButton(onClick = { confirmDelete = false }) { Text("Cancelar") } }
+            dismissButton = { TextButton(onClick = { confirmClear = false }) { Text("Cancelar") } }
         )
     }
 }
 
 @Composable
-private fun VideoCard(
-    video: VideoItem,
-    isFavorite: Boolean,
-    onPlay: () -> Unit,
-    onFavorite: () -> Unit,
-    onDelete: (() -> Unit)? = null
-) {
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(18.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
-    ) {
-        Column {
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .aspectRatio(16f / 9f)
-                    .background(videoGradient(video.id))
-                    .clickable(onClick = onPlay),
-                contentAlignment = Alignment.Center
-            ) {
-                Box(
-                    modifier = Modifier.size(62.dp).clip(CircleShape).background(Color.Black.copy(alpha = 0.42f)),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(Icons.Default.PlayArrow, contentDescription = "Reproducir", tint = Color.White, modifier = Modifier.size(38.dp))
-                }
-                Text(
-                    text = if (video.source.startsWith("content://")) "LOCAL" else if (video.isBuiltIn) "MUESTRA" else "ENLACE",
-                    modifier = Modifier.align(Alignment.TopEnd).padding(10.dp).clip(RoundedCornerShape(8.dp)).background(Color.Black.copy(alpha = 0.55f)).padding(horizontal = 8.dp, vertical = 4.dp),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = Color.White
-                )
-            }
-            Row(
-                modifier = Modifier.fillMaxWidth().padding(14.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(video.title, fontWeight = FontWeight.Bold, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                    Text(video.creator, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                }
-                IconButton(onClick = onFavorite) {
-                    Icon(
-                        if (isFavorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
-                        contentDescription = "Favorito",
-                        tint = if (isFavorite) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-                onDelete?.let {
-                    IconButton(onClick = it) { Icon(Icons.Default.Delete, contentDescription = "Eliminar") }
-                }
-            }
+private fun SettingSwitch(title: String, subtitle: String, checked: Boolean, onChange: (Boolean) -> Unit) {
+    Row(modifier = Modifier.fillMaxWidth().padding(vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(title, fontWeight = FontWeight.SemiBold)
+            Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
+        Switch(checked = checked, onCheckedChange = onChange)
     }
-}
-
-@Composable
-private fun CompactVideoCard(video: VideoItem, onPlay: () -> Unit) {
-    Card(
-        modifier = Modifier.width(220.dp),
-        onClick = onPlay,
-        shape = RoundedCornerShape(16.dp)
-    ) {
-        Column {
-            Box(
-                modifier = Modifier.fillMaxWidth().aspectRatio(16f / 9f).background(videoGradient(video.id)),
-                contentAlignment = Alignment.Center
-            ) {
-                Icon(Icons.Default.PlayArrow, null, tint = Color.White, modifier = Modifier.size(40.dp))
-            }
-            Text(video.title, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(12.dp))
-        }
-    }
-}
-
-@Composable
-private fun SectionTitle(text: String) {
-    Text(text, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.ExtraBold)
-}
-
-@Composable
-private fun EmptyState(text: String) {
-    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
-        Text(text, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.fillMaxWidth().padding(18.dp))
-    }
-}
-
-@Composable
-private fun AddVideoDialog(
-    onDismiss: () -> Unit,
-    onAddDirect: (String, String, String) -> Unit,
-    onPickLocal: () -> Unit
-) {
-    var title by rememberSaveable { mutableStateOf("") }
-    var creator by rememberSaveable { mutableStateOf("") }
-    var url by rememberSaveable { mutableStateOf("") }
-
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Agregar video") },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                OutlinedTextField(value = title, onValueChange = { title = it }, label = { Text("Titulo") }, singleLine = true)
-                OutlinedTextField(value = creator, onValueChange = { creator = it }, label = { Text("Autor o categoria") }, singleLine = true)
-                OutlinedTextField(
-                    value = url,
-                    onValueChange = { url = it },
-                    label = { Text("Enlace directo del video") },
-                    leadingIcon = { Icon(Icons.Default.Link, null) },
-                    singleLine = true
-                )
-                HorizontalDivider(Modifier.padding(vertical = 4.dp))
-                OutlinedButton(onClick = onPickLocal, modifier = Modifier.fillMaxWidth()) {
-                    Icon(Icons.Default.FolderOpen, null)
-                    Spacer(Modifier.width(8.dp))
-                    Text("Elegir video del telefono")
-                }
-                Text(
-                    "No acepta paginas de YouTube: solo archivos locales o enlaces directos autorizados.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-        },
-        confirmButton = {
-            TextButton(onClick = { onAddDirect(title, creator, url) }) { Text("Agregar enlace") }
-        },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancelar") } }
-    )
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
-@androidx.annotation.OptIn(UnstableApi::class)
+@Composable
+private fun NotificationsScreen(
+    notifications: List<NotificationItem>,
+    onBack: () -> Unit,
+    onPlay: (VideoItem) -> Unit
+) {
+    BackHandler(onBack = onBack)
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text("Actividad") },
+                navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, "Volver") } }
+            )
+        }
+    ) { padding ->
+        LazyColumn(modifier = Modifier.padding(padding).fillMaxSize(), contentPadding = PaddingValues(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            if (notifications.isEmpty()) {
+                item { EmptyBlock("YouTube no devolvió actividad reciente. La API pública no expone toda la bandeja privada de notificaciones.") }
+            } else {
+                items(notifications, key = { "notification-${it.id}" }) { item ->
+                    Card(onClick = { item.video?.let(onPlay) }, enabled = item.video != null) {
+                        Row(modifier = Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Thumbnail(item.thumbnailUrl, Modifier.size(92.dp).clip(RoundedCornerShape(12.dp)))
+                            Column(modifier = Modifier.weight(1f).padding(horizontal = 12.dp)) {
+                                Text(item.title, fontWeight = FontWeight.SemiBold, maxLines = 3, overflow = TextOverflow.Ellipsis)
+                                Text(item.subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 5.dp))
+                            }
+                            Icon(Icons.Default.Notifications, null, tint = MaterialTheme.colorScheme.primary)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ChannelScreen(
+    title: String,
+    videos: List<VideoItem>,
+    loading: Boolean,
+    onBack: () -> Unit,
+    onPlay: (VideoItem) -> Unit,
+    onWatchLater: (VideoItem) -> Unit
+) {
+    BackHandler(onBack = onBack)
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text(title, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, "Volver") } }
+            )
+        }
+    ) { padding ->
+        LazyColumn(modifier = Modifier.padding(padding).fillMaxSize(), contentPadding = PaddingValues(14.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            if (loading) item { LoadingBlock() }
+            else if (videos.isEmpty()) item { EmptyBlock("No se encontraron publicaciones reproducibles de este canal.") }
+            else items(videos, key = { "channel-${it.id}" }) { video ->
+                CompactVideoRow(video, { onPlay(video) }, { onWatchLater(video) })
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun PlayerScreen(
     video: VideoItem,
-    isFavorite: Boolean,
-    snackbarHostState: SnackbarHostState,
+    isWatchLater: Boolean,
     onBack: () -> Unit,
-    onToggleFavorite: () -> Unit
+    onWatchLater: () -> Unit,
+    onMessage: (String) -> Unit
 ) {
-    BackHandler(onBack = onBack)
     val context = LocalContext.current
-    val player = remember(video.source) {
+    BackHandler(onBack = onBack)
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text("Reproduciendo", maxLines = 1) },
+                navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, "Volver") } }
+            )
+        }
+    ) { padding ->
+        Column(modifier = Modifier.padding(padding).fillMaxSize().verticalScroll(rememberScrollState())) {
+            if (video.mediaKind == MediaKind.YOUTUBE) YouTubeWebPlayer(video.id)
+            else DirectPlayer(video.source)
+
+            Column(modifier = Modifier.padding(18.dp)) {
+                if (video.isLive) Text("EN VIVO", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.ExtraBold)
+                Text(video.title, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+                Text(video.channelTitle, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 8.dp))
+
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.padding(top = 18.dp)) {
+                    item {
+                        AssistChip(
+                            onClick = onWatchLater,
+                            label = { Text(if (isWatchLater) "Guardado" else "Ver después") },
+                            leadingIcon = { Icon(if (isWatchLater) Icons.Default.WatchLater else Icons.Outlined.WatchLater, null) }
+                        )
+                    }
+                    item {
+                        AssistChip(
+                            onClick = { shareVideo(context, video) },
+                            label = { Text("Compartir") },
+                            leadingIcon = { Icon(Icons.Default.Share, null) }
+                        )
+                    }
+                    item {
+                        AssistChip(
+                            onClick = {
+                                if (video.mediaKind == MediaKind.YOUTUBE) {
+                                    onMessage("La API de YouTube no entrega el archivo del video. Geo Videos solo descarga enlaces directos autorizados.")
+                                } else if (enqueueDirectDownload(context, video.title, video.source)) {
+                                    onMessage("Descarga enviada al teléfono.")
+                                }
+                            },
+                            label = { Text("Descargar") },
+                            leadingIcon = { Icon(Icons.Default.Download, null) }
+                        )
+                    }
+                }
+                if (video.description.isNotBlank()) {
+                    OutlinedCard(modifier = Modifier.fillMaxWidth().padding(top = 18.dp)) {
+                        Text(video.description, modifier = Modifier.padding(16.dp), color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun YouTubeWebPlayer(videoId: String) {
+    val webView = remember { mutableStateOf<WebView?>(null) }
+    AndroidView(
+        modifier = Modifier.fillMaxWidth().aspectRatio(16f / 9f).background(Color.Black),
+        factory = { context ->
+            WebView(context).apply {
+                webView.value = this
+                settings.javaScriptEnabled = true
+                settings.domStorageEnabled = true
+                settings.mediaPlaybackRequiresUserGesture = false
+                webViewClient = WebViewClient()
+                webChromeClient = WebChromeClient()
+                val html = """
+                    <!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
+                    <style>html,body{margin:0;width:100%;height:100%;background:#000;overflow:hidden}iframe{width:100%;height:100%}</style></head>
+                    <body>
+                    <iframe src="https://www.youtube.com/embed/$videoId?autoplay=1&playsinline=1&rel=0"
+                    frameborder="0" allow="autoplay; encrypted-media; picture-in-picture" allowfullscreen></iframe>
+                    </body></html>
+                """.trimIndent()
+                loadDataWithBaseURL("https://www.youtube.com", html, "text/html", "UTF-8", null)
+            }
+        }
+    )
+    DisposableEffect(Unit) {
+        onDispose {
+            webView.value?.stopLoading()
+            webView.value?.loadUrl("about:blank")
+            webView.value?.destroy()
+        }
+    }
+}
+
+@androidx.annotation.OptIn(markerClass = [UnstableApi::class])
+@Composable
+private fun DirectPlayer(source: String) {
+    val context = LocalContext.current
+    val player = remember(source) {
         ExoPlayer.Builder(context).build().apply {
-            setMediaItem(MediaItem.fromUri(Uri.parse(video.source)))
+            setMediaItem(MediaItem.fromUri(source))
             prepare()
             playWhenReady = true
         }
     }
+    DisposableEffect(player) { onDispose { player.release() } }
+    AndroidView(
+        modifier = Modifier.fillMaxWidth().aspectRatio(16f / 9f).background(Color.Black),
+        factory = { PlayerView(it).apply { this.player = player; useController = true } }
+    )
+}
 
-    DisposableEffect(player) {
-        onDispose { player.release() }
-    }
-
-    Scaffold(
-        topBar = {
-            TopAppBar(
-                title = { Text(video.title, maxLines = 1, overflow = TextOverflow.Ellipsis) },
-                navigationIcon = {
-                    IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, contentDescription = "Volver") }
-                },
-                actions = {
-                    IconButton(onClick = onToggleFavorite) {
-                        Icon(
-                            if (isFavorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
-                            contentDescription = "Favorito",
-                            tint = if (isFavorite) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
-                        )
-                    }
-                }
-            )
-        },
-        snackbarHost = { SnackbarHost(snackbarHostState) }
-    ) { padding ->
-        Column(modifier = Modifier.fillMaxSize().padding(padding)) {
-            AndroidView(
-                modifier = Modifier.fillMaxWidth().aspectRatio(16f / 9f).background(Color.Black),
-                factory = { playerContext ->
-                    PlayerView(playerContext).apply {
-                        this.player = player
-                        useController = true
-                        keepScreenOn = true
-                    }
-                },
-                update = { it.player = player }
-            )
-            Column(modifier = Modifier.fillMaxWidth().padding(20.dp)) {
-                Text(video.title, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.ExtraBold)
-                Text(video.creator, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 6.dp))
-                Card(
-                    modifier = Modifier.fillMaxWidth().padding(top = 22.dp),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
-                ) {
-                    Row(modifier = Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Default.History, null)
-                        Spacer(Modifier.width(10.dp))
-                        Text("Este video ya fue agregado a tu historial local.")
-                    }
+@Composable
+private fun VideoCard(
+    video: VideoItem,
+    isWatchLater: Boolean,
+    onPlay: () -> Unit,
+    onWatchLater: () -> Unit
+) {
+    var menu by remember { mutableStateOf(false) }
+    Column(modifier = Modifier.fillMaxWidth().clickable(onClick = onPlay)) {
+        Box(modifier = Modifier.fillMaxWidth().aspectRatio(16f / 9f)) {
+            Thumbnail(video.thumbnailUrl, Modifier.fillMaxSize())
+            if (video.isLive) {
+                Text(
+                    "EN VIVO",
+                    color = Color.White,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.align(Alignment.BottomStart).padding(10.dp).background(Color(0xFFD32F2F), RoundedCornerShape(6.dp)).padding(horizontal = 8.dp, vertical = 4.dp)
+                )
+            }
+            FilledIconButton(onClick = onPlay, modifier = Modifier.align(Alignment.Center)) { Icon(Icons.Default.PlayArrow, "Reproducir") }
+        }
+        Row(modifier = Modifier.padding(horizontal = 14.dp, vertical = 11.dp), verticalAlignment = Alignment.Top) {
+            Box(modifier = Modifier.size(42.dp).clip(CircleShape).background(MaterialTheme.colorScheme.primaryContainer), contentAlignment = Alignment.Center) {
+                Text(video.channelTitle.take(1).uppercase(), fontWeight = FontWeight.Bold)
+            }
+            Column(modifier = Modifier.weight(1f).padding(horizontal = 12.dp)) {
+                Text(video.title, fontWeight = FontWeight.Bold, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                Text(video.channelTitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 4.dp))
+            }
+            Box {
+                IconButton(onClick = { menu = true }) { Icon(Icons.Default.MoreVert, "Opciones") }
+                DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                    DropdownMenuItem(
+                        text = { Text(if (isWatchLater) "Quitar de Ver después" else "Guardar en Ver después") },
+                        leadingIcon = { Icon(Icons.Default.WatchLater, null) },
+                        onClick = { menu = false; onWatchLater() }
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Reproducir") },
+                        leadingIcon = { Icon(Icons.Default.PlayArrow, null) },
+                        onClick = { menu = false; onPlay() }
+                    )
                 }
             }
         }
     }
 }
 
-private fun videoGradient(seed: String): Brush {
-    val variants = listOf(
-        listOf(Color(0xFF2E1065), Color(0xFF7C3AED)),
-        listOf(Color(0xFF0F3D3E), Color(0xFF2A9D8F)),
-        listOf(Color(0xFF532E1C), Color(0xFFE76F51)),
-        listOf(Color(0xFF1E3A5F), Color(0xFF3B82F6))
-    )
-    return Brush.linearGradient(variants[Math.floorMod(seed.hashCode(), variants.size)])
-}
-
-private fun getDisplayName(context: Context, uri: Uri): String {
-    var result = "Video local"
-    context.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
-        if (cursor.moveToFirst()) {
-            val index = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
-            if (index >= 0) result = cursor.getString(index).orEmpty().ifBlank { result }
+@Composable
+private fun CompactVideoRow(video: VideoItem, onPlay: () -> Unit, onWatchLater: () -> Unit) {
+    Card(onClick = onPlay, modifier = Modifier.fillMaxWidth()) {
+        Row(modifier = Modifier.fillMaxWidth().padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
+            Box(modifier = Modifier.width(142.dp).aspectRatio(16f / 9f).clip(RoundedCornerShape(12.dp))) {
+                Thumbnail(video.thumbnailUrl, Modifier.fillMaxSize())
+                if (video.isLive) Text("LIVE", modifier = Modifier.align(Alignment.BottomStart).padding(6.dp).background(Color.Red, RoundedCornerShape(4.dp)).padding(horizontal = 5.dp), fontWeight = FontWeight.Bold)
+            }
+            Column(modifier = Modifier.weight(1f).padding(start = 12.dp)) {
+                Text(video.title, fontWeight = FontWeight.SemiBold, maxLines = 3, overflow = TextOverflow.Ellipsis)
+                Text(video.channelTitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 5.dp), maxLines = 1)
+            }
+            IconButton(onClick = onWatchLater) { Icon(Icons.Outlined.WatchLater, "Ver después") }
         }
     }
-    return result
+}
+
+@Composable
+private fun HorizontalVideos(videos: List<VideoItem>, onPlay: (VideoItem) -> Unit) {
+    LazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        items(videos, key = { "horizontal-${it.id}" }) { video ->
+            Card(onClick = { onPlay(video) }, modifier = Modifier.width(240.dp)) {
+                Thumbnail(video.thumbnailUrl, Modifier.fillMaxWidth().aspectRatio(16f / 9f))
+                Column(modifier = Modifier.padding(12.dp)) {
+                    Text(video.title, fontWeight = FontWeight.SemiBold, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                    Text(video.channelTitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 4.dp), maxLines = 1)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun PlaylistCard(playlist: PlaylistItem) {
+    Card(modifier = Modifier.width(220.dp)) {
+        Box {
+            Thumbnail(playlist.thumbnailUrl, Modifier.fillMaxWidth().aspectRatio(16f / 9f))
+            Text("${playlist.itemCount}", modifier = Modifier.align(Alignment.BottomEnd).padding(8.dp).background(Color.Black.copy(0.75f), RoundedCornerShape(6.dp)).padding(horizontal = 7.dp, vertical = 3.dp))
+        }
+        Column(modifier = Modifier.padding(12.dp)) {
+            Text(playlist.title, fontWeight = FontWeight.SemiBold, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            Text("Playlist", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+    }
+}
+
+@Composable
+private fun ChannelCard(channel: ChannelItem, onClick: () -> Unit) {
+    Column(modifier = Modifier.width(112.dp).clip(RoundedCornerShape(16.dp)).clickable(onClick = onClick).padding(8.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+        AsyncImage(model = channel.thumbnailUrl, contentDescription = channel.title, modifier = Modifier.size(82.dp).clip(CircleShape), contentScale = ContentScale.Crop)
+        Text(channel.title, fontWeight = FontWeight.SemiBold, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 8.dp), textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+    }
+}
+
+@Composable
+private fun ProfileAvatar(profile: GoogleProfile?, size: androidx.compose.ui.unit.Dp, onClick: (() -> Unit)?) {
+    val modifier = Modifier.size(size).clip(CircleShape).then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier)
+    if (profile?.pictureUrl.isNullOrBlank()) {
+        Box(modifier = modifier.background(MaterialTheme.colorScheme.primaryContainer), contentAlignment = Alignment.Center) {
+            Text(profile?.name?.take(1)?.uppercase() ?: "G", fontWeight = FontWeight.Bold)
+        }
+    } else {
+        AsyncImage(model = profile?.pictureUrl, contentDescription = "Cuenta", modifier = modifier, contentScale = ContentScale.Crop)
+    }
+}
+
+@Composable
+private fun Thumbnail(url: String, modifier: Modifier) {
+    if (url.isBlank()) {
+        Box(modifier = modifier.background(Brush.linearGradient(listOf(Color(0xFF301A56), Color(0xFF7C4DFF), Color(0xFF111118)))), contentAlignment = Alignment.Center) {
+            Icon(Icons.Default.PlayArrow, null, modifier = Modifier.size(52.dp), tint = Color.White.copy(0.8f))
+        }
+    } else {
+        AsyncImage(model = url, contentDescription = null, modifier = modifier.background(Color.Black), contentScale = ContentScale.Crop)
+    }
+}
+
+@Composable
+private fun SectionHeader(title: String, subtitle: String) {
+    Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 4.dp)) {
+        Text(title, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.ExtraBold)
+        Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 3.dp))
+    }
+}
+
+@Composable
+private fun LoadingBlock() {
+    Box(modifier = Modifier.fillMaxWidth().height(180.dp), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
+}
+
+@Composable
+private fun EmptyBlock(message: String) {
+    OutlinedCard(modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp)) {
+        Text(message, modifier = Modifier.padding(20.dp), color = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
+}
+
+@Composable
+private fun DirectDownloadDialog(onDismiss: () -> Unit, onDownload: (String, String) -> Unit) {
+    var title by rememberSaveable { mutableStateOf("") }
+    var url by rememberSaveable { mutableStateOf("") }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Descarga directa") },
+        text = {
+            Column {
+                Text("Pega una URL directa a un archivo de video que tengas derecho a descargar.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                OutlinedTextField(value = title, onValueChange = { title = it }, label = { Text("Nombre") }, modifier = Modifier.fillMaxWidth().padding(top = 14.dp), singleLine = true)
+                OutlinedTextField(value = url, onValueChange = { url = it }, label = { Text("Enlace http/https") }, modifier = Modifier.fillMaxWidth().padding(top = 10.dp), singleLine = true)
+            }
+        },
+        confirmButton = { TextButton(onClick = { onDownload(title.ifBlank { "Geo Video" }, url) }, enabled = url.isNotBlank()) { Text("Descargar") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancelar") } }
+    )
+}
+
+private fun enqueueDirectDownload(context: Context, title: String, url: String): Boolean {
+    val uri = runCatching { Uri.parse(url.trim()) }.getOrNull() ?: return false
+    if (uri.scheme != "http" && uri.scheme != "https") return false
+    val safeName = title.ifBlank { "GeoVideo" }.replace(Regex("[^A-Za-z0-9._-]"), "_").take(80)
+    val request = DownloadManager.Request(uri)
+        .setTitle(title.ifBlank { "Geo Video" })
+        .setDescription("Descarga iniciada desde Geo Videos")
+        .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
+        .setAllowedOverMetered(true)
+        .setAllowedOverRoaming(false)
+        .setDestinationInExternalPublicDir(Environment.DIRECTORY_MOVIES, "GeoVideos/$safeName.mp4")
+    val manager = context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
+    manager.enqueue(request)
+    return true
+}
+
+private fun shareVideo(context: Context, video: VideoItem) {
+    val url = if (video.mediaKind == MediaKind.YOUTUBE) "https://www.youtube.com/watch?v=${video.id}" else video.source
+    val intent = Intent(Intent.ACTION_SEND).apply {
+        type = "text/plain"
+        putExtra(Intent.EXTRA_TEXT, "${video.title}\n$url")
+    }
+    context.startActivity(Intent.createChooser(intent, "Compartir video"))
 }
