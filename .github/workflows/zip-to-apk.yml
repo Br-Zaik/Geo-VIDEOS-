@@ -1,0 +1,165 @@
+name: Leer ZIP y crear APK
+
+on:
+  push:
+    paths:
+      - "incoming/*.zip"
+      - "incoming/**/*.zip"
+
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  importar-y-compilar:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Descargar repositorio
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Encontrar ZIP mas reciente
+        id: zip
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          ZIP_FILE="$(python3 - <<'PY'
+          from pathlib import Path
+
+          carpeta = Path("incoming")
+          archivos = list(carpeta.rglob("*.zip"))
+
+          if not archivos:
+              raise SystemExit("No se encontro ningun archivo ZIP en incoming")
+
+          reciente = max(archivos, key=lambda archivo: archivo.stat().st_mtime)
+          print(reciente.as_posix())
+          PY
+          )"
+
+          echo "file=$ZIP_FILE" >> "$GITHUB_OUTPUT"
+          echo "ZIP encontrado: $ZIP_FILE"
+
+      - name: Revisar e importar ZIP
+        shell: bash
+        env:
+          ZIP_FILE: ${{ steps.zip.outputs.file }}
+        run: |
+          set -euo pipefail
+
+          TEMP_DIR="$RUNNER_TEMP/zip_importado"
+
+          rm -rf "$TEMP_DIR"
+          mkdir -p "$TEMP_DIR"
+
+          python3 - "$ZIP_FILE" "$TEMP_DIR" <<'PY'
+          import sys
+          import zipfile
+          from pathlib import Path, PurePosixPath
+
+          zip_path = Path(sys.argv[1])
+          destino = Path(sys.argv[2])
+
+          with zipfile.ZipFile(zip_path) as archivo:
+              peligrosos = []
+
+              for elemento in archivo.infolist():
+                  ruta = PurePosixPath(elemento.filename)
+
+                  if ruta.is_absolute() or ".." in ruta.parts:
+                      peligrosos.append(elemento.filename)
+
+              if peligrosos:
+                  print("El ZIP contiene rutas inseguras:")
+                  for ruta in peligrosos:
+                      print(ruta)
+                  raise SystemExit(1)
+
+              archivo.extractall(destino)
+
+          print("ZIP extraido correctamente")
+          PY
+
+          rm -rf "$TEMP_DIR/__MACOSX"
+          find "$TEMP_DIR" -name ".DS_Store" -delete
+
+          shopt -s dotglob nullglob
+          ELEMENTOS=("$TEMP_DIR"/*)
+
+          if [ "${#ELEMENTOS[@]}" -eq 1 ] && [ -d "${ELEMENTOS[0]}" ]; then
+            ORIGEN="${ELEMENTOS[0]}"
+          else
+            ORIGEN="$TEMP_DIR"
+          fi
+
+          rsync -a \
+            --exclude=".git/" \
+            --exclude="incoming/" \
+            --exclude=".github/workflows/" \
+            "$ORIGEN"/ ./
+
+          echo "Archivos del ZIP importados al proyecto"
+
+      - name: Comprobar proyecto Android
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ ! -f "gradlew" ]; then
+            echo "::error::El ZIP no contiene gradlew. Debe contener el proyecto Android completo."
+            exit 1
+          fi
+
+          if [ ! -d "app" ]; then
+            echo "::error::No se encontro la carpeta app del proyecto Android."
+            exit 1
+          fi
+
+          chmod +x gradlew
+
+      - name: Preparar Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: gradle
+
+      - name: Compilar APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./gradlew assembleDebug --stacktrace
+
+      - name: Guardar APK en Actions
+        uses: actions/upload-artifact@v4
+        with:
+          name: APK-compilada
+          path: |
+            **/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Guardar cambios del ZIP
+        shell: bash
+        env:
+          ZIP_FILE: ${{ steps.zip.outputs.file }}
+        run: |
+          set -euo pipefail
+
+          rm -f "$ZIP_FILE"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add -A
+
+          if git diff --cached --quiet; then
+            echo "No hay cambios nuevos para guardar"
+          else
+            git commit -m "Importar proyecto desde ZIP y compilar APK"
+            git push
+          fi
