@@ -1,0 +1,19 @@
+GEO VIDEOS V14.1 - VALIDACION ESTATICA
+Fecha: 2026-07-19
+
+CAMBIO REVISADO
+- Eliminada la pantalla superpuesta "Video finalizado" con los botones Repetir y Siguiente.
+- Reproduccion automatica activada: al terminar, avanza al siguiente video mediante el flujo existente.
+- Repeticion activada: Media3 vuelve a reproducir el mismo video mediante REPEAT_MODE_ONE.
+- Ambas opciones apagadas: el reproductor queda en STATE_ENDED y conserva el control central normal para volver a iniciar.
+- Las opciones Reproduccion automatica y Repetir permanecen disponibles en ajustes.
+
+INTEGRIDAD DE AUTENTICACION
+MainActivity.kt: SIN CAMBIOS
+AndroidManifest.xml: SIN CAMBIOS
+app/geovideos-dev.jks: SIN CAMBIOS
+Paquete y OAuth: SIN CAMBIOS
+
+PENDIENTE
+- Compilacion Android completa en GitHub Actions.
+- Prueba en telefono de los tres estados al finalizar un video.

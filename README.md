@@ -1,58 +1,49 @@
-# Geo Videos V13.1 — corrección de compilación
+# Geo Videos V14.1 — final de reproducción normal
 
 Proyecto Android en Kotlin y Jetpack Compose.
 
-## Cambios principales de V13
+## Cambios principales
 
-- Reproductor propio basado en AndroidX Media3/ExoPlayer; no vuelve al IFrame de YouTube.
-- Contenedor adaptable: los videos se reproducen sin deformarse y con barras negras cuando la proporción lo requiere.
-- Pantalla completa con orientación horizontal y botón para regresar al modo normal.
-- Controles de reproducción menos invasivos, con retroceso, avance, calidad, velocidad y ocultamiento automático.
-- La miniatura permanece visible durante la resolución de la transmisión.
-- El indicador de carga aparece únicamente cuando la espera supera 450 ms; se eliminó el mensaje grande de preparación.
-- Caché temporal de enlaces resueltos durante 20 minutos.
-- Precarga de los dos primeros videos del feed y de los dos primeros relacionados.
-- Búfer inicial reducido para comenzar antes sin eliminar la protección contra cortes.
-- Información ampliada: visualizaciones, fecha, canal, avatar y suscriptores cuando YouTube los devuelve.
-- Fila desplazable de acciones: reproducir/pausar, conteo de Me gusta, Ver después, segundo plano, compartir, ventana flotante, temporizador y transmitir externamente.
-- Descripción contraíble.
-- Videos relacionados debajo de la información, con eliminación de duplicados y carga progresiva.
-- Los relacionados no reemplazan ni modifican el feed principal.
-
-## Funciones conservadas de V12
-
-- Un solo reproductor administrado por `PlaybackService` para pantalla completa, minirreproductor y controles del sistema.
-- Caché de reproducción de 256 MB.
-- Feed estable, paginación independiente y sección `Colección > Mis videos`.
-- Resolución de transmisiones públicas mediante NewPipe Extractor.
+- Shorts rediseñados como un visor vertical de una página por video, con deslizamiento tipo TikTok.
+- El Short visible se reproduce dentro del feed en formato vertical, sin abrir primero la pantalla normal.
+- Precarga de los dos Shorts siguientes y cancelación de la transmisión anterior al deslizar.
+- Los Shorts se forman primero con publicaciones cortas de suscripciones, Me gusta e historial; después se completa con una búsqueda basada en esos intereses.
+- Se eliminó la consulta genérica fija `shorts español`, que era la causa principal del contenido ajeno al usuario.
+- El visor de Shorts repite el clip visible y oculta el encabezado principal para aprovechar más pantalla.
+- Al terminar un video normal, la reproducción automática pasa al primer relacionado disponible.
+- Al terminar un video ya no aparece una pantalla adicional con botones de **Repetir** y **Siguiente**.
+- Con reproducción automática encendida pasa directamente al siguiente relacionado; con repetición encendida vuelve a empezar el mismo video; con ambas apagadas termina normalmente.
+- Se añadió un botón visible para activar o desactivar la repetición del video actual.
+- Suscripciones aparece al comienzo de Colección en una tarjeta destacada con todos los canales autorizados y sus publicaciones recientes.
+- Se redujeron recomposiciones grandes del reproductor: la pantalla completa ya no se reconstruye por cada actualización de posición.
+- El estado del reproductor se actualiza con menor frecuencia y la barra de progreso de Shorts se aísla del resto del visor.
+- Versión de aplicación: `14.1.0` (`versionCode 16`).
 
 ## Inicio de sesión protegido
 
-No se modificaron `MainActivity.kt`, `AndroidManifest.xml`, el paquete `com.geovideos.app` ni la llave `geovideos-dev.jks`. La autorización conserva los permisos existentes de solo lectura.
+No se modificaron:
+
+- `MainActivity.kt`
+- `AndroidManifest.xml`
+- paquete `com.geovideos.app`
+- llave `app/geovideos-dev.jks`
+- flujo OAuth ni permisos de Google
+
+Los hashes de esos tres archivos fueron comparados antes y después de los cambios y permanecen idénticos.
 
 ## Compilación
 
-1. Extraer el ZIP.
-2. Subir o reemplazar los archivos del proyecto, no el ZIP como archivo dentro del repositorio.
-3. Usar JDK 17 y Android SDK 35.
-4. Compilar `app` en modo Debug o Release.
+1. Extrae el ZIP.
+2. Reemplaza los archivos del proyecto en GitHub; no subas el ZIP cerrado dentro del repositorio.
+3. Conserva la carpeta `.github/workflows` que ya existe en tu repositorio.
+4. Ejecuta **Compilar APK**.
 
-La compilación completa no pudo ejecutarse en el entorno donde se preparó esta versión porque allí no está instalado Android SDK. Se realizaron revisiones estáticas de sintaxis, estructura, manifiesto e integridad de autenticación; la validación definitiva es la compilación de Gradle.
+Este entorno no contiene Android SDK ni las dependencias Gradle descargadas. Se verificó balance de sintaxis en todos los archivos Kotlin y no se detectaron errores de estructura, pero la comprobación definitiva sigue siendo la compilación de GitHub Actions.
 
-## Alcance pendiente
+## Limitación real del feed de Shorts
 
-Esta versión no añade todavía la pestaña de comentarios ni acciones de escritura sobre YouTube, como suscribirse o dar Me gusta. Añadir escritura requeriría cambiar los permisos OAuth y volver a autorizar la cuenta, por lo que se mantuvo fuera de esta versión.
-
-## Limitación importante
-
-El reproductor propio no usa el IFrame oficial de YouTube. La obtención de transmisiones depende de NewPipe Extractor y puede requerir actualizaciones cuando YouTube cambie su entrega. Algunos videos con restricciones de edad, país, membresía, pago o DRM pueden necesitar abrirse externamente.
+La API pública de YouTube no expone el algoritmo privado exacto de YouTube Shorts. Geo Videos crea un feed aproximado usando suscripciones, historial, Me gusta y términos frecuentes. Debe ser bastante más relevante que la búsqueda genérica anterior, pero no será idéntico al feed de la aplicación oficial.
 
 ## Licencias
 
-El proyecto incluye NewPipe Extractor, distribuido bajo GNU GPL v3. Consulta `THIRD_PARTY_NOTICES.md` y `COPYING` antes de publicar una APK.
-
-
-## Corrección V13.1
-
-- Corrige la referencia inválida `contentScale` en el avatar del canal.
-- Respeta el modo `Fit` o `Crop` solicitado por cada miniatura.
+El reproductor propio utiliza NewPipe Extractor bajo GNU GPL v3. Consulta `THIRD_PARTY_NOTICES.md` y `COPYING` antes de publicar la APK.

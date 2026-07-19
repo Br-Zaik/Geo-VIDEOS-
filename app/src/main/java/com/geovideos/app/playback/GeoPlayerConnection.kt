@@ -17,8 +17,11 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.CancellationException
@@ -36,6 +39,8 @@ data class PlaybackUiState(
     val bufferedPercentage: Int = 0,
     val videoWidth: Int = 0,
     val videoHeight: Int = 0,
+    val playbackState: Int = Player.STATE_IDLE,
+    val repeatMode: Int = Player.REPEAT_MODE_OFF,
     val error: String? = null
 )
 
@@ -53,6 +58,9 @@ class GeoPlayerConnection private constructor(context: Context) {
     private val _state = MutableStateFlow(PlaybackUiState())
     val state: StateFlow<PlaybackUiState> = _state.asStateFlow()
 
+    private val _endedEvents = MutableSharedFlow<String>(extraBufferCapacity = 1)
+    val endedEvents: SharedFlow<String> = _endedEvents.asSharedFlow()
+
     private var currentVideo: VideoItem? = null
     private var resolveJob: Job? = null
     private var requestSerial: Long = 0L
@@ -60,6 +68,15 @@ class GeoPlayerConnection private constructor(context: Context) {
 
     private val listener = object : Player.Listener {
         override fun onEvents(player: Player, events: Player.Events) = updateFrom(player)
+
+        override fun onPlaybackStateChanged(playbackState: Int) {
+            val player = _controller.value ?: return
+            if (playbackState == Player.STATE_ENDED && player.repeatMode != Player.REPEAT_MODE_ONE) {
+                val mediaId = player.currentMediaItem?.mediaId.orEmpty()
+                if (mediaId.isNotBlank()) _endedEvents.tryEmit(mediaId)
+            }
+            updateFrom(player)
+        }
 
         override fun onPlayerError(error: PlaybackException) {
             _state.update {
@@ -101,22 +118,33 @@ class GeoPlayerConnection private constructor(context: Context) {
         scope.launch {
             while (isActive) {
                 _controller.value?.let(::updateFrom)
-                delay(750L)
+                delay(1_000L)
             }
         }
     }
 
-    fun open(video: VideoItem, autoplay: Boolean, dataSaver: Boolean) {
+    fun open(
+        video: VideoItem,
+        autoplay: Boolean,
+        dataSaver: Boolean,
+        repeat: Boolean = false
+    ) {
         val controllerNow = _controller.value
         if (
             currentVideo?.id == video.id &&
             controllerNow?.currentMediaItem?.mediaId == video.id &&
             controllerNow.mediaItemCount > 0
         ) {
+            controllerNow.repeatMode = if (repeat) Player.REPEAT_MODE_ONE else Player.REPEAT_MODE_OFF
             if (autoplay && controllerNow.playbackState == Player.STATE_IDLE) controllerNow.prepare()
+            if (autoplay && controllerNow.playbackState == Player.STATE_ENDED) {
+                controllerNow.seekTo(0L)
+                controllerNow.play()
+            }
             return
         }
 
+        controllerNow?.pause()
         currentVideo = video
         resolveJob?.cancel()
         requestSerial += 1L
@@ -146,6 +174,7 @@ class GeoPlayerConnection private constructor(context: Context) {
                         .setMimeType(resolved.mimeType)
                         .setMediaMetadata(metadata)
                         .build()
+                    controller.repeatMode = if (repeat) Player.REPEAT_MODE_ONE else Player.REPEAT_MODE_OFF
                     controller.setMediaItem(item, video.resumePositionMs.coerceAtLeast(0L))
                     controller.prepare()
                     controller.playWhenReady = autoplay
@@ -220,6 +249,8 @@ class GeoPlayerConnection private constructor(context: Context) {
                 bufferedPercentage = player.bufferedPercentage.coerceIn(0, 100),
                 videoWidth = player.videoSize.width.coerceAtLeast(0),
                 videoHeight = player.videoSize.height.coerceAtLeast(0),
+                playbackState = player.playbackState,
+                repeatMode = player.repeatMode,
                 error = player.playerError?.localizedMessage ?: it.error
             )
         }

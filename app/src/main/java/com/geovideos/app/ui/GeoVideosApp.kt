@@ -17,6 +17,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -36,6 +37,8 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.pager.VerticalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -73,6 +76,7 @@ import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.PlaylistPlay
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Replay
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Speed
@@ -144,6 +148,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.session.MediaController
 import androidx.media3.ui.PlayerView
@@ -159,6 +164,9 @@ import com.geovideos.app.data.VideoItem
 import com.geovideos.app.data.VideoDetails
 import com.geovideos.app.playback.GeoPlayerConnection
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 
 private const val PACKAGE_NAME = "com.geovideos.app"
 private const val DEV_SHA1 = "61:39:FF:D0:D5:6B:DC:06:FA:13:AD:3D:7A:88:93:9F:6D:4A:52:7F"
@@ -175,6 +183,7 @@ fun GeoVideosApp(
     val playerConnection = remember(context.applicationContext) {
         GeoPlayerConnection.get(context.applicationContext)
     }
+    var autoAdvancedVideoId by remember { mutableStateOf("") }
 
     LaunchedEffect(state.message) {
         state.message?.let {
@@ -211,13 +220,27 @@ fun GeoVideosApp(
         }
     }
 
-    LaunchedEffect(selectedVideo?.id, state.autoplay, state.dataSaver) {
+    LaunchedEffect(selectedVideo?.id, state.autoplay, state.dataSaver, state.section, state.playerExpanded) {
+        autoAdvancedVideoId = ""
         selectedVideo?.let { video ->
+            val shouldAutoplay = if (state.section == MainSection.SHORTS && !state.playerExpanded) true else state.autoplay
             playerConnection.open(
                 video = video,
-                autoplay = state.autoplay,
-                dataSaver = state.dataSaver
+                autoplay = shouldAutoplay,
+                dataSaver = state.dataSaver,
+                repeat = state.section == MainSection.SHORTS && !state.playerExpanded
             )
+        }
+    }
+
+    LaunchedEffect(state.autoplay, selectedVideo?.id) {
+        playerConnection.endedEvents.collect { endedVideoId ->
+            val current = selectedVideo
+            if (state.section != MainSection.SHORTS && state.autoplay && current?.id == endedVideoId && autoAdvancedVideoId != endedVideoId) {
+                autoAdvancedVideoId = endedVideoId
+                delay(900L)
+                viewModel.playNext()
+            }
         }
     }
 
@@ -239,11 +262,13 @@ fun GeoVideosApp(
                 MainShell(
                     state = state,
                     snackbar = snackbar,
+                    playerConnection = playerConnection,
                     onConnectGoogle = onConnectGoogle,
                     onSwitchGoogleAccount = onSwitchGoogleAccount,
                     onSection = viewModel::selectSection,
                     onCategory = viewModel::selectHomeCategory,
                     onPlay = viewModel::play,
+                    onPreviewShort = viewModel::previewShort,
                     onWatchLater = viewModel::toggleWatchLater,
                     onSearch = viewModel::search,
                     onRefresh = viewModel::refresh,
@@ -287,6 +312,7 @@ fun GeoVideosApp(
                             },
                             onWatchLater = { viewModel.toggleWatchLater(selectedVideo) },
                             onPlayRelated = viewModel::play,
+                            onPlayNext = viewModel::playNext,
                             onWatchLaterRelated = viewModel::toggleWatchLater,
                             onLoadMoreRelated = viewModel::loadMoreRelated,
                             onOpenChannel = { channel ->
@@ -298,7 +324,7 @@ fun GeoVideosApp(
                             onMessage = viewModel::showMessage
                         )
                     }
-                } else {
+                } else if (state.section != MainSection.SHORTS) {
                     selectedVideo?.let { video ->
                         MiniPlayer(
                             video = video,
@@ -420,11 +446,13 @@ private fun GoogleConnectScreen(
 private fun MainShell(
     state: GeoVideosUiState,
     snackbar: SnackbarHostState,
+    playerConnection: GeoPlayerConnection,
     onConnectGoogle: () -> Unit,
     onSwitchGoogleAccount: (String) -> Unit,
     onSection: (MainSection) -> Unit,
     onCategory: (HomeCategory) -> Unit,
     onPlay: (VideoItem) -> Unit,
+    onPreviewShort: (VideoItem) -> Unit,
     onWatchLater: (VideoItem) -> Unit,
     onSearch: (String) -> Unit,
     onRefresh: () -> Unit,
@@ -491,7 +519,8 @@ private fun MainShell(
 
     Scaffold(
         topBar = {
-            TopAppBar(
+            if (state.section != MainSection.SHORTS) {
+                TopAppBar(
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background),
                 title = {
                     Row(verticalAlignment = Alignment.CenterVertically) {
@@ -515,7 +544,8 @@ private fun MainShell(
                     ProfileAvatar(profile = state.profile, size = 34.dp, onClick = { onSection(MainSection.ACCOUNT) })
                     Spacer(Modifier.width(8.dp))
                 }
-            )
+                )
+            }
         },
         bottomBar = {
             NavigationBar {
@@ -555,7 +585,11 @@ private fun MainShell(
                 loading = state.loading,
                 loadingMore = state.shortsLoadingMore,
                 canLoadMore = state.shortsCanLoadMore,
+                playerConnection = playerConnection,
+                playerExpanded = state.playerExpanded,
+                dataSaver = state.dataSaver,
                 onLoadMore = onLoadMoreShorts,
+                onPreview = onPreviewShort,
                 onPlay = onPlay,
                 onWatchLater = onWatchLater
             )
@@ -580,6 +614,9 @@ private fun MainShell(
                 uploadsCanLoadMore = state.uploadsCanLoadMore,
                 playlists = state.playlists,
                 subscriptions = state.subscriptions,
+                subscriptionVideos = state.personalized.filter { video ->
+                    state.subscriptions.any { channel -> channel.id == video.channelId }
+                },
                 downloads = state.downloads,
                 onPlay = onPlay,
                 onWatchLater = onWatchLater,
@@ -840,6 +877,7 @@ private fun FeaturedCard(video: VideoItem, onPlay: (VideoItem) -> Unit) {
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun ShortsScreen(
     modifier: Modifier,
@@ -847,69 +885,183 @@ private fun ShortsScreen(
     loading: Boolean,
     loadingMore: Boolean,
     canLoadMore: Boolean,
+    playerConnection: GeoPlayerConnection,
+    playerExpanded: Boolean,
+    dataSaver: Boolean,
     onLoadMore: () -> Unit,
+    onPreview: (VideoItem) -> Unit,
     onPlay: (VideoItem) -> Unit,
     onWatchLater: (VideoItem) -> Unit
 ) {
-    val listState = rememberLazyListState()
-    val shouldLoadMore by remember(listState, videos.size) {
-        derivedStateOf {
-            val lastVisible = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
-            val total = listState.layoutInfo.totalItemsCount
-            total > 0 && videos.isNotEmpty() && lastVisible >= total - 3
-        }
+    if (loading && videos.isEmpty()) {
+        Box(modifier = modifier.fillMaxSize(), contentAlignment = Alignment.Center) { LoadingBlock() }
+        return
     }
-    LaunchedEffect(shouldLoadMore, loadingMore, canLoadMore) {
-        if (shouldLoadMore && !loadingMore && canLoadMore) onLoadMore()
+    if (videos.isEmpty()) {
+        Box(modifier = modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            EmptyBlock("No encontramos Shorts relacionados con tus suscripciones e historial.")
+        }
+        return
     }
 
-    LazyColumn(
-        state = listState,
-        modifier = modifier.fillMaxSize(),
-        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 12.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp)
-    ) {
-        item(contentType = "shorts-heading") {
-            SectionHeader("Clips verticales", "Resultados cortos disponibles en YouTube")
-        }
-        if (loading && videos.isEmpty()) {
-            item(contentType = "shorts-loading") { LoadingBlock() }
-        } else {
-            items(videos, key = { "short-${it.id}" }, contentType = { "short" }) { video ->
-                Card(onClick = { onPlay(video) }, shape = RoundedCornerShape(24.dp), modifier = Modifier.fillMaxWidth()) {
-                    Box(modifier = Modifier.fillMaxWidth().aspectRatio(9f / 14f)) {
-                        Thumbnail(video.thumbnailUrl, Modifier.fillMaxSize())
-                        Box(modifier = Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(0.85f)))))
-                        Column(modifier = Modifier.align(Alignment.BottomStart).padding(18.dp).fillMaxWidth(0.82f)) {
-                            Text(video.title, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleLarge, maxLines = 3, overflow = TextOverflow.Ellipsis)
-                            Text(video.channelTitle, color = Color.White.copy(0.75f), modifier = Modifier.padding(top = 6.dp))
-                        }
-                        IconButton(onClick = { onWatchLater(video) }, modifier = Modifier.align(Alignment.BottomEnd).padding(10.dp)) {
-                            Icon(Icons.Outlined.WatchLater, "Ver después")
-                        }
+    val pagerState = rememberPagerState(pageCount = { videos.size })
+    val controller by playerConnection.controller.collectAsStateWithLifecycle()
+    val playback by remember(playerConnection) {
+        playerConnection.state
+            .map { state ->
+                state.copy(positionMs = 0L, durationMs = 0L, bufferedPercentage = 0)
+            }
+            .distinctUntilChanged()
+    }.collectAsStateWithLifecycle(initialValue = com.geovideos.app.playback.PlaybackUiState())
+
+    LaunchedEffect(pagerState.currentPage, videos.size) {
+        val current = videos.getOrNull(pagerState.currentPage) ?: return@LaunchedEffect
+        onPreview(current)
+        playerConnection.setRepeat(true)
+        playerConnection.preload(videos.drop(pagerState.currentPage + 1).take(2), dataSaver)
+    }
+    LaunchedEffect(pagerState.currentPage, videos.size, loadingMore, canLoadMore) {
+        if (pagerState.currentPage >= videos.lastIndex - 2 && !loadingMore && canLoadMore) onLoadMore()
+    }
+    LaunchedEffect(playerExpanded, pagerState.currentPage) {
+        if (!playerExpanded) playerConnection.setRepeat(true)
+    }
+    DisposableEffect(Unit) {
+        onDispose { playerConnection.setRepeat(false) }
+    }
+
+    Box(modifier = modifier.fillMaxSize().background(Color.Black)) {
+        VerticalPager(
+            state = pagerState,
+            modifier = Modifier.fillMaxSize(),
+            beyondViewportPageCount = 1
+        ) { page ->
+            val video = videos[page]
+            val isCurrent = page == pagerState.currentPage && playback.currentVideoId == video.id
+            Box(
+                modifier = Modifier.fillMaxSize().background(Color.Black).clickable {
+                    if (isCurrent && playback.isPlaying) playerConnection.pause()
+                    else if (isCurrent) playerConnection.play()
+                    else onPreview(video)
+                }
+            ) {
+                Thumbnail(
+                    url = video.thumbnailUrl,
+                    modifier = Modifier.fillMaxSize(),
+                    contentScale = ContentScale.Crop
+                )
+                if (!playerExpanded && isCurrent && controller != null && !playback.resolving) {
+                    GeoMediaPlayerView(
+                        controller = controller!!,
+                        useController = false,
+                        resizeMode = androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_ZOOM
+                    )
+                }
+                Box(
+                    modifier = Modifier.fillMaxSize().background(
+                        Brush.verticalGradient(
+                            listOf(
+                                Color.Black.copy(alpha = 0.24f),
+                                Color.Transparent,
+                                Color.Black.copy(alpha = 0.86f)
+                            )
+                        )
+                    )
+                )
+                Surface(
+                    color = Color.Black.copy(alpha = 0.46f),
+                    shape = RoundedCornerShape(18.dp),
+                    modifier = Modifier.align(Alignment.TopStart).padding(start = 14.dp, top = 36.dp)
+                ) {
+                    Text(
+                        "Para ti · Tus gustos",
+                        color = Color.White,
+                        fontWeight = FontWeight.SemiBold,
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp)
+                    )
+                }
+
+                if (isCurrent && (playback.resolving || playback.connecting)) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.align(Alignment.Center).size(42.dp),
+                        strokeWidth = 4.dp
+                    )
+                } else if (isCurrent && !playback.isPlaying) {
+                    FilledIconButton(
+                        onClick = { playerConnection.play() },
+                        modifier = Modifier.align(Alignment.Center).size(66.dp)
+                    ) { Icon(Icons.Default.PlayArrow, "Reproducir", modifier = Modifier.size(40.dp)) }
+                }
+
+                Column(
+                    modifier = Modifier.align(Alignment.BottomStart).fillMaxWidth(0.80f).padding(18.dp)
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        ChannelAvatar(video.channelThumbnailUrl, video.channelTitle, 38.dp)
+                        Text(
+                            video.channelTitle,
+                            color = Color.White,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.padding(start = 10.dp),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
                     }
+                    Text(
+                        video.title,
+                        color = Color.White,
+                        fontWeight = FontWeight.Bold,
+                        style = MaterialTheme.typography.titleMedium,
+                        maxLines = 3,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.padding(top = 12.dp)
+                    )
+                }
+                Column(
+                    modifier = Modifier.align(Alignment.BottomEnd).padding(end = 10.dp, bottom = 22.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    IconButton(
+                        onClick = { onWatchLater(video) },
+                        modifier = Modifier.background(Color.Black.copy(alpha = 0.45f), CircleShape)
+                    ) { Icon(Icons.Outlined.WatchLater, "Ver después", tint = Color.White) }
+                    IconButton(
+                        onClick = {
+                            playerConnection.setRepeat(false)
+                            onPlay(video)
+                        },
+                        modifier = Modifier.background(Color.Black.copy(alpha = 0.45f), CircleShape)
+                    ) { Icon(Icons.Default.Fullscreen, "Abrir completo", tint = Color.White) }
+                }
+                if (isCurrent) {
+                    ShortProgress(
+                        playerConnection = playerConnection,
+                        modifier = Modifier.align(Alignment.BottomCenter).fillMaxWidth().height(3.dp)
+                    )
                 }
             }
         }
         if (loadingMore) {
-            item(contentType = "shorts-more") {
-                Box(
-                    modifier = Modifier.fillMaxWidth().padding(vertical = 22.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    CircularProgressIndicator(modifier = Modifier.size(28.dp), strokeWidth = 3.dp)
-                }
-            }
-        } else if (!canLoadMore && videos.isNotEmpty()) {
-            item(contentType = "shorts-end") {
-                Text(
-                    "No hay más Shorts disponibles por ahora.",
-                    modifier = Modifier.fillMaxWidth().padding(20.dp),
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    textAlign = androidx.compose.ui.text.style.TextAlign.Center
-                )
-            }
+            CircularProgressIndicator(
+                modifier = Modifier.align(Alignment.TopCenter).padding(top = 12.dp).size(25.dp),
+                strokeWidth = 3.dp
+            )
         }
+    }
+}
+
+@Composable
+private fun ShortProgress(
+    playerConnection: GeoPlayerConnection,
+    modifier: Modifier = Modifier
+) {
+    val playback by playerConnection.state.collectAsStateWithLifecycle()
+    if (playback.durationMs > 0L) {
+        LinearProgressIndicator(
+            progress = { (playback.positionMs.toFloat() / playback.durationMs.toFloat()).coerceIn(0f, 1f) },
+            modifier = modifier
+        )
     }
 }
 
@@ -1009,6 +1161,7 @@ private fun LibraryScreen(
     uploadsCanLoadMore: Boolean,
     playlists: List<PlaylistItem>,
     subscriptions: List<ChannelItem>,
+    subscriptionVideos: List<VideoItem>,
     downloads: List<VideoItem>,
     onPlay: (VideoItem) -> Unit,
     onWatchLater: (VideoItem) -> Unit,
@@ -1024,6 +1177,16 @@ private fun LibraryScreen(
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
         item { LibraryShortcutRow(history.size, watchLater.size, liked.size, onAddDownload) }
+        if (subscriptions.isNotEmpty()) {
+            item {
+                SubscriptionShelf(
+                    subscriptions = subscriptions,
+                    recentVideos = subscriptionVideos,
+                    onOpenChannel = onOpenChannel,
+                    onPlay = onPlay
+                )
+            }
+        }
         item { SectionHeader("Mis videos", "Videos subidos a tu canal de YouTube") }
         if (uploads.isEmpty()) {
             item { EmptyBlock("Tu canal no tiene videos subidos o YouTube no devolvió esa lista.") }
@@ -1070,14 +1233,6 @@ private fun LibraryScreen(
                 }
             }
         }
-        if (subscriptions.isNotEmpty()) {
-            item { SectionHeader("Suscripciones", "Abre un canal para ver sus publicaciones recientes") }
-            item {
-                LazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    items(subscriptions, key = { "sub-${it.id}" }) { channel -> ChannelCard(channel) { onOpenChannel(channel) } }
-                }
-            }
-        }
         item { SectionHeader("Descargas directas", "Archivos propios o autorizados. YouTube no entrega el archivo para descargar.") }
         item {
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -1105,6 +1260,73 @@ private fun LibraryScreen(
             }
         }
         item { Spacer(Modifier.height(12.dp)) }
+    }
+}
+
+@Composable
+private fun SubscriptionShelf(
+    subscriptions: List<ChannelItem>,
+    recentVideos: List<VideoItem>,
+    onOpenChannel: (ChannelItem) -> Unit,
+    onPlay: (VideoItem) -> Unit
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+    ) {
+        Column(modifier = Modifier.padding(vertical = 14.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(Icons.Default.Subscriptions, null, tint = MaterialTheme.colorScheme.primary)
+                Column(modifier = Modifier.weight(1f).padding(start = 10.dp)) {
+                    Text("Suscripciones", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        "${subscriptions.size} canales · toca uno para ver sus publicaciones",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+            LazyRow(
+                contentPadding = PaddingValues(horizontal = 10.dp),
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                modifier = Modifier.padding(top = 10.dp)
+            ) {
+                items(subscriptions, key = { "subscription-shelf-${it.id}" }) { channel ->
+                    ChannelCard(channel) { onOpenChannel(channel) }
+                }
+            }
+            if (recentVideos.isNotEmpty()) {
+                Text(
+                    "Últimos de tus suscripciones",
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp)
+                )
+                LazyRow(
+                    contentPadding = PaddingValues(horizontal = 12.dp),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    items(recentVideos.take(10), key = { "subscription-video-${it.id}" }) { video ->
+                        Card(onClick = { onPlay(video) }, modifier = Modifier.width(230.dp)) {
+                            Thumbnail(video.thumbnailUrl, Modifier.fillMaxWidth().aspectRatio(16f / 9f))
+                            Column(modifier = Modifier.padding(10.dp)) {
+                                Text(video.title, fontWeight = FontWeight.SemiBold, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                                Text(
+                                    video.channelTitle,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.padding(top = 4.dp)
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -1165,7 +1387,7 @@ private fun AccountScreen(
         Text(profile?.email.orEmpty(), color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 4.dp))
 
         Spacer(Modifier.height(24.dp))
-        SettingSwitch("Reproducción automática", "Inicia el video al abrir el reproductor", autoplay, onAutoplayChange)
+        SettingSwitch("Reproducción automática", "Inicia el video y pasa al siguiente al terminar", autoplay, onAutoplayChange)
         SettingSwitch("Ahorro de datos", "Prioriza una calidad menor y reduce el consumo de red", dataSaver, onDataSaverChange)
         SettingSwitch("Avisos en la app", "Sincroniza actividad disponible para la campana", notificationsEnabled, onNotificationsChange)
 
@@ -1300,6 +1522,7 @@ private fun PlayerScreen(
     onClose: () -> Unit,
     onWatchLater: () -> Unit,
     onPlayRelated: (VideoItem) -> Unit,
+    onPlayNext: () -> Unit,
     onWatchLaterRelated: (VideoItem) -> Unit,
     onLoadMoreRelated: () -> Unit,
     onOpenChannel: (ChannelItem) -> Unit,
@@ -1308,10 +1531,18 @@ private fun PlayerScreen(
     onMessage: (String) -> Unit
 ) {
     val context = LocalContext.current
-    val playback by playerConnection.state.collectAsStateWithLifecycle()
+    val playback by remember(playerConnection) {
+        playerConnection.state
+            .map { state ->
+                state.copy(
+                    positionMs = 0L,
+                    durationMs = if (state.durationMs > 0L) 1L else 0L,
+                    bufferedPercentage = 0
+                )
+            }
+            .distinctUntilChanged()
+    }.collectAsStateWithLifecycle(initialValue = com.geovideos.app.playback.PlaybackUiState())
     val controller by playerConnection.controller.collectAsStateWithLifecycle()
-    val currentPositionMs = playback.positionMs
-    val durationMs = playback.durationMs
     val isPlaying = playback.isPlaying
     val listState = rememberLazyListState()
 
@@ -1346,7 +1577,9 @@ private fun PlayerScreen(
     }
 
     fun saveProgress() {
-        onSavePlayback(video, currentPositionMs, durationMs)
+        val positionMs = controller?.currentPosition?.coerceAtLeast(0L) ?: 0L
+        val durationMs = controller?.duration?.takeIf { it > 0L } ?: video.durationMs
+        onSavePlayback(video, positionMs, durationMs)
     }
 
     fun minimize() {
@@ -1530,6 +1763,16 @@ private fun PlayerScreen(
                                     onClick = { if (isPlaying) playerConnection.pause() else playerConnection.play() },
                                     label = { Text(if (isPlaying) "Pausar" else "Reproducir") },
                                     leadingIcon = { Icon(if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow, null) }
+                                )
+                            }
+                            item {
+                                AssistChip(
+                                    onClick = {
+                                        repeatEnabled = !repeatEnabled
+                                        playerConnection.setRepeat(repeatEnabled)
+                                    },
+                                    label = { Text(if (repeatEnabled) "Repitiendo" else "Repetir") },
+                                    leadingIcon = { Icon(Icons.Default.Replay, null) }
                                 )
                             }
                             item {
@@ -1928,18 +2171,22 @@ private fun MiniPlayer(
 
 @androidx.annotation.OptIn(markerClass = [UnstableApi::class])
 @Composable
-private fun GeoMediaPlayerView(controller: MediaController) {
+private fun GeoMediaPlayerView(
+    controller: MediaController,
+    useController: Boolean = true,
+    resizeMode: Int = androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_FIT
+) {
     AndroidView(
         modifier = Modifier.fillMaxSize().background(Color.Black),
         factory = { context ->
             PlayerView(context).apply {
                 player = controller
-                useController = true
-                controllerAutoShow = true
+                this.useController = useController
+                controllerAutoShow = useController
                 controllerHideOnTouch = true
                 controllerShowTimeoutMs = 2_500
                 keepScreenOn = true
-                resizeMode = androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_FIT
+                this.resizeMode = resizeMode
                 setShowBuffering(PlayerView.SHOW_BUFFERING_NEVER)
                 setShowRewindButton(true)
                 setShowFastForwardButton(true)
@@ -1949,6 +2196,9 @@ private fun GeoMediaPlayerView(controller: MediaController) {
         },
         update = { view ->
             if (view.player !== controller) view.player = controller
+            view.useController = useController
+            view.controllerAutoShow = useController
+            view.resizeMode = resizeMode
         }
     )
 }
