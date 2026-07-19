@@ -73,6 +73,26 @@ class YouTubeApi {
 
     suspend fun liveVideos(token: String): List<VideoItem> = searchVideos(token, "en vivo", liveOnly = true)
 
+    suspend fun musicVideos(token: String): List<VideoItem> = mostPopular(token, "10")
+
+    suspend fun channelActivities(token: String, channelId: String, maxResults: Int = 4): List<VideoItem> = withContext(Dispatchers.IO) {
+        if (channelId.isBlank()) return@withContext emptyList()
+        val json = requestJson(
+            "https://www.googleapis.com/youtube/v3/activities?part=snippet,contentDetails&channelId=${encode(channelId)}&maxResults=$maxResults",
+            token
+        )
+        val items = json.optJSONArray("items") ?: return@withContext emptyList()
+        buildList {
+            for (index in 0 until items.length()) {
+                val item = items.optJSONObject(index) ?: continue
+                val snippet = item.optJSONObject("snippet") ?: continue
+                val details = item.optJSONObject("contentDetails")
+                val videoId = details?.optJSONObject("upload")?.optString("videoId").orEmpty()
+                if (videoId.isNotBlank()) add(videoFromSnippet(videoId, snippet))
+            }
+        }
+    }
+
     suspend fun shorts(token: String): List<VideoItem> = searchVideos(token, "shorts populares español", shortOnly = true)
 
     suspend fun subscriptions(token: String): List<ChannelItem> = withContext(Dispatchers.IO) {

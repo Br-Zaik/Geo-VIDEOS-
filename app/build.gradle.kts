@@ -14,8 +14,8 @@ android {
         applicationId = "com.geovideos.app"
         minSdk = 23
         targetSdk = 35
-        versionCode = 4
-        versionName = "4.0.0"
+        versionCode = 9
+        versionName = "9.0.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables.useSupportLibrary = true
@@ -90,6 +90,8 @@ dependencies {
 
     implementation("androidx.media3:media3-exoplayer:1.6.1")
     implementation("androidx.media3:media3-ui:1.6.1")
+
+    implementation("com.pierfrancescosoffritti.androidyoutubeplayer:core:13.0.0")
 
     debugImplementation("androidx.compose.ui:ui-tooling")
     debugImplementation("androidx.compose.ui:ui-test-manifest")

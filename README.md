@@ -1,44 +1,50 @@
-# Geo Videos V6
+# Geo Videos V9
 
-Aplicación Android con interfaz propia para consultar y reproducir contenido autorizado mediante YouTube Data API v3.
+Versión reconstruida para corregir los problemas visibles de V6 y ofrecer una navegación más cercana a una aplicación de videos real, conservando una identidad propia.
 
-## Mejoras de esta versión
+## Cambios principales
 
-- Reproductor de YouTube reconstruido con IFrame Player API desde un origen HTTPS interno identificado.
-- Detección de errores del reproductor y botón para abrir el video en YouTube cuando no admite inserción.
-- Pantalla completa del reproductor incrustado y ventana flotante de Android cuando el dispositivo lo permite.
-- Controles de reproducción: reproducir/pausar, silencio, repetición, velocidad y temporizador.
-- Historial con posición de reproducción para continuar donde se dejó el video.
-- Flecha de actualización real con bloqueo de toques repetidos y conservación de datos si falla la red.
-- Preferencias persistentes de reproducción automática, ahorro de datos y avisos.
-- Descargas directas con opción de solo Wi-Fi, progreso, estado, eliminación y acceso al gestor de descargas del teléfono.
-- Indicadores de progreso en los videos empezados.
+- Barra inferior: **Principal, Shorts, Buscar, Colección y Cuenta**.
+- Inicio compacto con pestañas **Para ti, En vivo, Juegos y Música**.
+- El apartado **Para ti** se arma con publicaciones recientes de canales suscritos, actividad disponible, videos con Me gusta, historial local y contenido popular de respaldo.
+- Actualización mediante la flecha superior y deslizando hacia abajo.
+- Sesión persistente: al reabrir la app muestra los datos guardados y trata de renovar el acceso silenciosamente; no abre Google de forma automática cuando se necesita una confirmación.
+- Botón **Renovar acceso** en Cuenta para cuando Google solicite autorización nuevamente.
+- Reproductor de YouTube reemplazado por un componente Android mantenido, con video, audio y controles oficiales integrados.
+- Pantalla completa, velocidad, silencio, repetición, temporizador y ventana flotante.
+- Minirreproductor sobre la barra inferior al minimizar un video.
+- Historial y posición de reproducción guardados para continuar donde se dejó.
+- Búsqueda, suscripciones, listas, videos con Me gusta, campana de actividad y perfil de Google.
+- Descargas reales para enlaces directos propios o autorizados, con registro y gestión desde Colección.
 
-## Funciones principales
+## Configuración de Google
 
-- Selector real de cuenta Google mediante Google Identity Services.
-- Perfil y canal de YouTube.
-- Inicio con tendencias, transmisiones en vivo y gaming.
-- Búsqueda de videos y Shorts.
-- Suscripciones, playlists y videos con Me gusta.
-- Historial y Ver después guardados localmente.
-- Campana de actividad disponible mediante la API pública.
-- Reproductor incrustado de YouTube.
-- Descarga de enlaces directos a archivos autorizados mediante el gestor de descargas de Android.
-
-## Configuración de Google ya realizada
-
-El cliente OAuth de Android debe conservar estos datos:
+La aplicación conserva los datos ya registrados:
 
 - Paquete: `com.geovideos.app`
 - SHA-1: `61:39:FF:D0:D5:6B:DC:06:FA:13:AD:3D:7A:88:93:9F:6D:4A:52:7F`
 
-La APK mantiene la misma clave de desarrollo para que el inicio de sesión configurado continúe funcionando. No cambies el paquete ni la firma sin registrar el nuevo SHA-1 en Google Cloud.
+No hace falta repetir la configuración de Google Cloud mientras no cambien el paquete ni la firma.
 
-## Límites reales
+## Límites
 
-La API pública no entrega el historial oficial completo, `Ver más tarde` ni toda la bandeja privada de notificaciones. Esas partes se gestionan localmente o con la actividad que la API sí expone.
+La API pública de YouTube no entrega el feed privado exacto de Inicio, el historial oficial completo, Ver más tarde ni toda la bandeja privada de notificaciones. Geo Videos crea un feed personalizado aproximado usando los datos que la cuenta sí autoriza y el historial guardado por la propia aplicación.
 
-Geo Videos no elimina anuncios ni extrae archivos de videos de YouTube. El botón de descarga para YouTube muestra la limitación; las descargas reales funcionan con URLs directas de archivos propios o autorizados.
+Geo Videos no extrae archivos ni elimina anuncios de YouTube. Las descargas se limitan a enlaces directos de contenido propio o autorizado.
 
-La clave de desarrollo incluida conserva el SHA-1 actual, pero no debe utilizarse para una publicación comercial. Antes de distribuir la app públicamente se debe migrar a una firma privada guardada en GitHub Secrets y registrar su nueva huella.
+## Firma
+
+La clave de desarrollo incluida mantiene el SHA-1 actual para las pruebas. No debe utilizarse para una publicación comercial; para distribución pública se debe migrar a una firma privada guardada en GitHub Secrets.
+
+
+## V8
+
+- Corrige el error de compilacion por uso nullable de `selectedVideo` en el reproductor expandido.
+- Conserva el mismo paquete y la misma firma de desarrollo.
+
+
+## V9
+
+- Agrega la extension segura `Context.findActivity()` usada por pantalla completa y ventana flotante.
+- Corrige el error de compilacion `Unresolved reference: findActivity`.
+- Mantiene el mismo paquete y la misma firma de desarrollo para conservar el acceso de Google.

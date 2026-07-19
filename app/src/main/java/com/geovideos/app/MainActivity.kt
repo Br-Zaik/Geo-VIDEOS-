@@ -41,31 +41,40 @@ class MainActivity : ComponentActivity() {
             GeoVideosTheme {
                 GeoVideosApp(
                     viewModel = viewModel,
-                    onConnectGoogle = ::connectGoogle,
+                    onConnectGoogle = { requestGoogleAuthorization(allowResolution = true) },
                     onSwitchGoogleAccount = ::switchGoogleAccount
                 )
             }
         }
 
         if (savedInstanceState == null) {
-            window.decorView.postDelayed({ connectGoogle() }, 350)
+            window.decorView.postDelayed(
+                { requestGoogleAuthorization(allowResolution = false) },
+                350
+            )
         }
     }
 
-    private fun connectGoogle() {
-        viewModel.beginAuthorization()
-        val scopes = requestedScopes()
+    private fun requestGoogleAuthorization(allowResolution: Boolean) {
+        if (allowResolution) viewModel.beginAuthorization()
         val request = AuthorizationRequest.builder()
-            .setRequestedScopes(scopes)
+            .setRequestedScopes(requestedScopes())
             .build()
 
         Identity.getAuthorizationClient(this)
             .authorize(request)
             .addOnSuccessListener { result ->
                 if (result.hasResolution()) {
+                    if (!allowResolution) {
+                        viewModel.onSilentAuthorizationUnavailable()
+                        return@addOnSuccessListener
+                    }
                     val pendingIntent = result.pendingIntent
                     if (pendingIntent == null) {
-                        viewModel.onAuthorizationFailure("Google no pudo abrir el selector de cuentas.", false)
+                        viewModel.onAuthorizationFailure(
+                            "Google no pudo abrir el selector de cuentas.",
+                            false
+                        )
                     } else {
                         authorizationLauncher.launch(
                             IntentSenderRequest.Builder(pendingIntent.intentSender).build()
@@ -76,16 +85,25 @@ class MainActivity : ComponentActivity() {
                 }
             }
             .addOnFailureListener { error ->
-                if (error is ApiException) reportAuthorizationError(error)
-                else viewModel.onAuthorizationFailure(error.message ?: "No se pudo conectar Google.", false)
+                if (!allowResolution) {
+                    viewModel.onSilentAuthorizationFailure(
+                        error.message ?: "No se pudo renovar la sesión en segundo plano."
+                    )
+                } else if (error is ApiException) {
+                    reportAuthorizationError(error)
+                } else {
+                    viewModel.onAuthorizationFailure(
+                        error.message ?: "No se pudo conectar Google.",
+                        false
+                    )
+                }
             }
     }
-
 
     private fun switchGoogleAccount(email: String) {
         if (email.isBlank()) {
             viewModel.disconnect()
-            connectGoogle()
+            requestGoogleAuthorization(allowResolution = true)
             return
         }
         val request = RevokeAccessRequest.builder()
@@ -96,7 +114,7 @@ class MainActivity : ComponentActivity() {
             .revokeAccess(request)
             .addOnCompleteListener {
                 viewModel.disconnect()
-                connectGoogle()
+                requestGoogleAuthorization(allowResolution = true)
             }
     }
 
@@ -113,7 +131,7 @@ class MainActivity : ComponentActivity() {
         val likelySetupProblem = error.statusCode == 10 ||
             error.message.orEmpty().contains("DEVELOPER_ERROR", ignoreCase = true)
         val message = if (likelySetupProblem) {
-            "Google rechazó la firma de la APK. Activa YouTube Data API v3 y registra el paquete y SHA-1 indicados en la pantalla."
+            "Google rechazó la firma de la APK. Revisa el paquete y SHA-1 registrados."
         } else {
             error.message ?: "Google no autorizó el acceso. Código ${error.statusCode}."
         }
