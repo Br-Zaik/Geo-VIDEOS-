@@ -5,7 +5,6 @@ import android.app.Activity
 import android.app.DownloadManager
 import android.app.PictureInPictureParams
 import android.content.pm.ActivityInfo
-import android.content.res.Configuration
 import android.content.Context
 import android.content.ContextWrapper
 import android.content.Intent
@@ -13,6 +12,9 @@ import android.net.Uri
 import android.os.Build
 import android.os.Environment
 import android.util.Rational
+import java.text.SimpleDateFormat
+import java.util.Locale
+import java.util.TimeZone
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -20,6 +22,7 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -107,6 +110,7 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
@@ -116,6 +120,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedCard
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Slider
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
@@ -1517,7 +1522,6 @@ private fun PlayerScreen(
             .distinctUntilChanged()
     }.collectAsStateWithLifecycle(initialValue = com.geovideos.app.playback.PlaybackUiState())
     val controller by playerConnection.controller.collectAsStateWithLifecycle()
-    val isPlaying = playback.isPlaying
     val listState = rememberLazyListState()
 
     var isMuted by rememberSaveable(video.id) { mutableStateOf(false) }
@@ -1589,18 +1593,14 @@ private fun PlayerScreen(
         val currentActivity = activity ?: return@LaunchedEffect
         val insets = WindowInsetsControllerCompat(currentActivity.window, currentActivity.window.decorView)
         if (isFullscreen) {
-            currentActivity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+            currentActivity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
             WindowCompat.setDecorFitsSystemWindows(currentActivity.window, false)
             insets.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
             insets.hide(WindowInsetsCompat.Type.systemBars())
         } else {
+            currentActivity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
             WindowCompat.setDecorFitsSystemWindows(currentActivity.window, true)
             insets.show(WindowInsetsCompat.Type.systemBars())
-            if (currentActivity.resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE) {
-                currentActivity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
-                delay(250L)
-            }
-            currentActivity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
         }
     }
 
@@ -1659,57 +1659,35 @@ private fun PlayerScreen(
             )
         }
 
-    if (isFullscreen) {
-        Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
-            PlayerViewport(
-                video = video,
-                controller = controller,
-                playback = playback,
-                showDelayedLoading = showDelayedLoading,
-                qualityLabel = qualityLabel,
-                playbackSpeed = playbackSpeed,
-                modifier = Modifier.fillMaxSize(),
-                onMinimize = { isFullscreen = false },
-                onClose = ::closePlayer,
-                onSettings = { showSettings = true },
-                onNext = onPlayNext,
-                onFullscreen = { isFullscreen = false },
-                fullscreen = true,
-                resizeMode = if (fillScreenMode) {
-                    androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_ZOOM
-                } else {
-                    androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_FIT
-                },
-                screenModeLabel = if (fillScreenMode) "Rellenar" else "Ajustar",
-                onRetry = { playerConnection.open(video, autoplay, dataSaver, repeatEnabled) },
-                onOpenExternal = { openExternalVideo(context, video, preferYouTubeApp = true) }
-            )
-        }
-    } else {
-        Column(modifier = Modifier.fillMaxSize()) {
-            PlayerViewport(
-                video = video,
-                controller = controller,
-                playback = playback,
-                showDelayedLoading = showDelayedLoading,
-                qualityLabel = qualityLabel,
-                playbackSpeed = playbackSpeed,
-                modifier = embeddedPlayerModifier,
-                onMinimize = ::minimize,
-                onClose = ::closePlayer,
-                onSettings = { showSettings = true },
-                onNext = onPlayNext,
-                onFullscreen = { isFullscreen = true },
-                fullscreen = false,
-                resizeMode = if (fillScreenMode) {
-                    androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_ZOOM
-                } else {
-                    androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_FIT
-                },
-                screenModeLabel = if (fillScreenMode) "Rellenar" else "Ajustar",
-                onRetry = { playerConnection.open(video, autoplay, dataSaver, repeatEnabled) },
-                onOpenExternal = { openExternalVideo(context, video, preferYouTubeApp = true) }
-            )
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(if (isFullscreen) Color.Black else MaterialTheme.colorScheme.background)
+    ) {
+        PlayerViewport(
+            video = video,
+            controller = controller,
+            playback = playback,
+            showDelayedLoading = showDelayedLoading,
+            qualityLabel = qualityLabel,
+            playbackSpeed = playbackSpeed,
+            modifier = if (isFullscreen) Modifier.fillMaxSize() else embeddedPlayerModifier,
+            onMinimize = { if (isFullscreen) isFullscreen = false else minimize() },
+            onClose = ::closePlayer,
+            onSettings = { showSettings = true },
+            onNext = onPlayNext,
+            onFullscreen = { isFullscreen = !isFullscreen },
+            fullscreen = isFullscreen,
+            resizeMode = if (fillScreenMode) {
+                androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_ZOOM
+            } else {
+                androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_FIT
+            },
+            screenModeLabel = if (fillScreenMode) "Rellenar" else "Ajustar",
+            onRetry = { playerConnection.open(video, autoplay, dataSaver, repeatEnabled) },
+            onOpenExternal = { openExternalVideo(context, video, preferYouTubeApp = true) }
+        )
+        if (!isFullscreen) {
             LazyColumn(
                 state = listState,
                 modifier = Modifier.weight(1f).fillMaxWidth(),
@@ -1778,23 +1756,6 @@ private fun PlayerScreen(
                             horizontalArrangement = Arrangement.spacedBy(9.dp),
                             modifier = Modifier.padding(top = 16.dp)
                         ) {
-                            item {
-                                AssistChip(
-                                    onClick = { if (isPlaying) playerConnection.pause() else playerConnection.play() },
-                                    label = { Text(if (isPlaying) "Pausar" else "Reproducir") },
-                                    leadingIcon = { Icon(if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow, null) }
-                                )
-                            }
-                            item {
-                                AssistChip(
-                                    onClick = {
-                                        repeatEnabled = !repeatEnabled
-                                        playerConnection.setRepeat(repeatEnabled)
-                                    },
-                                    label = { Text(if (repeatEnabled) "Repitiendo" else "Repetir") },
-                                    leadingIcon = { Icon(Icons.Default.Replay, null) }
-                                )
-                            }
                             item {
                                 AssistChip(
                                     onClick = { onMessage("Se muestra el conteo. Dar Me gusta requerirá permiso de escritura de YouTube.") },
@@ -2105,6 +2066,42 @@ private fun PlayerViewport(
     onRetry: () -> Unit,
     onOpenExternal: () -> Unit
 ) {
+    var controlsVisible by remember(video.id) { mutableStateOf(true) }
+    var interactionSerial by remember(video.id) { mutableStateOf(0) }
+    var positionMs by remember(video.id) { mutableLongStateOf(0L) }
+    var durationMs by remember(video.id) { mutableLongStateOf(video.durationMs.coerceAtLeast(0L)) }
+    var draggingProgress by remember(video.id) { mutableStateOf(false) }
+    var draggedPositionMs by remember(video.id) { mutableLongStateOf(0L) }
+
+    fun revealControls() {
+        controlsVisible = true
+        interactionSerial += 1
+    }
+
+    LaunchedEffect(controller, video.id, controlsVisible) {
+        while (true) {
+            val activeController = controller
+            if (!draggingProgress && activeController?.currentMediaItem?.mediaId == video.id) {
+                positionMs = activeController.currentPosition.coerceAtLeast(0L)
+                durationMs = activeController.duration.takeIf { it > 0L } ?: durationMs
+            }
+            delay(if (controlsVisible) 350L else 900L)
+        }
+    }
+
+    LaunchedEffect(controlsVisible, interactionSerial, playback.isPlaying, fullscreen) {
+        if (controlsVisible && playback.isPlaying) {
+            delay(2_600L)
+            controlsVisible = false
+        }
+    }
+
+    LaunchedEffect(playback.isPlaying, playback.playbackState) {
+        if (!playback.isPlaying || playback.playbackState == Player.STATE_ENDED) {
+            controlsVisible = true
+        }
+    }
+
     Box(modifier = modifier.background(Color.Black)) {
         Thumbnail(
             video.thumbnailUrl,
@@ -2119,115 +2116,211 @@ private fun PlayerViewport(
         if (controller != null && controller.currentMediaItem?.mediaId == video.id && !playback.resolving) {
             GeoMediaPlayerView(
                 controller = controller,
-                useController = true,
+                useController = false,
                 resizeMode = resizeMode
             )
         }
 
         Box(
             modifier = Modifier
-                .align(Alignment.TopCenter)
-                .fillMaxWidth()
-                .height(70.dp)
-                .background(
-                    Brush.verticalGradient(
-                        listOf(Color.Black.copy(alpha = 0.72f), Color.Transparent)
-                    )
-                )
+                .fillMaxSize()
+                .pointerInput(video.id, fullscreen) {
+                    detectTapGestures(onTap = {
+                        controlsVisible = !controlsVisible
+                        interactionSerial += 1
+                    })
+                }
         )
 
-        Row(
-            modifier = Modifier
-                .align(Alignment.TopCenter)
-                .fillMaxWidth()
-                .padding(horizontal = 6.dp, vertical = 6.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            IconButton(
-                onClick = onMinimize,
-                modifier = Modifier.background(Color.Black.copy(alpha = 0.42f), CircleShape)
-            ) {
-                Icon(
-                    if (fullscreen) Icons.Default.ArrowBack else Icons.Default.KeyboardArrowDown,
-                    if (fullscreen) "Salir de pantalla completa" else "Minimizar",
-                    tint = Color.White
-                )
-            }
-            Spacer(Modifier.weight(1f))
-            Surface(
-                onClick = onSettings,
-                color = Color.Black.copy(alpha = 0.55f),
-                shape = RoundedCornerShape(16.dp)
-            ) {
-                Text(
-                    if (qualityLabel == "Automático") "Auto" else qualityLabel,
-                    color = Color.White,
-                    style = MaterialTheme.typography.labelMedium,
-                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp)
-                )
-            }
-            Spacer(Modifier.width(6.dp))
-            Surface(
-                onClick = onSettings,
-                color = Color.Black.copy(alpha = 0.55f),
-                shape = RoundedCornerShape(16.dp)
-            ) {
-                Text(
-                    "${playbackSpeed}x",
-                    color = Color.White,
-                    style = MaterialTheme.typography.labelMedium,
-                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp)
-                )
-            }
-            IconButton(onClick = onSettings) {
-                Icon(Icons.Default.Settings, "Opciones de reproducción", tint = Color.White)
-            }
-            IconButton(onClick = onClose) {
-                Icon(Icons.Default.Close, "Cerrar", tint = Color.White)
-            }
-        }
+        if (controlsVisible && playback.error == null) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.22f))
+            )
 
-        Row(
-            modifier = Modifier.align(Alignment.BottomEnd).padding(10.dp),
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Surface(
-                onClick = onSettings,
-                color = Color.Black.copy(alpha = 0.55f),
-                shape = RoundedCornerShape(16.dp)
+            Box(
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .fillMaxWidth()
+                    .height(82.dp)
+                    .background(
+                        Brush.verticalGradient(
+                            listOf(Color.Black.copy(alpha = 0.78f), Color.Transparent)
+                        )
+                    )
+            )
+
+            Row(
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .fillMaxWidth()
+                    .padding(horizontal = 8.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Text(
-                    screenModeLabel,
-                    color = Color.White,
-                    style = MaterialTheme.typography.labelSmall,
-                    modifier = Modifier.padding(horizontal = 9.dp, vertical = 6.dp)
-                )
+                IconButton(
+                    onClick = { revealControls(); onMinimize() },
+                    modifier = Modifier.background(Color.Black.copy(alpha = 0.35f), CircleShape)
+                ) {
+                    Icon(
+                        if (fullscreen) Icons.Default.ArrowBack else Icons.Default.KeyboardArrowDown,
+                        if (fullscreen) "Salir de pantalla completa" else "Minimizar",
+                        tint = Color.White
+                    )
+                }
+                Spacer(Modifier.weight(1f))
+                Surface(
+                    onClick = { revealControls(); onSettings() },
+                    color = Color.Black.copy(alpha = 0.48f),
+                    shape = RoundedCornerShape(18.dp)
+                ) {
+                    Text(
+                        if (qualityLabel == "Automático") "Auto" else qualityLabel,
+                        color = Color.White,
+                        style = MaterialTheme.typography.labelMedium,
+                        modifier = Modifier.padding(horizontal = 11.dp, vertical = 7.dp)
+                    )
+                }
+                Spacer(Modifier.width(7.dp))
+                Surface(
+                    onClick = { revealControls(); onSettings() },
+                    color = Color.Black.copy(alpha = 0.48f),
+                    shape = RoundedCornerShape(18.dp)
+                ) {
+                    Text(
+                        "${playbackSpeed}x",
+                        color = Color.White,
+                        style = MaterialTheme.typography.labelMedium,
+                        modifier = Modifier.padding(horizontal = 11.dp, vertical = 7.dp)
+                    )
+                }
+                IconButton(onClick = { revealControls(); onSettings() }) {
+                    Icon(Icons.Default.Settings, "Opciones de reproducción", tint = Color.White)
+                }
+                if (!fullscreen) {
+                    IconButton(onClick = onClose) {
+                        Icon(Icons.Default.Close, "Cerrar", tint = Color.White)
+                    }
+                }
             }
-            IconButton(
-                onClick = onNext,
-                modifier = Modifier.background(Color.Black.copy(alpha = 0.50f), CircleShape)
+
+            Row(
+                modifier = Modifier.align(Alignment.Center),
+                horizontalArrangement = Arrangement.spacedBy(if (fullscreen) 34.dp else 24.dp),
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Icon(Icons.Default.SkipNext, "Siguiente", tint = Color.White)
+                FilledIconButton(
+                    onClick = {
+                        revealControls()
+                        controller?.let { active ->
+                            active.seekTo((active.currentPosition - 5_000L).coerceAtLeast(0L))
+                        }
+                    },
+                    modifier = Modifier.size(if (fullscreen) 58.dp else 52.dp),
+                    colors = IconButtonDefaults.filledIconButtonColors(
+                        containerColor = Color.Black.copy(alpha = 0.58f),
+                        contentColor = Color.White
+                    )
+                ) {
+                    Icon(Icons.Default.Replay, "Retroceder 5 segundos", modifier = Modifier.size(30.dp))
+                }
+                FilledIconButton(
+                    onClick = {
+                        revealControls()
+                        controller?.let { active ->
+                            if (active.isPlaying) active.pause() else active.play()
+                        }
+                    },
+                    modifier = Modifier.size(if (fullscreen) 76.dp else 68.dp),
+                    colors = IconButtonDefaults.filledIconButtonColors(
+                        containerColor = Color.White,
+                        contentColor = Color.Black
+                    )
+                ) {
+                    Icon(
+                        if (playback.isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
+                        if (playback.isPlaying) "Pausar" else "Reproducir",
+                        modifier = Modifier.size(42.dp)
+                    )
+                }
+                FilledIconButton(
+                    onClick = {
+                        revealControls()
+                        val target = controller?.currentPosition?.plus(15_000L) ?: 15_000L
+                        controller?.seekTo(if (durationMs > 0L) target.coerceAtMost(durationMs) else target)
+                    },
+                    modifier = Modifier.size(if (fullscreen) 58.dp else 52.dp),
+                    colors = IconButtonDefaults.filledIconButtonColors(
+                        containerColor = Color.Black.copy(alpha = 0.58f),
+                        contentColor = Color.White
+                    )
+                ) {
+                    Icon(Icons.Default.SkipNext, "Adelantar 15 segundos", modifier = Modifier.size(30.dp))
+                }
             }
-            IconButton(
-                onClick = onFullscreen,
-                modifier = Modifier.background(Color.Black.copy(alpha = 0.50f), CircleShape)
+
+            Column(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .fillMaxWidth()
+                    .background(
+                        Brush.verticalGradient(
+                            listOf(Color.Transparent, Color.Black.copy(alpha = 0.82f))
+                        )
+                    )
+                    .padding(horizontal = 12.dp, vertical = 8.dp)
             ) {
-                Icon(
-                    if (fullscreen) Icons.Default.FullscreenExit else Icons.Default.Fullscreen,
-                    "Pantalla completa",
-                    tint = Color.White
+                Slider(
+                    value = if (durationMs > 0L) {
+                        (if (draggingProgress) draggedPositionMs else positionMs).toFloat()
+                    } else 0f,
+                    onValueChange = { value ->
+                        draggingProgress = true
+                        draggedPositionMs = value.toLong()
+                        revealControls()
+                    },
+                    onValueChangeFinished = {
+                        controller?.seekTo(draggedPositionMs.coerceAtLeast(0L))
+                        positionMs = draggedPositionMs
+                        draggingProgress = false
+                        revealControls()
+                    },
+                    valueRange = 0f..durationMs.coerceAtLeast(1L).toFloat(),
+                    modifier = Modifier.fillMaxWidth()
                 )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        "${formatDuration(if (draggingProgress) draggedPositionMs else positionMs)} / ${formatDuration(durationMs)}",
+                        color = Color.White,
+                        style = MaterialTheme.typography.labelMedium
+                    )
+                    Spacer(Modifier.weight(1f))
+                    Text(
+                        screenModeLabel,
+                        color = Color.White.copy(alpha = 0.86f),
+                        style = MaterialTheme.typography.labelSmall,
+                        modifier = Modifier.padding(end = 6.dp)
+                    )
+                    IconButton(onClick = { revealControls(); onNext() }) {
+                        Icon(Icons.Default.SkipNext, "Siguiente", tint = Color.White)
+                    }
+                    IconButton(onClick = { revealControls(); onFullscreen() }) {
+                        Icon(
+                            if (fullscreen) Icons.Default.FullscreenExit else Icons.Default.Fullscreen,
+                            if (fullscreen) "Salir de pantalla completa" else "Pantalla completa",
+                            tint = Color.White
+                        )
+                    }
+                }
             }
         }
 
         if (showDelayedLoading && playback.error == null) {
             Box(
-                modifier = Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.16f)),
+                modifier = Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.12f)),
                 contentAlignment = Alignment.Center
             ) {
-                CircularProgressIndicator(modifier = Modifier.size(38.dp), strokeWidth = 4.dp)
+                CircularProgressIndicator(modifier = Modifier.size(36.dp), strokeWidth = 3.dp)
             }
         }
 
@@ -2253,7 +2346,6 @@ private fun PlayerViewport(
         }
     }
 }
-
 
 @Composable
 private fun MiniPlayer(
@@ -2359,6 +2451,8 @@ private fun GeoMediaPlayerView(
                 controllerHideOnTouch = true
                 controllerShowTimeoutMs = 2_500
                 keepScreenOn = true
+                setKeepContentOnPlayerReset(true)
+                setShutterBackgroundColor(android.graphics.Color.TRANSPARENT)
                 this.resizeMode = resizeMode
                 setShowBuffering(PlayerView.SHOW_BUFFERING_NEVER)
                 setShowRewindButton(true)
@@ -2396,8 +2490,39 @@ private fun formatCompactNumber(value: Long): String = when {
 
 private fun formatPublishedAt(value: String): String {
     if (value.isBlank()) return ""
-    val date = value.take(10)
-    return if (date.length == 10) "Publicado $date" else value
+    if (value.contains("hace", ignoreCase = true)) return value
+
+    val parsers = listOf(
+        "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'",
+        "yyyy-MM-dd'T'HH:mm:ss'Z'",
+        "yyyy-MM-dd"
+    )
+    val publishedMs = parsers.firstNotNullOfOrNull { pattern ->
+        runCatching {
+            SimpleDateFormat(pattern, Locale.US).apply {
+                timeZone = TimeZone.getTimeZone("UTC")
+                isLenient = false
+            }.parse(value.take(if (pattern == "yyyy-MM-dd") 10 else value.length))?.time
+        }.getOrNull()
+    } ?: return value.take(10)
+
+    val elapsedMs = (System.currentTimeMillis() - publishedMs).coerceAtLeast(0L)
+    val minutes = elapsedMs / 60_000L
+    val hours = elapsedMs / 3_600_000L
+    val days = elapsedMs / 86_400_000L
+    val weeks = days / 7L
+    val months = days / 30L
+    val years = days / 365L
+
+    return when {
+        minutes < 1L -> "hace unos segundos"
+        minutes < 60L -> "hace $minutes ${if (minutes == 1L) "minuto" else "minutos"}"
+        hours < 24L -> "hace $hours ${if (hours == 1L) "hora" else "horas"}"
+        days < 7L -> "hace $days ${if (days == 1L) "día" else "días"}"
+        weeks < 5L -> "hace $weeks ${if (weeks == 1L) "semana" else "semanas"}"
+        months < 12L -> "hace $months ${if (months == 1L) "mes" else "meses"}"
+        else -> "hace $years ${if (years == 1L) "año" else "años"}"
+    }
 }
 
 

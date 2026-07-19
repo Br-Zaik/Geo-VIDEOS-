@@ -1,0 +1,25 @@
+GEO VIDEOS V16 - VALIDACION
+
+Cambios limitados al reproductor:
+- Una sola instancia visual de PlayerView al alternar pantalla normal/completa.
+- Controles propios ocultos; aparecen al tocar y desaparecen durante reproducción.
+- Barra de progreso y búsqueda actualizan únicamente el área del reproductor.
+- Modo Ajustar predeterminado conserva la proporción del video.
+- Conservación del último fotograma durante cambios de tamaño/orientación.
+- Salida de pantalla completa restaura orientación vertical y barras del sistema.
+- Fechas convertidas a tiempo relativo: hace minutos, horas, días, semanas, meses o años.
+- Eliminados los botones permanentes Pausar y Repetir de la fila de acciones.
+- Repetir permanece dentro de Ajustes de reproducción.
+
+Protegido y sin cambios:
+- MainActivity.kt
+- AndroidManifest.xml
+- app/geovideos-dev.jks
+- applicationId com.geovideos.app
+- OAuth e inicio de sesión
+
+Validaciones realizadas:
+- Balance léxico de llaves, paréntesis y corchetes: correcto.
+- Kotlinc no reportó errores de sintaxis; las referencias Android no se resuelven sin el SDK.
+- Intento de Gradle detenido antes de compilar por falta de resolución DNS de services.gradle.org.
+- La compilación Android definitiva debe ejecutarse en GitHub Actions.
