@@ -15,10 +15,48 @@ class GeoVideosRepository(context: Context) {
 
     fun loadSearchHistory(): List<String> = decodeStrings(preferences.getString(KEY_SEARCH_HISTORY, "[]").orEmpty())
 
+    fun loadAutoplay(): Boolean = preferences.getBoolean(KEY_AUTOPLAY, true)
+
+    fun loadDataSaver(): Boolean = preferences.getBoolean(KEY_DATA_SAVER, false)
+
+    fun loadNotificationsEnabled(): Boolean = preferences.getBoolean(KEY_NOTIFICATIONS, true)
+
+    fun setAutoplay(value: Boolean) {
+        preferences.edit().putBoolean(KEY_AUTOPLAY, value).apply()
+    }
+
+    fun setDataSaver(value: Boolean) {
+        preferences.edit().putBoolean(KEY_DATA_SAVER, value).apply()
+    }
+
+    fun setNotificationsEnabled(value: Boolean) {
+        preferences.edit().putBoolean(KEY_NOTIFICATIONS, value).apply()
+    }
+
     fun addToHistory(video: VideoItem): List<VideoItem> {
+        val previous = loadHistory().firstOrNull { it.id == video.id }
+        val merged = video.copy(
+            resumePositionMs = if (video.resumePositionMs > 0L) video.resumePositionMs else previous?.resumePositionMs ?: 0L,
+            durationMs = if (video.durationMs > 0L) video.durationMs else previous?.durationMs ?: 0L
+        )
         val updated = loadHistory().filterNot { it.id == video.id }.toMutableList()
-        updated.add(0, video)
+        updated.add(0, merged)
         return updated.take(60).also { saveVideos(KEY_HISTORY, it) }
+    }
+
+    fun updatePlayback(video: VideoItem, positionMs: Long, durationMs: Long): List<VideoItem> {
+        val safePosition = positionMs.coerceAtLeast(0L)
+        val safeDuration = durationMs.coerceAtLeast(0L)
+        val normalizedPosition = if (safeDuration > 0L && safePosition >= safeDuration - 8_000L) 0L else safePosition
+        val current = loadHistory().filterNot { it.id == video.id }.toMutableList()
+        current.add(
+            0,
+            video.copy(
+                resumePositionMs = normalizedPosition,
+                durationMs = safeDuration
+            )
+        )
+        return current.take(60).also { saveVideos(KEY_HISTORY, it) }
     }
 
     fun toggleWatchLater(video: VideoItem): List<VideoItem> {
@@ -28,16 +66,23 @@ class GeoVideosRepository(context: Context) {
         return current.take(100).also { saveVideos(KEY_WATCH_LATER, it) }
     }
 
-    fun addDownload(title: String, url: String): List<VideoItem> {
+    fun addDownload(title: String, url: String, downloadId: Long): List<VideoItem> {
         val item = VideoItem(
-            id = "download-${System.currentTimeMillis()}",
+            id = "download-$downloadId",
             title = title.ifBlank { "Video descargado" },
             channelTitle = "Descarga directa",
             thumbnailUrl = "",
             mediaKind = MediaKind.DIRECT,
-            source = url
+            source = url,
+            downloadId = downloadId
         )
-        val updated = loadDownloads().toMutableList().apply { add(0, item) }.take(100)
+        val updated = loadDownloads().filterNot { it.downloadId == downloadId }.toMutableList().apply { add(0, item) }.take(100)
+        saveVideos(KEY_DOWNLOADS, updated)
+        return updated
+    }
+
+    fun removeDownload(downloadId: Long): List<VideoItem> {
+        val updated = loadDownloads().filterNot { it.downloadId == downloadId }
         saveVideos(KEY_DOWNLOADS, updated)
         return updated
     }
@@ -51,7 +96,13 @@ class GeoVideosRepository(context: Context) {
     }
 
     fun clearAll() {
+        val autoplay = loadAutoplay()
+        val dataSaver = loadDataSaver()
+        val notifications = loadNotificationsEnabled()
         preferences.edit().clear().apply()
+        setAutoplay(autoplay)
+        setDataSaver(dataSaver)
+        setNotificationsEnabled(notifications)
     }
 
     private fun saveVideos(key: String, videos: List<VideoItem>) {
@@ -68,6 +119,9 @@ class GeoVideosRepository(context: Context) {
                     .put("isLive", video.isLive)
                     .put("mediaKind", video.mediaKind.name)
                     .put("source", video.source)
+                    .put("resumePositionMs", video.resumePositionMs)
+                    .put("durationMs", video.durationMs)
+                    .put("downloadId", video.downloadId)
             )
         }
         preferences.edit().putString(key, array.toString()).apply()
@@ -90,7 +144,10 @@ class GeoVideosRepository(context: Context) {
                         mediaKind = runCatching {
                             MediaKind.valueOf(item.optString("mediaKind", MediaKind.YOUTUBE.name))
                         }.getOrDefault(MediaKind.YOUTUBE),
-                        source = item.optString("source", item.optString("id"))
+                        source = item.optString("source", item.optString("id")),
+                        resumePositionMs = item.optLong("resumePositionMs", 0L),
+                        durationMs = item.optLong("durationMs", 0L),
+                        downloadId = item.optLong("downloadId", -1L)
                     )
                 )
             }
@@ -115,5 +172,8 @@ class GeoVideosRepository(context: Context) {
         const val KEY_WATCH_LATER = "watch_later"
         const val KEY_DOWNLOADS = "downloads"
         const val KEY_SEARCH_HISTORY = "search_history"
+        const val KEY_AUTOPLAY = "autoplay"
+        const val KEY_DATA_SAVER = "data_saver"
+        const val KEY_NOTIFICATIONS = "notifications_enabled"
     }
 }

@@ -23,7 +23,10 @@ data class VideoItem(
     val description: String = "",
     val isLive: Boolean = false,
     val mediaKind: MediaKind = MediaKind.YOUTUBE,
-    val source: String = id
+    val source: String = id,
+    val resumePositionMs: Long = 0L,
+    val durationMs: Long = 0L,
+    val downloadId: Long = -1L
 )
 
 data class ChannelItem(

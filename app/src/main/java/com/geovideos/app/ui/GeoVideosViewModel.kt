@@ -65,6 +65,9 @@ data class GeoVideosUiState(
     val selectedVideo: VideoItem? = null,
     val selectedChannelTitle: String = "",
     val channelVideos: List<VideoItem> = emptyList(),
+    val autoplay: Boolean = true,
+    val dataSaver: Boolean = false,
+    val notificationsEnabled: Boolean = true,
     val message: String? = null
 )
 
@@ -79,7 +82,10 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
             history = repository.loadHistory(),
             watchLater = repository.loadWatchLater(),
             downloads = repository.loadDownloads(),
-            searchHistory = repository.loadSearchHistory()
+            searchHistory = repository.loadSearchHistory(),
+            autoplay = repository.loadAutoplay(),
+            dataSaver = repository.loadDataSaver(),
+            notificationsEnabled = repository.loadNotificationsEnabled()
         )
     )
     val uiState: StateFlow<GeoVideosUiState> = _uiState.asStateFlow()
@@ -95,7 +101,7 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
         }
         accessToken = token
         _uiState.update { it.copy(authStatus = AuthStatus.CONNECTED, loading = true, authError = "") }
-        loadAll()
+        loadAll(initialLoad = true)
     }
 
     fun onAuthorizationFailure(message: String, cloudSetupLikely: Boolean) {
@@ -118,7 +124,10 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
                 history = repository.loadHistory(),
                 watchLater = repository.loadWatchLater(),
                 downloads = repository.loadDownloads(),
-                searchHistory = repository.loadSearchHistory()
+                searchHistory = repository.loadSearchHistory(),
+                autoplay = repository.loadAutoplay(),
+                dataSaver = repository.loadDataSaver(),
+                notificationsEnabled = repository.loadNotificationsEnabled()
             )
         }
     }
@@ -137,32 +146,40 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     fun refresh() {
+        if (_uiState.value.refreshing) return
         if (accessToken.isNullOrBlank()) {
             _uiState.update { it.copy(message = "Vuelve a conectar tu cuenta de Google.") }
             return
         }
         _uiState.update { it.copy(refreshing = true) }
-        loadAll()
+        loadAll(initialLoad = false)
     }
 
-    private fun loadAll() {
+    private fun loadAll(initialLoad: Boolean) {
         val token = accessToken ?: return
         viewModelScope.launch {
+            val previous = _uiState.value
             try {
                 supervisorScope {
                     val userDeferred = async { api.getUserInfo(token) }
-                    val popularDeferred = async { api.mostPopular(token) }
-                    val liveDeferred = async { runCatching { api.liveVideos(token) }.getOrDefault(emptyList()) }
-                    val gamingDeferred = async { runCatching { api.mostPopular(token, "20") }.getOrDefault(emptyList()) }
-                    val shortsDeferred = async { runCatching { api.shorts(token) }.getOrDefault(emptyList()) }
-                    val subscriptionsDeferred = async { runCatching { api.subscriptions(token) }.getOrDefault(emptyList()) }
-                    val playlistsDeferred = async { runCatching { api.playlists(token) }.getOrDefault(emptyList()) }
-                    val activitiesDeferred = async { runCatching { api.homeActivities(token) }.getOrDefault(emptyList()) }
+                    val popularDeferred = async { runCatching { api.mostPopular(token) }.getOrDefault(previous.popular) }
+                    val liveDeferred = async { runCatching { api.liveVideos(token) }.getOrDefault(previous.live) }
+                    val gamingDeferred = async { runCatching { api.mostPopular(token, "20") }.getOrDefault(previous.gaming) }
+                    val shortsDeferred = async { runCatching { api.shorts(token) }.getOrDefault(previous.shorts) }
+                    val subscriptionsDeferred = async { runCatching { api.subscriptions(token) }.getOrDefault(previous.subscriptions) }
+                    val playlistsDeferred = async { runCatching { api.playlists(token) }.getOrDefault(previous.playlists) }
+                    val activitiesDeferred = async {
+                        if (previous.notificationsEnabled) {
+                            runCatching { api.homeActivities(token) }.getOrDefault(previous.notifications)
+                        } else {
+                            emptyList()
+                        }
+                    }
 
                     val baseProfile = userDeferred.await()
                     val channelDetails = runCatching { api.getMyChannel(token, baseProfile) }.getOrNull()
                     likesPlaylistId = channelDetails?.likesPlaylistId.orEmpty()
-                    val liked = runCatching { api.playlistVideos(token, likesPlaylistId, 24) }.getOrDefault(emptyList())
+                    val liked = runCatching { api.playlistVideos(token, likesPlaylistId, 24) }.getOrDefault(previous.liked)
 
                     _uiState.update {
                         it.copy(
@@ -178,7 +195,8 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
                             playlists = playlistsDeferred.await(),
                             liked = liked,
                             notifications = activitiesDeferred.await(),
-                            authError = ""
+                            authError = "",
+                            message = if (!initialLoad) "Contenido actualizado." else it.message
                         )
                     }
                 }
@@ -189,8 +207,13 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
                     it.copy(
                         loading = false,
                         refreshing = false,
-                        authStatus = AuthStatus.ERROR,
-                        authError = error.message ?: "No se pudo cargar YouTube."
+                        authStatus = if (it.profile != null) AuthStatus.CONNECTED else AuthStatus.ERROR,
+                        authError = if (it.profile == null) error.message ?: "No se pudo cargar YouTube." else "",
+                        message = if (it.profile != null) {
+                            "No se pudo actualizar. Se conservaron los datos anteriores."
+                        } else {
+                            error.message ?: "No se pudo cargar YouTube."
+                        }
                     )
                 }
             }
@@ -206,8 +229,27 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     fun play(video: VideoItem) {
-        val history = repository.addToHistory(video)
-        _uiState.update { it.copy(selectedVideo = video, history = history) }
+        val saved = repository.loadHistory().firstOrNull { it.id == video.id }
+        val playable = video.copy(
+            resumePositionMs = saved?.resumePositionMs ?: video.resumePositionMs,
+            durationMs = saved?.durationMs ?: video.durationMs
+        )
+        val history = repository.addToHistory(playable)
+        _uiState.update { it.copy(selectedVideo = playable, history = history) }
+    }
+
+    fun savePlayback(video: VideoItem, positionMs: Long, durationMs: Long) {
+        if (positionMs < 0L) return
+        val history = repository.updatePlayback(video, positionMs, durationMs)
+        _uiState.update { state ->
+            state.copy(
+                history = history,
+                selectedVideo = state.selectedVideo?.takeIf { it.id == video.id }?.copy(
+                    resumePositionMs = positionMs,
+                    durationMs = durationMs
+                ) ?: state.selectedVideo
+            )
+        }
     }
 
     fun closePlayer() {
@@ -260,9 +302,30 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
         _uiState.update { it.copy(selectedChannelTitle = "", channelVideos = emptyList()) }
     }
 
-    fun registerDownload(title: String, url: String) {
-        val downloads = repository.addDownload(title, url)
+    fun registerDownload(title: String, url: String, downloadId: Long) {
+        val downloads = repository.addDownload(title, url, downloadId)
         _uiState.update { it.copy(downloads = downloads, message = "Descarga enviada al teléfono.") }
+    }
+
+    fun removeDownload(downloadId: Long) {
+        val downloads = repository.removeDownload(downloadId)
+        _uiState.update { it.copy(downloads = downloads, message = "Descarga quitada de la lista.") }
+    }
+
+    fun setAutoplay(value: Boolean) {
+        repository.setAutoplay(value)
+        _uiState.update { it.copy(autoplay = value) }
+    }
+
+    fun setDataSaver(value: Boolean) {
+        repository.setDataSaver(value)
+        _uiState.update { it.copy(dataSaver = value) }
+    }
+
+    fun setNotificationsEnabled(value: Boolean) {
+        repository.setNotificationsEnabled(value)
+        _uiState.update { it.copy(notificationsEnabled = value, notifications = if (value) it.notifications else emptyList()) }
+        if (value && accessToken != null) refresh()
     }
 
     fun showMessage(message: String) {
@@ -283,7 +346,7 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
                 authError = if (error.statusCode == 401) {
                     "La sesión de Google expiró. Pulsa Reconectar."
                 } else {
-                    error.message
+                    it.authError
                 },
                 message = error.message
             )
