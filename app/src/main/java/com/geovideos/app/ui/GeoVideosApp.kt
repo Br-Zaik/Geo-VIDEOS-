@@ -12,6 +12,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.Environment
 import android.util.Rational
+import android.view.LayoutInflater
 import java.text.SimpleDateFormat
 import java.util.Locale
 import java.util.TimeZone
@@ -59,6 +60,7 @@ import androidx.compose.material.icons.filled.DownloadDone
 import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.Explore
 import androidx.compose.material.icons.filled.ThumbUp
+import androidx.compose.material.icons.filled.ThumbDown
 import androidx.compose.material.icons.filled.HighQuality
 import androidx.compose.material.icons.filled.Headphones
 import androidx.compose.material.icons.filled.FullscreenExit
@@ -256,11 +258,14 @@ fun GeoVideosApp(
                     onPlay = viewModel::play,
                     onPreviewShort = viewModel::previewShort,
                     onWatchLater = viewModel::toggleWatchLater,
+                    onLike = viewModel::toggleLocalLike,
+                    onDislike = viewModel::toggleLocalDislike,
                     onSearch = viewModel::search,
                     onRefresh = viewModel::refresh,
                     onLoadMoreHome = viewModel::loadMoreHome,
                     onLoadMoreShorts = viewModel::loadMoreShorts,
                     onLoadMoreUploads = viewModel::loadMoreUploads,
+                    onLoadMoreLiked = viewModel::loadMoreLiked,
                     onLoadMoreSearch = viewModel::loadMoreSearch,
                     onOpenChannel = viewModel::openChannel,
                     onCloseChannel = viewModel::closeChannel,
@@ -283,6 +288,8 @@ fun GeoVideosApp(
                             video = selectedVideo,
                             playerConnection = playerConnection,
                             isWatchLater = state.watchLater.any { it.id == selectedVideo.id },
+                            isLiked = selectedVideo.id in state.localLikedIds,
+                            isDisliked = selectedVideo.id in state.localDislikedIds,
                             autoplay = state.autoplay,
                             dataSaver = state.dataSaver,
                             details = state.playerDetails,
@@ -297,6 +304,8 @@ fun GeoVideosApp(
                                 viewModel.closePlayer()
                             },
                             onWatchLater = { viewModel.toggleWatchLater(selectedVideo) },
+                            onLike = { viewModel.toggleLocalLike(selectedVideo) },
+                            onDislike = { viewModel.toggleLocalDislike(selectedVideo) },
                             onPlayRelated = viewModel::play,
                             onPlayNext = viewModel::playNext,
                             onAutoplayChange = viewModel::setAutoplay,
@@ -441,11 +450,14 @@ private fun MainShell(
     onPlay: (VideoItem) -> Unit,
     onPreviewShort: (VideoItem) -> Unit,
     onWatchLater: (VideoItem) -> Unit,
+    onLike: (VideoItem) -> Unit,
+    onDislike: (VideoItem) -> Unit,
     onSearch: (String) -> Unit,
     onRefresh: () -> Unit,
     onLoadMoreHome: (HomeCategory) -> Unit,
     onLoadMoreShorts: () -> Unit,
     onLoadMoreUploads: () -> Unit,
+    onLoadMoreLiked: () -> Unit,
     onLoadMoreSearch: () -> Unit,
     onOpenChannel: (ChannelItem) -> Unit,
     onCloseChannel: () -> Unit,
@@ -462,6 +474,14 @@ private fun MainShell(
     var showNotifications by rememberSaveable { mutableStateOf(false) }
     var showDownloadDialog by rememberSaveable { mutableStateOf(false) }
     var pendingDownload by remember { mutableStateOf<PendingDownload?>(null) }
+    var libraryDestination by rememberSaveable { mutableStateOf(LibraryDestination.ROOT) }
+
+    LaunchedEffect(state.section) {
+        if (state.section != MainSection.LIBRARY) libraryDestination = LibraryDestination.ROOT
+    }
+    BackHandler(enabled = state.section == MainSection.LIBRARY && libraryDestination != LibraryDestination.ROOT) {
+        libraryDestination = LibraryDestination.ROOT
+    }
     val storagePermissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { granted ->
@@ -506,7 +526,7 @@ private fun MainShell(
 
     Scaffold(
         topBar = {
-            if (state.section != MainSection.SHORTS) {
+            if (state.section != MainSection.SHORTS && libraryDestination == LibraryDestination.ROOT) {
                 TopAppBar(
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background),
                 title = {
@@ -532,11 +552,17 @@ private fun MainShell(
         },
         bottomBar = {
             NavigationBar {
-                BottomItem(MainSection.HOME, state.section, "Principal", Icons.Default.Home, onSection)
-                BottomItem(MainSection.SHORTS, state.section, "Shorts", Icons.Default.AutoAwesome, onSection)
-                BottomItem(MainSection.SEARCH, state.section, "Buscar", Icons.Default.Search, onSection)
-                BottomItem(MainSection.LIBRARY, state.section, "Colección", Icons.Default.VideoLibrary, onSection)
-                BottomItem(MainSection.ACCOUNT, state.section, "Cuenta", Icons.Default.Person, onSection)
+                val navigate: (MainSection) -> Unit = { target ->
+                    if (target == MainSection.LIBRARY && state.section == MainSection.LIBRARY) {
+                        libraryDestination = LibraryDestination.ROOT
+                    }
+                    onSection(target)
+                }
+                BottomItem(MainSection.HOME, state.section, "Principal", Icons.Default.Home, navigate)
+                BottomItem(MainSection.SHORTS, state.section, "Shorts", Icons.Default.AutoAwesome, navigate)
+                BottomItem(MainSection.SEARCH, state.section, "Buscar", Icons.Default.Search, navigate)
+                BottomItem(MainSection.LIBRARY, state.section, "Colección", Icons.Default.VideoLibrary, navigate)
+                BottomItem(MainSection.ACCOUNT, state.section, "Cuenta", Icons.Default.Person, navigate)
             }
         },
         snackbarHost = { SnackbarHost(snackbar) }
@@ -550,6 +576,7 @@ private fun MainShell(
                 live = state.live,
                 gaming = state.gaming,
                 music = state.music,
+                shorts = state.shorts,
                 loading = state.loading,
                 refreshing = state.refreshing,
                 loadingMore = state.isLoadingMore(state.homeCategory),
@@ -560,11 +587,15 @@ private fun MainShell(
                 onLoadMore = onLoadMoreHome,
                 onCategory = onCategory,
                 onPlay = onPlay,
+                onOpenShort = onPreviewShort,
                 onWatchLater = onWatchLater
             )
             MainSection.SHORTS -> ShortsScreen(
                 modifier = Modifier.padding(padding),
                 videos = state.shorts,
+                selectedVideoId = state.selectedVideo?.id.orEmpty(),
+                localLikedIds = state.localLikedIds,
+                localDislikedIds = state.localDislikedIds,
                 loading = state.loading,
                 loadingMore = state.shortsLoadingMore,
                 canLoadMore = state.shortsCanLoadMore,
@@ -573,8 +604,9 @@ private fun MainShell(
                 dataSaver = state.dataSaver,
                 onLoadMore = onLoadMoreShorts,
                 onPreview = onPreviewShort,
-                onPlay = onPlay,
-                onWatchLater = onWatchLater
+                onWatchLater = onWatchLater,
+                onLike = onLike,
+                onDislike = onDislike
             )
             MainSection.SEARCH -> SearchScreen(
                 modifier = Modifier.padding(padding),
@@ -587,27 +619,62 @@ private fun MainShell(
                 onPlay = onPlay,
                 onWatchLater = onWatchLater
             )
-            MainSection.LIBRARY -> LibraryScreen(
-                modifier = Modifier.padding(padding),
-                history = state.history,
-                watchLater = state.watchLater,
-                liked = state.liked,
-                uploads = state.uploads,
-                uploadsLoadingMore = state.uploadsLoadingMore,
-                uploadsCanLoadMore = state.uploadsCanLoadMore,
-                playlists = state.playlists,
-                subscriptions = state.subscriptions,
-                subscriptionVideos = state.personalized.filter { video ->
-                    state.subscriptions.any { channel -> channel.id == video.channelId }
-                },
-                downloads = state.downloads,
-                onPlay = onPlay,
-                onWatchLater = onWatchLater,
-                onLoadMoreUploads = onLoadMoreUploads,
-                onOpenChannel = onOpenChannel,
-                onAddDownload = { showDownloadDialog = true },
-                onRemoveDownload = onRemoveDownload
-            )
+            MainSection.LIBRARY -> {
+                if (libraryDestination == LibraryDestination.ROOT) {
+                    LibraryScreen(
+                        modifier = Modifier.padding(padding),
+                        history = state.history,
+                        watchLater = state.watchLater,
+                        liked = (state.localLikedVideos + state.liked).distinctBy { it.id },
+                        uploads = state.uploads,
+                        uploadsLoadingMore = state.uploadsLoadingMore,
+                        uploadsCanLoadMore = state.uploadsCanLoadMore,
+                        playlists = state.playlists,
+                        subscriptions = state.subscriptions,
+                        subscriptionVideos = state.personalized.filter { video ->
+                            state.subscriptions.any { channel -> channel.id == video.channelId }
+                        },
+                        downloads = state.downloads,
+                        onPlay = onPlay,
+                        onWatchLater = onWatchLater,
+                        onLoadMoreUploads = onLoadMoreUploads,
+                        onOpenChannel = onOpenChannel,
+                        onOpenHistory = { libraryDestination = LibraryDestination.HISTORY },
+                        onOpenWatchLater = { libraryDestination = LibraryDestination.WATCH_LATER },
+                        onOpenLiked = { libraryDestination = LibraryDestination.LIKED },
+                        onOpenUploads = { libraryDestination = LibraryDestination.UPLOADS },
+                        onOpenSubscriptions = { libraryDestination = LibraryDestination.SUBSCRIPTIONS },
+                        onAddDownload = { showDownloadDialog = true },
+                        onRemoveDownload = onRemoveDownload
+                    )
+                } else if (libraryDestination == LibraryDestination.SUBSCRIPTIONS) {
+                    SubscriptionCollectionScreen(
+                        modifier = Modifier.padding(padding),
+                        channels = state.subscriptions,
+                        onBack = { libraryDestination = LibraryDestination.ROOT },
+                        onOpenChannel = onOpenChannel
+                    )
+                } else {
+                    val collectionVideos = when (libraryDestination) {
+                        LibraryDestination.HISTORY -> state.history
+                        LibraryDestination.WATCH_LATER -> state.watchLater
+                        LibraryDestination.LIKED -> (state.localLikedVideos + state.liked).distinctBy { it.id }
+                        LibraryDestination.UPLOADS -> state.uploads
+                        LibraryDestination.ROOT, LibraryDestination.SUBSCRIPTIONS -> emptyList()
+                    }
+                    LibraryCollectionScreen(
+                        modifier = Modifier.padding(padding),
+                        destination = libraryDestination,
+                        videos = collectionVideos,
+                        loadingMore = libraryDestination == LibraryDestination.LIKED && state.likedLoadingMore,
+                        canLoadMore = libraryDestination == LibraryDestination.LIKED && state.likedCanLoadMore,
+                        onLoadMore = if (libraryDestination == LibraryDestination.LIKED) onLoadMoreLiked else null,
+                        onBack = { libraryDestination = LibraryDestination.ROOT },
+                        onPlay = onPlay,
+                        onWatchLater = onWatchLater
+                    )
+                }
+            }
             MainSection.ACCOUNT -> AccountScreen(
                 modifier = Modifier.padding(padding),
                 profile = state.profile,
@@ -677,6 +744,7 @@ private fun HomeScreen(
     live: List<VideoItem>,
     gaming: List<VideoItem>,
     music: List<VideoItem>,
+    shorts: List<VideoItem>,
     loading: Boolean,
     refreshing: Boolean,
     loadingMore: Boolean,
@@ -687,6 +755,7 @@ private fun HomeScreen(
     onLoadMore: (HomeCategory) -> Unit,
     onCategory: (HomeCategory) -> Unit,
     onPlay: (VideoItem) -> Unit,
+    onOpenShort: (VideoItem) -> Unit,
     onWatchLater: (VideoItem) -> Unit
 ) {
     val videos = when (category) {
@@ -695,13 +764,15 @@ private fun HomeScreen(
         HomeCategory.GAMING -> gaming
         HomeCategory.MUSIC -> music
     }
+    val mixVideo = if (category == HomeCategory.FOR_YOU) videos.firstOrNull() else null
+    val displayVideos = if (category == HomeCategory.FOR_YOU && videos.size > 1) videos.drop(1) else videos
     val watchLaterIds = remember(watchLater) { watchLater.mapTo(HashSet<String>()) { it.id } }
     val listState = rememberLazyListState()
-    val shouldLoadMore by remember(listState, videos.size) {
+    val shouldLoadMore by remember(listState, displayVideos.size) {
         derivedStateOf {
             val lastVisible = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
             val total = listState.layoutInfo.totalItemsCount
-            total > 0 && videos.isNotEmpty() && lastVisible >= total - 4
+            total > 0 && displayVideos.isNotEmpty() && lastVisible >= total - 4
         }
     }
 
@@ -770,13 +841,23 @@ private fun HomeScreen(
                     )
                 }
             }
+            if (category == HomeCategory.FOR_YOU && mixVideo != null) {
+                item(key = "home-mix", contentType = "home-mix") {
+                    HomeMixSection(mixVideo, onPlay)
+                }
+            }
+            if (category == HomeCategory.FOR_YOU && shorts.isNotEmpty()) {
+                item(key = "home-shorts", contentType = "home-shorts") {
+                    HomeShortsShelf(shorts, onOpenShort)
+                }
+            }
             if (loading && videos.isEmpty()) {
                 item(contentType = "loading") { LoadingBlock() }
             } else if (videos.isEmpty()) {
                 item(contentType = "empty") { EmptyBlock("No se encontraron videos en esta sección. Pulsa actualizar.") }
-            } else {
+            } else if (displayVideos.isNotEmpty()) {
                 items(
-                    items = videos,
+                    items = displayVideos,
                     key = { "home-${category.name}-${it.id}" },
                     contentType = { "video" }
                 ) { video ->
@@ -858,6 +939,9 @@ private fun FeaturedCard(video: VideoItem, onPlay: (VideoItem) -> Unit) {
 private fun ShortsScreen(
     modifier: Modifier,
     videos: List<VideoItem>,
+    selectedVideoId: String,
+    localLikedIds: Set<String>,
+    localDislikedIds: Set<String>,
     loading: Boolean,
     loadingMore: Boolean,
     canLoadMore: Boolean,
@@ -866,8 +950,9 @@ private fun ShortsScreen(
     dataSaver: Boolean,
     onLoadMore: () -> Unit,
     onPreview: (VideoItem) -> Unit,
-    onPlay: (VideoItem) -> Unit,
-    onWatchLater: (VideoItem) -> Unit
+    onWatchLater: (VideoItem) -> Unit,
+    onLike: (VideoItem) -> Unit,
+    onDislike: (VideoItem) -> Unit
 ) {
     if (loading && videos.isEmpty()) {
         Box(modifier = modifier.fillMaxSize(), contentAlignment = Alignment.Center) { LoadingBlock() }
@@ -880,7 +965,8 @@ private fun ShortsScreen(
         return
     }
 
-    val pagerState = rememberPagerState(pageCount = { videos.size })
+    val initialShortPage = remember(videos, selectedVideoId) { videos.indexOfFirst { it.id == selectedVideoId }.coerceAtLeast(0) }
+    val pagerState = rememberPagerState(initialPage = initialShortPage, pageCount = { videos.size })
     val controller by playerConnection.controller.collectAsStateWithLifecycle()
     val playback by remember(playerConnection) {
         playerConnection.state
@@ -889,6 +975,11 @@ private fun ShortsScreen(
             }
             .distinctUntilChanged()
     }.collectAsStateWithLifecycle(initialValue = com.geovideos.app.playback.PlaybackUiState())
+
+    LaunchedEffect(selectedVideoId, videos.map { it.id }) {
+        val index = videos.indexOfFirst { it.id == selectedVideoId }
+        if (index >= 0 && index != pagerState.currentPage) pagerState.scrollToPage(index)
+    }
 
     LaunchedEffect(pagerState.currentPage, videos.size) {
         val current = videos.getOrNull(pagerState.currentPage) ?: return@LaunchedEffect
@@ -931,7 +1022,7 @@ private fun ShortsScreen(
                     GeoMediaPlayerView(
                         controller = controller!!,
                         useController = false,
-                        resizeMode = androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_ZOOM
+                        resizeMode = androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_FIT
                     )
                 }
                 Box(
@@ -1000,16 +1091,29 @@ private fun ShortsScreen(
                     verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
                     IconButton(
+                        onClick = { onLike(video) },
+                        modifier = Modifier.background(Color.Black.copy(alpha = 0.45f), CircleShape)
+                    ) {
+                        Icon(
+                            Icons.Default.ThumbUp,
+                            "Me gusta",
+                            tint = if (video.id in localLikedIds) MaterialTheme.colorScheme.primary else Color.White
+                        )
+                    }
+                    IconButton(
+                        onClick = { onDislike(video) },
+                        modifier = Modifier.background(Color.Black.copy(alpha = 0.45f), CircleShape)
+                    ) {
+                        Icon(
+                            Icons.Default.ThumbDown,
+                            "No me gusta",
+                            tint = if (video.id in localDislikedIds) MaterialTheme.colorScheme.primary else Color.White
+                        )
+                    }
+                    IconButton(
                         onClick = { onWatchLater(video) },
                         modifier = Modifier.background(Color.Black.copy(alpha = 0.45f), CircleShape)
                     ) { Icon(Icons.Outlined.WatchLater, "Ver después", tint = Color.White) }
-                    IconButton(
-                        onClick = {
-                            playerConnection.setRepeat(false)
-                            onPlay(video)
-                        },
-                        modifier = Modifier.background(Color.Black.copy(alpha = 0.45f), CircleShape)
-                    ) { Icon(Icons.Default.Fullscreen, "Abrir completo", tint = Color.White) }
                 }
                 if (isCurrent) {
                     ShortProgress(
@@ -1144,6 +1248,11 @@ private fun LibraryScreen(
     onWatchLater: (VideoItem) -> Unit,
     onLoadMoreUploads: () -> Unit,
     onOpenChannel: (ChannelItem) -> Unit,
+    onOpenHistory: () -> Unit,
+    onOpenWatchLater: () -> Unit,
+    onOpenLiked: () -> Unit,
+    onOpenUploads: () -> Unit,
+    onOpenSubscriptions: () -> Unit,
     onAddDownload: () -> Unit,
     onRemoveDownload: (Long) -> Unit
 ) {
@@ -1153,18 +1262,39 @@ private fun LibraryScreen(
         contentPadding = PaddingValues(horizontal = 14.dp, vertical = 12.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
-        item { LibraryShortcutRow(history.size, watchLater.size, liked.size, onAddDownload) }
+        item {
+            LibraryShortcutRow(
+                history = history.size,
+                later = watchLater.size,
+                liked = liked.size,
+                onHistory = onOpenHistory,
+                onWatchLater = onOpenWatchLater,
+                onLiked = onOpenLiked,
+                onDownload = onAddDownload
+            )
+        }
         if (subscriptions.isNotEmpty()) {
             item {
                 SubscriptionShelf(
                     subscriptions = subscriptions,
                     recentVideos = subscriptionVideos,
                     onOpenChannel = onOpenChannel,
+                    onOpenSubscriptions = onOpenSubscriptions,
                     onPlay = onPlay
                 )
             }
         }
-        item { SectionHeader("Mis videos", "Videos subidos a tu canal de YouTube") }
+        item {
+            Row(
+                modifier = Modifier.fillMaxWidth().clickable(onClick = onOpenUploads).padding(vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    SectionHeader("Mis videos", "Videos subidos a tu canal de YouTube")
+                }
+                Icon(Icons.Default.KeyboardArrowDown, contentDescription = "Abrir Mis videos")
+            }
+        }
         if (uploads.isEmpty()) {
             item { EmptyBlock("Tu canal no tiene videos subidos o YouTube no devolvió esa lista.") }
         } else {
@@ -1199,7 +1329,17 @@ private fun LibraryScreen(
             }
         }
         if (liked.isNotEmpty()) {
-            item { SectionHeader("Videos que te gustan", "Sincronizados con tu cuenta de YouTube") }
+            item {
+                Row(
+                    modifier = Modifier.fillMaxWidth().clickable(onClick = onOpenLiked),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        SectionHeader("Videos que te gustan", "Sincronizados con tu cuenta de YouTube")
+                    }
+                    Icon(Icons.Default.KeyboardArrowDown, contentDescription = "Abrir videos que me gustan")
+                }
+            }
             item { HorizontalVideos(liked.take(12), onPlay) }
         }
         if (playlists.isNotEmpty()) {
@@ -1245,6 +1385,7 @@ private fun SubscriptionShelf(
     subscriptions: List<ChannelItem>,
     recentVideos: List<VideoItem>,
     onOpenChannel: (ChannelItem) -> Unit,
+    onOpenSubscriptions: () -> Unit,
     onPlay: (VideoItem) -> Unit
 ) {
     Card(
@@ -1253,7 +1394,10 @@ private fun SubscriptionShelf(
     ) {
         Column(modifier = Modifier.padding(vertical = 14.dp)) {
             Row(
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable(onClick = onOpenSubscriptions)
+                    .padding(horizontal = 16.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Icon(Icons.Default.Subscriptions, null, tint = MaterialTheme.colorScheme.primary)
@@ -1308,11 +1452,19 @@ private fun SubscriptionShelf(
 }
 
 @Composable
-private fun LibraryShortcutRow(history: Int, later: Int, liked: Int, onDownload: () -> Unit) {
+private fun LibraryShortcutRow(
+    history: Int,
+    later: Int,
+    liked: Int,
+    onHistory: () -> Unit,
+    onWatchLater: () -> Unit,
+    onLiked: () -> Unit,
+    onDownload: () -> Unit
+) {
     LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-        item { ShortcutCard(Icons.Default.History, "Historial", "$history videos") }
-        item { ShortcutCard(Icons.Default.WatchLater, "Ver después", "$later videos") }
-        item { ShortcutCard(Icons.Default.Favorite, "Me gustan", "$liked videos") }
+        item { ShortcutCard(Icons.Default.History, "Historial", "$history videos", onHistory) }
+        item { ShortcutCard(Icons.Default.WatchLater, "Ver después", "$later videos", onWatchLater) }
+        item { ShortcutCard(Icons.Default.Favorite, "Me gustan", "$liked videos", onLiked) }
         item { ShortcutCard(Icons.Default.Download, "Descargas", "Agregar", onDownload) }
     }
 }
@@ -1487,6 +1639,8 @@ private fun PlayerScreen(
     video: VideoItem,
     playerConnection: GeoPlayerConnection,
     isWatchLater: Boolean,
+    isLiked: Boolean,
+    isDisliked: Boolean,
     autoplay: Boolean,
     dataSaver: Boolean,
     details: VideoDetails?,
@@ -1498,6 +1652,8 @@ private fun PlayerScreen(
     onBack: () -> Unit,
     onClose: () -> Unit,
     onWatchLater: () -> Unit,
+    onLike: () -> Unit,
+    onDislike: () -> Unit,
     onPlayRelated: (VideoItem) -> Unit,
     onPlayNext: () -> Unit,
     onAutoplayChange: (Boolean) -> Unit,
@@ -1535,7 +1691,6 @@ private fun PlayerScreen(
     var isFullscreen by rememberSaveable(video.id) { mutableStateOf(false) }
     var fillScreenMode by rememberSaveable(video.id) { mutableStateOf(false) }
     var showDelayedLoading by remember(video.id) { mutableStateOf(false) }
-    var playerDragOffset by remember(video.id) { mutableFloatStateOf(0f) }
 
     val detectedRatio = if (playback.videoWidth > 0 && playback.videoHeight > 0) {
         playback.videoWidth.toFloat() / playback.videoHeight.toFloat()
@@ -1645,19 +1800,6 @@ private fun PlayerScreen(
     val embeddedPlayerModifier = Modifier
         .fillMaxWidth()
         .aspectRatio(playerRatio)
-        .graphicsLayer { translationY = playerDragOffset }
-        .pointerInput(video.id) {
-            detectVerticalDragGestures(
-                onVerticalDrag = { _, dragAmount ->
-                    playerDragOffset = (playerDragOffset + dragAmount).coerceAtLeast(0f)
-                },
-                onDragEnd = {
-                    if (playerDragOffset >= size.height * 0.22f) minimize()
-                    playerDragOffset = 0f
-                },
-                onDragCancel = { playerDragOffset = 0f }
-            )
-        }
 
     Column(
         modifier = Modifier
@@ -1723,7 +1865,18 @@ private fun PlayerScreen(
                         }
 
                         Row(
-                            modifier = Modifier.fillMaxWidth().padding(top = 16.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(top = 16.dp)
+                                .clickable(enabled = video.channelId.isNotBlank()) {
+                                    onOpenChannel(
+                                        ChannelItem(
+                                            id = video.channelId,
+                                            title = video.channelTitle,
+                                            thumbnailUrl = channelAvatar
+                                        )
+                                    )
+                                },
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             ChannelAvatar(channelAvatar, video.channelTitle, 46.dp)
@@ -1757,10 +1910,21 @@ private fun PlayerScreen(
                             modifier = Modifier.padding(top = 16.dp)
                         ) {
                             item {
-                                AssistChip(
-                                    onClick = { onMessage("Se muestra el conteo. Dar Me gusta requerirá permiso de escritura de YouTube.") },
-                                    label = { Text(details?.likeCount?.takeIf { it > 0L }?.let(::formatCompactNumber) ?: "Me gusta") },
+                                FilterChip(
+                                    selected = isLiked,
+                                    onClick = onLike,
+                                    label = {
+                                        Text(details?.likeCount?.takeIf { it > 0L }?.let(::formatCompactNumber) ?: "Me gusta")
+                                    },
                                     leadingIcon = { Icon(Icons.Default.ThumbUp, null) }
+                                )
+                            }
+                            item {
+                                FilterChip(
+                                    selected = isDisliked,
+                                    onClick = onDislike,
+                                    label = { Text("No me gusta") },
+                                    leadingIcon = { Icon(Icons.Default.ThumbDown, null) }
                                 )
                             }
                             item {
@@ -2169,31 +2333,14 @@ private fun PlayerViewport(
                     )
                 }
                 Spacer(Modifier.weight(1f))
-                Surface(
-                    onClick = { revealControls(); onSettings() },
-                    color = Color.Black.copy(alpha = 0.48f),
-                    shape = RoundedCornerShape(18.dp)
-                ) {
-                    Text(
-                        if (qualityLabel == "Automático") "Auto" else qualityLabel,
-                        color = Color.White,
-                        style = MaterialTheme.typography.labelMedium,
-                        modifier = Modifier.padding(horizontal = 11.dp, vertical = 7.dp)
-                    )
-                }
-                Spacer(Modifier.width(7.dp))
-                Surface(
-                    onClick = { revealControls(); onSettings() },
-                    color = Color.Black.copy(alpha = 0.48f),
-                    shape = RoundedCornerShape(18.dp)
-                ) {
-                    Text(
-                        "${playbackSpeed}x",
-                        color = Color.White,
-                        style = MaterialTheme.typography.labelMedium,
-                        modifier = Modifier.padding(horizontal = 11.dp, vertical = 7.dp)
-                    )
-                }
+                Text(
+                    "${if (qualityLabel == "Automático") "Auto" else qualityLabel} · ${playbackSpeed}x",
+                    color = Color.White.copy(alpha = 0.92f),
+                    style = MaterialTheme.typography.labelMedium,
+                    modifier = Modifier
+                        .background(Color.Black.copy(alpha = 0.42f), RoundedCornerShape(16.dp))
+                        .padding(horizontal = 10.dp, vertical = 6.dp)
+                )
                 IconButton(onClick = { revealControls(); onSettings() }) {
                     Icon(Icons.Default.Settings, "Opciones de reproducción", tint = Color.White)
                 }
@@ -2216,7 +2363,7 @@ private fun PlayerViewport(
                             active.seekTo((active.currentPosition - 5_000L).coerceAtLeast(0L))
                         }
                     },
-                    modifier = Modifier.size(if (fullscreen) 58.dp else 52.dp),
+                    modifier = Modifier.size(if (fullscreen) 50.dp else 44.dp),
                     colors = IconButtonDefaults.filledIconButtonColors(
                         containerColor = Color.Black.copy(alpha = 0.58f),
                         contentColor = Color.White
@@ -2231,7 +2378,7 @@ private fun PlayerViewport(
                             if (active.isPlaying) active.pause() else active.play()
                         }
                     },
-                    modifier = Modifier.size(if (fullscreen) 76.dp else 68.dp),
+                    modifier = Modifier.size(if (fullscreen) 64.dp else 56.dp),
                     colors = IconButtonDefaults.filledIconButtonColors(
                         containerColor = Color.White,
                         contentColor = Color.Black
@@ -2240,7 +2387,7 @@ private fun PlayerViewport(
                     Icon(
                         if (playback.isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
                         if (playback.isPlaying) "Pausar" else "Reproducir",
-                        modifier = Modifier.size(42.dp)
+                        modifier = Modifier.size(34.dp)
                     )
                 }
                 FilledIconButton(
@@ -2249,7 +2396,7 @@ private fun PlayerViewport(
                         val target = controller?.currentPosition?.plus(15_000L) ?: 15_000L
                         controller?.seekTo(if (durationMs > 0L) target.coerceAtMost(durationMs) else target)
                     },
-                    modifier = Modifier.size(if (fullscreen) 58.dp else 52.dp),
+                    modifier = Modifier.size(if (fullscreen) 50.dp else 44.dp),
                     colors = IconButtonDefaults.filledIconButtonColors(
                         containerColor = Color.Black.copy(alpha = 0.58f),
                         contentColor = Color.White
@@ -2286,7 +2433,7 @@ private fun PlayerViewport(
                         revealControls()
                     },
                     valueRange = 0f..durationMs.coerceAtLeast(1L).toFloat(),
-                    modifier = Modifier.fillMaxWidth()
+                    modifier = Modifier.fillMaxWidth().height(30.dp)
                 )
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
@@ -2444,7 +2591,7 @@ private fun GeoMediaPlayerView(
     AndroidView(
         modifier = Modifier.fillMaxSize().background(Color.Black),
         factory = { context ->
-            PlayerView(context).apply {
+            (LayoutInflater.from(context).inflate(R.layout.geo_player_surface, null, false) as PlayerView).apply {
                 player = controller
                 this.useController = useController
                 controllerAutoShow = useController
@@ -2623,23 +2770,30 @@ private fun VideoCard(
 @Composable
 private fun RelatedVideoCard(video: VideoItem, onPlay: () -> Unit, onWatchLater: () -> Unit) {
     var menuExpanded by remember { mutableStateOf(false) }
-    Column(
+    Row(
         modifier = Modifier
             .fillMaxWidth()
             .clickable(onClick = onPlay)
-            .padding(bottom = 10.dp)
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.Top
     ) {
-        Box(modifier = Modifier.fillMaxWidth().aspectRatio(16f / 9f).background(Color.Black)) {
+        Box(
+            modifier = Modifier
+                .width(168.dp)
+                .aspectRatio(16f / 9f)
+                .clip(RoundedCornerShape(9.dp))
+                .background(Color.Black)
+        ) {
             Thumbnail(video.thumbnailUrl, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
             if (video.durationMs > 0L) {
                 Text(
                     formatDuration(video.durationMs),
                     color = Color.White,
-                    style = MaterialTheme.typography.labelMedium,
+                    style = MaterialTheme.typography.labelSmall,
                     modifier = Modifier
                         .align(Alignment.BottomEnd)
-                        .padding(8.dp)
-                        .background(Color.Black.copy(alpha = 0.82f), RoundedCornerShape(4.dp))
+                        .padding(5.dp)
+                        .background(Color.Black.copy(alpha = 0.84f), RoundedCornerShape(4.dp))
                         .padding(horizontal = 5.dp, vertical = 2.dp)
                 )
             }
@@ -2651,62 +2805,59 @@ private fun RelatedVideoCard(video: VideoItem, onPlay: () -> Unit, onWatchLater:
                     style = MaterialTheme.typography.labelSmall,
                     modifier = Modifier
                         .align(Alignment.BottomStart)
-                        .padding(8.dp)
+                        .padding(5.dp)
                         .background(Color(0xFFD32F2F), RoundedCornerShape(4.dp))
                         .padding(horizontal = 6.dp, vertical = 3.dp)
                 )
             }
             ResumeProgress(video, Modifier.align(Alignment.BottomCenter).fillMaxWidth())
         }
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(start = 12.dp, top = 10.dp, end = 4.dp),
-            verticalAlignment = Alignment.Top
-        ) {
-            ChannelAvatar(video.channelThumbnailUrl, video.channelTitle, 38.dp)
-            Column(modifier = Modifier.weight(1f).padding(horizontal = 10.dp)) {
+        Column(modifier = Modifier.weight(1f).padding(start = 10.dp, top = 1.dp)) {
+            Text(
+                video.title,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis
+            )
+            Text(
+                video.channelTitle,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.padding(top = 5.dp)
+            )
+            val published = formatPublishedAt(video.publishedAt)
+            if (published.isNotBlank()) {
                 Text(
-                    video.title,
-                    fontWeight = FontWeight.SemiBold,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis
+                    published,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 2.dp)
                 )
-                val metadata = listOfNotNull(
-                    video.channelTitle.takeIf { it.isNotBlank() },
-                    formatPublishedAt(video.publishedAt).takeIf { it.isNotBlank() }
-                ).joinToString(" · ")
-                if (metadata.isNotBlank()) {
-                    Text(
-                        metadata,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.padding(top = 3.dp)
-                    )
-                }
             }
-            Box {
-                IconButton(onClick = { menuExpanded = true }) {
-                    Icon(Icons.Default.MoreVert, "Opciones")
-                }
-                DropdownMenu(expanded = menuExpanded, onDismissRequest = { menuExpanded = false }) {
-                    DropdownMenuItem(
-                        text = { Text("Ver después") },
-                        leadingIcon = { Icon(Icons.Outlined.WatchLater, null) },
-                        onClick = {
-                            menuExpanded = false
-                            onWatchLater()
-                        }
-                    )
-                    DropdownMenuItem(
-                        text = { Text("Reproducir") },
-                        leadingIcon = { Icon(Icons.Default.PlayArrow, null) },
-                        onClick = {
-                            menuExpanded = false
-                            onPlay()
-                        }
-                    )
-                }
+        }
+        Box {
+            IconButton(onClick = { menuExpanded = true }, modifier = Modifier.size(40.dp)) {
+                Icon(Icons.Default.MoreVert, "Opciones")
+            }
+            DropdownMenu(expanded = menuExpanded, onDismissRequest = { menuExpanded = false }) {
+                DropdownMenuItem(
+                    text = { Text("Ver después") },
+                    leadingIcon = { Icon(Icons.Outlined.WatchLater, null) },
+                    onClick = {
+                        menuExpanded = false
+                        onWatchLater()
+                    }
+                )
+                DropdownMenuItem(
+                    text = { Text("Reproducir") },
+                    leadingIcon = { Icon(Icons.Default.PlayArrow, null) },
+                    onClick = {
+                        menuExpanded = false
+                        onPlay()
+                    }
+                )
             }
         }
     }

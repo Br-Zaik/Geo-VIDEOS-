@@ -11,6 +11,9 @@ class GeoVideosRepository(context: Context) {
     fun loadWatchLater(): List<VideoItem> = decodeVideos(preferences.getString(KEY_WATCH_LATER, "[]").orEmpty())
     fun loadDownloads(): List<VideoItem> = decodeVideos(preferences.getString(KEY_DOWNLOADS, "[]").orEmpty())
     fun loadSearchHistory(): List<String> = decodeStrings(preferences.getString(KEY_SEARCH_HISTORY, "[]").orEmpty())
+    fun loadLocalLikedIds(): Set<String> = preferences.getStringSet(KEY_LOCAL_LIKES, emptySet()).orEmpty().toSet()
+    fun loadLocalDislikedIds(): Set<String> = preferences.getStringSet(KEY_LOCAL_DISLIKES, emptySet()).orEmpty().toSet()
+    fun loadLocalLikedVideos(): List<VideoItem> = loadVideos(KEY_LOCAL_LIKED_VIDEOS)
 
     fun loadAutoplay(): Boolean = preferences.getBoolean(KEY_AUTOPLAY, true)
     fun loadDataSaver(): Boolean = preferences.getBoolean(KEY_DATA_SAVER, false)
@@ -157,6 +160,40 @@ class GeoVideosRepository(context: Context) {
         return current.take(150).also { saveVideos(KEY_WATCH_LATER, it) }
     }
 
+
+    fun toggleLocalLike(video: VideoItem): Triple<Set<String>, Set<String>, List<VideoItem>> {
+        val videoId = video.id
+        val likes = loadLocalLikedIds().toMutableSet()
+        val dislikes = loadLocalDislikedIds().toMutableSet()
+        val localVideos = loadLocalLikedVideos().filterNot { it.id == videoId }.toMutableList()
+        if (likes.add(videoId)) {
+            localVideos.add(0, video)
+        } else {
+            likes.remove(videoId)
+        }
+        dislikes.remove(videoId)
+        preferences.edit()
+            .putStringSet(KEY_LOCAL_LIKES, likes)
+            .putStringSet(KEY_LOCAL_DISLIKES, dislikes)
+            .putString(KEY_LOCAL_LIKED_VIDEOS, encodeVideos(localVideos.take(250)).toString())
+            .apply()
+        return Triple(likes, dislikes, localVideos.take(250))
+    }
+
+    fun toggleLocalDislike(videoId: String): Triple<Set<String>, Set<String>, List<VideoItem>> {
+        val likes = loadLocalLikedIds().toMutableSet()
+        val dislikes = loadLocalDislikedIds().toMutableSet()
+        val localVideos = loadLocalLikedVideos().filterNot { it.id == videoId }
+        if (!dislikes.add(videoId)) dislikes.remove(videoId)
+        likes.remove(videoId)
+        preferences.edit()
+            .putStringSet(KEY_LOCAL_LIKES, likes)
+            .putStringSet(KEY_LOCAL_DISLIKES, dislikes)
+            .putString(KEY_LOCAL_LIKED_VIDEOS, encodeVideos(localVideos).toString())
+            .apply()
+        return Triple(likes, dislikes, localVideos)
+    }
+
     fun addDownload(title: String, url: String, downloadId: Long): List<VideoItem> {
         val item = VideoItem(
             id = "download-$downloadId",
@@ -196,6 +233,9 @@ class GeoVideosRepository(context: Context) {
             .remove(KEY_WATCH_LATER)
             .remove(KEY_DOWNLOADS)
             .remove(KEY_SEARCH_HISTORY)
+            .remove(KEY_LOCAL_LIKES)
+            .remove(KEY_LOCAL_DISLIKES)
+            .remove(KEY_LOCAL_LIKED_VIDEOS)
             .apply()
     }
 
@@ -392,6 +432,9 @@ class GeoVideosRepository(context: Context) {
         const val KEY_WATCH_LATER = "watch_later"
         const val KEY_DOWNLOADS = "downloads"
         const val KEY_SEARCH_HISTORY = "search_history"
+        const val KEY_LOCAL_LIKES = "local_likes"
+        const val KEY_LOCAL_DISLIKES = "local_dislikes"
+        const val KEY_LOCAL_LIKED_VIDEOS = "local_liked_videos"
         const val KEY_AUTOPLAY = "autoplay"
         const val KEY_DATA_SAVER = "data_saver"
         const val KEY_NOTIFICATIONS = "notifications_enabled"

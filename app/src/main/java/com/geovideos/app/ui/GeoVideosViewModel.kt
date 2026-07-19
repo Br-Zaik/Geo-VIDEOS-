@@ -63,6 +63,8 @@ data class GeoVideosUiState(
     val shortsCanLoadMore: Boolean = true,
     val uploadsLoadingMore: Boolean = false,
     val uploadsCanLoadMore: Boolean = true,
+    val likedLoadingMore: Boolean = false,
+    val likedCanLoadMore: Boolean = true,
     val searchLoadingMore: Boolean = false,
     val personalized: List<VideoItem> = emptyList(),
     val popular: List<VideoItem> = emptyList(),
@@ -78,6 +80,9 @@ data class GeoVideosUiState(
     val notifications: List<NotificationItem> = emptyList(),
     val history: List<VideoItem> = emptyList(),
     val watchLater: List<VideoItem> = emptyList(),
+    val localLikedIds: Set<String> = emptySet(),
+    val localDislikedIds: Set<String> = emptySet(),
+    val localLikedVideos: List<VideoItem> = emptyList(),
     val downloads: List<VideoItem> = emptyList(),
     val searchHistory: List<String> = emptyList(),
     val selectedVideo: VideoItem? = null,
@@ -120,6 +125,7 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
     private var shortsNextToken: String = ""
     private var shortsQuery: String = "shorts"
     private var uploadsNextToken: String = ""
+    private var likedNextToken: String = ""
     private var searchNextToken: String = ""
     private var relatedNextToken: String = ""
     private var relatedVideoId: String = ""
@@ -149,6 +155,9 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
             notifications = repository.loadNotifications(),
             history = repository.loadHistory(),
             watchLater = repository.loadWatchLater(),
+            localLikedIds = repository.loadLocalLikedIds(),
+            localDislikedIds = repository.loadLocalDislikedIds(),
+            localLikedVideos = repository.loadLocalLikedVideos(),
             downloads = repository.loadDownloads(),
             searchHistory = repository.loadSearchHistory(),
             autoplay = repository.loadAutoplay(),
@@ -252,6 +261,9 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
                 authStatus = AuthStatus.DISCONNECTED,
                 history = repository.loadHistory(),
                 watchLater = repository.loadWatchLater(),
+                localLikedIds = repository.loadLocalLikedIds(),
+                localDislikedIds = repository.loadLocalDislikedIds(),
+                localLikedVideos = repository.loadLocalLikedVideos(),
                 downloads = repository.loadDownloads(),
                 searchHistory = repository.loadSearchHistory(),
                 autoplay = repository.loadAutoplay(),
@@ -267,6 +279,9 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
             it.copy(
                 history = emptyList(),
                 watchLater = emptyList(),
+                localLikedIds = emptySet(),
+                localDislikedIds = emptySet(),
+                localLikedVideos = emptyList(),
                 downloads = emptyList(),
                 searchHistory = emptyList(),
                 message = "Historial y datos locales eliminados."
@@ -289,12 +304,14 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
                 loadingMoreCategory = null,
                 shortsLoadingMore = false,
                 uploadsLoadingMore = false,
+                likedLoadingMore = false,
                 canLoadMoreForYou = true,
                 canLoadMoreLive = true,
                 canLoadMoreGaming = true,
                 canLoadMoreMusic = true,
                 shortsCanLoadMore = true,
-                uploadsCanLoadMore = true
+                uploadsCanLoadMore = true,
+                likedCanLoadMore = true
             )
         }
         loadAll(initialLoad = false)
@@ -346,8 +363,10 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
                     val uploadsPage = runCatching {
                         api.playlistVideosPage(token, uploadsPlaylistId, maxResults = 25)
                     }.getOrDefault(VideoPage(previous.uploads))
-                    val likedRaw = runCatching { api.playlistVideos(token, likesPlaylistId, 40) }
-                        .getOrDefault(previous.liked)
+                    val likedPage = runCatching {
+                        api.playlistVideosPage(token, likesPlaylistId, maxResults = 50)
+                    }.getOrDefault(VideoPage(previous.liked))
+                    val likedRaw = likedPage.items
                     val subscriptions = subscriptionsDeferred.await()
                     subscriptionOffset = minOf(INITIAL_SUBSCRIPTION_BATCH, subscriptions.size)
                     val subscriptionWindow = if (subscriptions.isEmpty()) {
@@ -427,22 +446,24 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
                     fun enriched(items: List<VideoItem>): List<VideoItem> =
                         items.map { enrichedById[it.id] ?: it }
 
-                    val popular = enriched(popularPage.items)
+                    val popular = enriched(popularPage.items).filterNot(::looksLikeShort)
                     val live = enriched(livePage.items)
-                    val gaming = enriched(gamingPage.items)
-                    val music = enriched(musicPage.items)
+                    val gaming = enriched(gamingPage.items).filterNot(::looksLikeShort)
+                    val music = enriched(musicPage.items).filterNot(::looksLikeShort)
                     val shorts = enriched(shortsRaw)
                     val liked = enriched(likedRaw)
                     val subscriptionFeed = enriched(subscriptionFeedRaw)
+                    val normalSubscriptionFeed = subscriptionFeed.filterNot(::looksLikeShort)
                     val uploads = enriched(uploadsPage.items)
                     val activityVideos = enriched(activityVideosRaw)
+                    val normalActivityVideos = activityVideos.filterNot(::looksLikeShort)
                     val notifications = notificationsRaw.map { item ->
                         item.copy(video = item.video?.let { enrichedById[it.id] ?: it })
                     }
 
                     val personalizedBase = mergeUniqueVideos(
-                        subscriptionFeed,
-                        activityVideos,
+                        normalSubscriptionFeed,
+                        normalActivityVideos,
                         if (initialLoad) emptyList() else previous.personalized,
                         liked.take(12),
                         previous.history.take(10),
@@ -466,6 +487,7 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
                     musicNextToken = musicPage.nextPageToken
                     shortsNextToken = shortsPage.nextPageToken
                     uploadsNextToken = uploadsPage.nextPageToken
+                    likedNextToken = likedPage.nextPageToken
 
                     val previousRemoteIds = mergeUniqueVideos(
                         previous.personalized,
@@ -518,6 +540,8 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
                             canLoadMoreMusic = musicNextToken.isNotBlank(),
                             shortsCanLoadMore = shortsNextToken.isNotBlank(),
                             uploadsCanLoadMore = uploadsNextToken.isNotBlank(),
+                            likedLoadingMore = false,
+                            likedCanLoadMore = likedNextToken.isNotBlank(),
                             profile = profile,
                             personalized = personalized,
                             popular = popular,
@@ -552,6 +576,7 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
                         loadingMoreCategory = null,
                         shortsLoadingMore = false,
                         uploadsLoadingMore = false,
+                        likedLoadingMore = false,
                         authStatus = if (it.profile != null) AuthStatus.CONNECTED else AuthStatus.ERROR,
                         authError = if (it.profile == null) error.message ?: "No se pudo cargar el servicio de video." else "",
                         message = if (it.profile != null) {
@@ -680,6 +705,38 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
+    fun loadMoreLiked() {
+        val state = _uiState.value
+        val token = accessToken ?: return
+        if (state.likedLoadingMore || !state.likedCanLoadMore || likedNextToken.isBlank()) return
+        val requestedToken = likedNextToken
+        _uiState.update { it.copy(likedLoadingMore = true) }
+        viewModelScope.launch {
+            val page = runCatching {
+                api.playlistVideosPage(
+                    token = token,
+                    playlistId = likesPlaylistId,
+                    pageToken = requestedToken,
+                    maxResults = 50
+                )
+            }.getOrNull()
+            if (page == null) {
+                _uiState.update { it.copy(likedLoadingMore = false, likedCanLoadMore = false) }
+                return@launch
+            }
+            likedNextToken = page.nextPageToken
+            val enriched = enrichVideosWithCache(token, page.items)
+            _uiState.update { current ->
+                current.copy(
+                    liked = (current.liked + enriched).distinctBy { it.id },
+                    likedLoadingMore = false,
+                    likedCanLoadMore = likedNextToken.isNotBlank()
+                )
+            }
+            persistCurrentSnapshot()
+        }
+    }
+
     private suspend fun loadMorePersonalized(token: String) {
         val current = _uiState.value
         val subscriptions = current.subscriptions
@@ -767,6 +824,7 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
         musicNextToken = ""
         shortsNextToken = ""
         uploadsNextToken = ""
+        likedNextToken = ""
         subscriptionOffset = 0
         if (!keepSearch) {
             searchNextToken = ""
@@ -825,7 +883,7 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
                 gaming = state.gaming,
                 music = state.music,
                 shorts = state.shorts,
-                liked = state.liked,
+                liked = state.liked.take(300),
                 uploads = state.uploads,
                 subscriptions = state.subscriptions,
                 playlists = state.playlists,
@@ -844,6 +902,10 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     fun play(video: VideoItem) {
+        if (looksLikeShort(video)) {
+            previewShort(video)
+            return
+        }
         val saved = repository.loadHistory().firstOrNull { it.id == video.id }
         val playable = video.copy(
             resumePositionMs = saved?.resumePositionMs ?: video.resumePositionMs,
@@ -877,6 +939,7 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
             it.copy(
                 selectedVideo = playable,
                 playerExpanded = false,
+                section = MainSection.SHORTS,
                 history = history,
                 playerDetails = null,
                 playerDetailsLoading = false,
@@ -983,9 +1046,12 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
                 if (_uiState.value.selectedVideo?.id != video.id || relatedVideoId != video.id) return@supervisorScope
 
                 relatedNextToken = relatedPage?.nextPageToken.orEmpty()
-                val related = mergeUniqueVideos(
-                    relatedPage?.items.orEmpty().filterNot { it.id == video.id },
-                    fallback
+                val related = filterRelatedCandidates(
+                    current = video,
+                    candidates = mergeUniqueVideos(
+                        relatedPage?.items.orEmpty().filterNot { it.id == video.id },
+                        fallback
+                    )
                 ).take(40)
                 _uiState.update {
                     if (it.selectedVideo?.id != video.id) it else it.copy(
@@ -1029,9 +1095,12 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
             relatedNextToken = page.nextPageToken
             _uiState.update {
                 it.copy(
-                    relatedVideos = (it.relatedVideos + page.items)
-                        .filterNot { candidate -> candidate.id == video.id }
-                        .distinctBy { candidate -> candidate.id },
+                    relatedVideos = filterRelatedCandidates(
+                        current = video,
+                        candidates = (it.relatedVideos + page.items)
+                            .filterNot { candidate -> candidate.id == video.id }
+                            .distinctBy { candidate -> candidate.id }
+                    ),
                     relatedLoadingMore = false,
                     relatedCanLoadMore = relatedNextToken.isNotBlank()
                 )
@@ -1045,19 +1114,22 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
             .split(Regex("""[^\p{L}\p{N}]+"""))
             .filter { it.length >= 4 }
             .toSet()
-        return sequenceOf(
-            state.personalized,
-            state.popular,
-            state.music,
-            state.gaming,
-            state.live,
-            state.shorts,
-            state.liked,
-            state.history
-        ).flatten()
-            .filterNot { it.id == video.id }
-            .distinctBy { it.id }
-            .sortedByDescending { candidate ->
+        return filterRelatedCandidates(
+            current = video,
+            candidates = sequenceOf(
+                state.personalized,
+                state.popular,
+                state.music,
+                state.gaming,
+                state.live,
+                state.shorts,
+                state.liked,
+                state.history
+            ).flatten()
+                .filterNot { it.id == video.id }
+                .distinctBy { it.id }
+                .toList()
+        ).sortedByDescending { candidate ->
                 var score = 0
                 if (candidate.channelId.isNotBlank() && candidate.channelId == video.channelId) score += 6
                 if (candidate.channelTitle.equals(video.channelTitle, ignoreCase = true)) score += 4
@@ -1068,6 +1140,76 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
             }
             .take(24)
             .toList()
+    }
+
+
+    private enum class ScriptGroup { LATIN, CJK, CYRILLIC, OTHER }
+
+    private fun filterRelatedCandidates(
+        current: VideoItem,
+        candidates: List<VideoItem>
+    ): List<VideoItem> {
+        val currentIsShort = looksLikeShort(current)
+        val currentScript = dominantScript(current.title + " " + current.channelTitle)
+        return candidates.asSequence()
+            .filterNot { it.id == current.id }
+            .filter { candidate -> currentIsShort || !looksLikeShort(candidate) }
+            .filter { candidate ->
+                if (candidate.channelId.isNotBlank() && candidate.channelId == current.channelId) {
+                    true
+                } else {
+                    val candidateScript = dominantScript(candidate.title + " " + candidate.channelTitle)
+                    currentScript == ScriptGroup.OTHER ||
+                        candidateScript == ScriptGroup.OTHER ||
+                        candidateScript == currentScript
+                }
+            }
+            .distinctBy { it.id }
+            .toList()
+    }
+
+    private fun dominantScript(text: String): ScriptGroup {
+        var latin = 0
+        var cjk = 0
+        var cyrillic = 0
+        text.forEach { char ->
+            when {
+                char in '\u0041'..'\u024F' -> latin++
+                char in '\u3040'..'\u30FF' || char in '\u3400'..'\u9FFF' || char in '\uAC00'..'\uD7AF' -> cjk++
+                char in '\u0400'..'\u052F' -> cyrillic++
+            }
+        }
+        val max = maxOf(latin, cjk, cyrillic)
+        return when {
+            max == 0 -> ScriptGroup.OTHER
+            max == latin -> ScriptGroup.LATIN
+            max == cjk -> ScriptGroup.CJK
+            else -> ScriptGroup.CYRILLIC
+        }
+    }
+
+    fun toggleLocalLike(video: VideoItem) {
+        val (likes, dislikes, localVideos) = repository.toggleLocalLike(video)
+        _uiState.update {
+            it.copy(
+                localLikedIds = likes,
+                localDislikedIds = dislikes,
+                localLikedVideos = localVideos,
+                message = if (video.id in likes) "Me gusta guardado en Geo Videos." else "Me gusta eliminado."
+            )
+        }
+    }
+
+    fun toggleLocalDislike(video: VideoItem) {
+        val (likes, dislikes, localVideos) = repository.toggleLocalDislike(video.id)
+        _uiState.update {
+            it.copy(
+                localLikedIds = likes,
+                localDislikedIds = dislikes,
+                localLikedVideos = localVideos,
+                message = if (video.id in dislikes) "Marcado como no me gusta en Geo Videos." else "Reacción eliminada."
+            )
+        }
     }
 
     fun toggleWatchLater(video: VideoItem) {
@@ -1228,8 +1370,8 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
 
     private fun looksLikeShort(video: VideoItem): Boolean {
         val text = (video.title + " " + video.description).lowercase()
-        return video.durationMs in 1..180_000L ||
-            listOf("#shorts", " shorts", "short ", "tiktok", "reel", "clip").any { it in text }
+        val taggedAsShort = listOf("#shorts", " shorts", "short ", "tiktok", "reel").any { it in text }
+        return taggedAsShort || video.durationMs in 1..60_000L
     }
 
     private fun handleApiError(error: YouTubeApiException) {

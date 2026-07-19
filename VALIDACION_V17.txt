@@ -1,0 +1,31 @@
+GEO VIDEOS V17 - VALIDACION
+Fecha: 2026-07-19
+
+VERSION
+- versionName: 17.0.0
+- versionCode: 19
+- applicationId: com.geovideos.app
+
+CAMBIOS REVISADOS
+- Inicio modular con Mi mix y carrusel horizontal de Shorts.
+- Shorts enviados a reproductor vertical 9:16 en lugar de la pagina normal.
+- Coleccion separada en Historial, Ver despues, Me gustan, Mis videos y Suscripciones.
+- Me gustan con filas compactas, duracion, progreso, aleatorio, reproducir y paginacion.
+- Reacciones locales interactivas sin cambiar los permisos OAuth de solo lectura.
+- Relacionados compactos y filtrados para excluir Shorts en videos normales y reducir contenido de escritura distinta.
+- Minirreproductor compacto.
+- PlayerView con TextureView persistente para reducir negro al cambiar de orientacion.
+
+ARCHIVOS PROTEGIDOS (SHA-256 SIN CAMBIOS)
+- MainActivity.kt: 6e7dec6198e5a39cef00ecea729da49d3876b8721d87e61648363ac85c415c7f
+- AndroidManifest.xml: cc23515ce99095fb2fba9bec3d48a6900de6128df3fbb5e91fac86d24d5d06a5
+- geovideos-dev.jks: 6ea4c0bbb2141367772ea6ed632738097c886752314500b5cc8e4fab306792ab
+
+COMPROBACIONES
+- 13 archivos Kotlin incluidos.
+- 12 archivos XML parseados correctamente.
+- El analizador del compilador Kotlin no mostro errores de sintaxis del tipo "expecting", redeclaraciones ni parametros nuevos faltantes; los errores restantes corresponden a dependencias Android/Compose ausentes en este entorno.
+- ZIP comprobado mediante unzip -t.
+
+LIMITACION DE VALIDACION
+No se ejecuto una compilacion Android completa porque el entorno no dispone del Android SDK y no pudo resolver services.gradle.org. La compilacion definitiva debe hacerse con GitHub Actions.

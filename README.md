@@ -1,25 +1,22 @@
-# Geo Videos V15 — reproductor y feed estabilizados
+# Geo Videos V17 — navegación modular y biblioteca compacta
 
 Proyecto Android en Kotlin y Jetpack Compose.
 
 ## Cambios principales
 
-- Al salir de pantalla completa, la aplicación restaura la orientación vertical, las barras del sistema y el diseño normal.
-- El reproductor queda fijo arriba mientras se consulta la información, descripción y videos relacionados.
-- Controles superiores integrados: minimizar, calidad, velocidad, ajustes, siguiente y cerrar.
-- Modos de pantalla **Ajustar** y **Rellenar**.
-- Menú de reproducción ampliado con autoplay, repetición, silencio, temporizador, ventana flotante y apertura externa.
-- El reproductor puede minimizarse arrastrándolo hacia abajo; el minirreproductor puede abrirse deslizando hacia arriba o cerrarse deslizando hacia abajo.
-- Los videos relacionados se muestran con un diseño tipo YouTube: miniatura 16:9, duración, canal, fecha y menú de opciones.
-- Los primeros relacionados se consultan al abrir el video y se combinan con la caché local; ya no se espera a llegar al final de la pantalla.
-- La actualización de Principal usa un solo indicador al deslizar hacia abajo.
-- Se eliminaron los dos indicadores duplicados del encabezado.
-- Cada actualización consulta un grupo distinto de canales suscritos y coloca los videos realmente nuevos al principio.
-- Si no existen videos nuevos, conserva el contenido y lo informa mediante un mensaje; no simula una actualización.
-- Se eliminó la precarga de transmisiones mientras se navega por Principal, Buscar o Colección.
-- En Shorts y relacionados solo se precarga el siguiente video, con retraso, para reducir consumo y trabas.
-- El estado del reproductor se consulta con menor frecuencia para reducir recomposiciones.
-- Versión de aplicación: `15.0.0` (`versionCode 17`).
+- Inicio reorganizado por módulos: **Mi mix**, carrusel horizontal de Shorts y feed normal.
+- Los Shorts se abren en la pestaña vertical 9:16 y no en la página normal del reproductor.
+- Pantalla Shorts con un video por página, precarga limitada al siguiente y acciones laterales.
+- Colección separada en pantallas independientes: Historial, Ver después, Videos que me gustan, Mis videos y Suscripciones.
+- “Videos que me gustan” usa una lista compacta con miniatura 16:9, duración, progreso, canal, reproducción aleatoria y carga progresiva.
+- Suscripciones cuenta con una lista dedicada de canales y acceso directo al contenido de cada canal.
+- Me gusta y No me gusta responden localmente sin ampliar los permisos OAuth actuales.
+- El botón Canal y las acciones inferiores quedan fuera de la capa de gestos del reproductor y responden al primer toque.
+- Relacionados en filas compactas tipo YouTube y filtrados para excluir Shorts en videos normales y reducir resultados de escritura/idioma no relacionado.
+- Minirreproductor compacto con miniatura, título, canal, reproducir/pausar, cerrar y barra fina de progreso.
+- El reproductor usa una superficie `TextureView` persistente para reducir pantallas negras al cambiar entre vista normal y pantalla completa.
+- Miniaturas sin animación de fundido y con tamaños limitados para reducir carga durante el desplazamiento.
+- Versión de aplicación: `17.0.0` (`versionCode 19`).
 
 ## Inicio de sesión protegido
 
@@ -31,7 +28,11 @@ No se modificaron:
 - llave `app/geovideos-dev.jks`
 - flujo OAuth ni permisos de Google
 
-Los hashes de esos tres archivos fueron comparados antes y después y permanecen idénticos.
+Los hashes de esos archivos se comparan antes de entregar el proyecto.
+
+## Importante sobre Me gusta
+
+El acceso actual de Google es de solo lectura. Para no arriesgar el inicio de sesión, los nuevos Me gusta/No me gusta se guardan dentro de Geo Videos y se muestran en la biblioteca local. Los videos que ya estaban marcados en YouTube se siguen leyendo desde la lista oficial, pero esta versión no modifica la cuenta de YouTube.
 
 ## Compilación
 
@@ -40,11 +41,7 @@ Los hashes de esos tres archivos fueron comparados antes y después y permanecen
 3. Conserva la carpeta `.github/workflows` que ya existe en tu repositorio.
 4. Ejecuta **Compilar APK**.
 
-El entorno de trabajo no pudo descargar Gradle porque no tiene resolución de red. Se verificó el balance estructural de los archivos Kotlin modificados y el compilador de Kotlin no detectó errores de sintaxis, pero la validación definitiva sigue siendo GitHub Actions.
-
-## Limitación del feed
-
-La API pública de YouTube no expone el algoritmo privado exacto de recomendaciones. Geo Videos construye el feed con suscripciones, actividad, Me gusta, historial y contenido popular, y rota los canales consultados al actualizar para ampliar resultados sin introducir búsquedas aleatorias.
+Este entorno no dispone del Android SDK ni pudo descargar Gradle, por lo que la compilación definitiva debe ejecutarse en GitHub Actions. Se realizaron comprobaciones estructurales de Kotlin, XML, rutas, versión y archivos protegidos.
 
 ## Licencias
 
