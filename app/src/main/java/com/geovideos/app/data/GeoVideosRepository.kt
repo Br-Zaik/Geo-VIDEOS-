@@ -37,6 +37,7 @@ class GeoVideosRepository(context: Context) {
     fun loadMusic(): List<VideoItem> = loadVideos(KEY_MUSIC)
     fun loadShorts(): List<VideoItem> = loadVideos(KEY_SHORTS)
     fun loadLiked(): List<VideoItem> = loadVideos(KEY_LIKED)
+    fun loadUploads(): List<VideoItem> = loadVideos(KEY_UPLOADS)
     fun loadSubscriptions(): List<ChannelItem> = decodeChannels(preferences.getString(KEY_SUBSCRIPTIONS, "[]").orEmpty())
     fun loadPlaylists(): List<PlaylistItem> = decodePlaylists(preferences.getString(KEY_PLAYLISTS, "[]").orEmpty())
     fun loadNotifications(): List<NotificationItem> = decodeNotifications(preferences.getString(KEY_REMOTE_NOTIFICATIONS, "[]").orEmpty())
@@ -92,6 +93,7 @@ class GeoVideosRepository(context: Context) {
         music: List<VideoItem>,
         shorts: List<VideoItem>,
         liked: List<VideoItem>,
+        uploads: List<VideoItem>,
         subscriptions: List<ChannelItem>,
         playlists: List<PlaylistItem>,
         notifications: List<NotificationItem>,
@@ -113,6 +115,7 @@ class GeoVideosRepository(context: Context) {
             .putString(KEY_MUSIC, encodeVideos(music).toString())
             .putString(KEY_SHORTS, encodeVideos(shorts).toString())
             .putString(KEY_LIKED, encodeVideos(liked).toString())
+            .putString(KEY_UPLOADS, encodeVideos(uploads).toString())
             .putString(KEY_SUBSCRIPTIONS, encodeChannels(subscriptions).toString())
             .putString(KEY_PLAYLISTS, encodePlaylists(playlists).toString())
             .putString(KEY_REMOTE_NOTIFICATIONS, encodeNotifications(notifications).toString())
@@ -206,6 +209,7 @@ class GeoVideosRepository(context: Context) {
             .remove(KEY_MUSIC)
             .remove(KEY_SHORTS)
             .remove(KEY_LIKED)
+            .remove(KEY_UPLOADS)
             .remove(KEY_SUBSCRIPTIONS)
             .remove(KEY_PLAYLISTS)
             .remove(KEY_REMOTE_NOTIFICATIONS)
@@ -400,6 +404,7 @@ class GeoVideosRepository(context: Context) {
         const val KEY_MUSIC = "music"
         const val KEY_SHORTS = "shorts"
         const val KEY_LIKED = "liked"
+        const val KEY_UPLOADS = "uploads"
         const val KEY_SUBSCRIPTIONS = "subscriptions"
         const val KEY_PLAYLISTS = "playlists"
         const val KEY_REMOTE_NOTIFICATIONS = "remote_notifications"

@@ -14,8 +14,8 @@ android {
         applicationId = "com.geovideos.app"
         minSdk = 23
         targetSdk = 35
-        versionCode = 10
-        versionName = "10.0.0"
+        versionCode = 12
+        versionName = "12.0.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables.useSupportLibrary = true
@@ -47,6 +47,7 @@ android {
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
+        isCoreLibraryDesugaringEnabled = true
     }
 
     buildFeatures {
@@ -70,6 +71,8 @@ kotlin {
 dependencies {
     val composeBom = platform("androidx.compose:compose-bom:2026.06.00")
 
+    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs_nio:2.0.1")
+
     implementation(composeBom)
     androidTestImplementation(composeBom)
 
@@ -89,9 +92,15 @@ dependencies {
     implementation("io.coil-kt:coil-compose:2.7.0")
 
     implementation("androidx.media3:media3-exoplayer:1.6.1")
+    implementation("androidx.media3:media3-exoplayer-dash:1.6.1")
+    implementation("androidx.media3:media3-exoplayer-hls:1.6.1")
+    implementation("androidx.media3:media3-datasource:1.6.1")
+    implementation("androidx.media3:media3-database:1.6.1")
     implementation("androidx.media3:media3-ui:1.6.1")
+    implementation("androidx.media3:media3-session:1.6.1")
 
-    implementation("com.pierfrancescosoffritti.androidyoutubeplayer:core:13.0.0")
+    // Public-stream resolver used by the custom Media3 player.
+    implementation("com.github.teamnewpipe:NewPipeExtractor:v0.26.3")
 
     debugImplementation("androidx.compose.ui:ui-tooling")
     debugImplementation("androidx.compose.ui:ui-test-manifest")

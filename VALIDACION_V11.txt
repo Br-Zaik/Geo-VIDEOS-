@@ -1,9 +1,0 @@
-Geo Videos V11 - validacion realizada
-
-- MainActivity.kt: sin modificaciones.
-- AndroidManifest.xml: sin modificaciones.
-- geovideos-dev.jks: sin modificaciones.
-- applicationId, firma y dependencia de Google Auth: sin modificaciones.
-- app/build.gradle.kts: solo se elevaron versionCode/versionName a 11/11.0.0.
-- Revision estatica de sintaxis Kotlin: sin errores de sintaxis ni parametros locales faltantes.
-- Compilacion APK local: no ejecutada porque este entorno no dispone del SDK/Gradle y no permite descargar la distribucion de Gradle desde el script.

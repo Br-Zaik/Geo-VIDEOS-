@@ -7,22 +7,10 @@ import android.app.PictureInPictureParams
 import android.content.Context
 import android.content.ContextWrapper
 import android.content.Intent
-import android.content.pm.ActivityInfo
 import android.net.Uri
 import android.os.Build
 import android.os.Environment
-import android.os.Handler
-import android.os.Looper
-import android.webkit.JavascriptInterface
-import android.webkit.WebChromeClient
-import android.webkit.WebResourceRequest
-import android.webkit.WebResourceResponse
-import android.webkit.WebSettings
-import android.webkit.WebView
-import android.webkit.WebViewClient
 import android.util.Rational
-import android.view.View
-import android.view.ViewGroup
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -148,9 +136,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import androidx.media3.common.MediaItem
 import androidx.media3.common.util.UnstableApi
-import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.session.MediaController
 import androidx.media3.ui.PlayerView
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
@@ -161,6 +148,7 @@ import com.geovideos.app.data.MediaKind
 import com.geovideos.app.data.NotificationItem
 import com.geovideos.app.data.PlaylistItem
 import com.geovideos.app.data.VideoItem
+import com.geovideos.app.playback.GeoPlayerConnection
 import kotlinx.coroutines.delay
 
 private const val PACKAGE_NAME = "com.geovideos.app"
@@ -174,6 +162,10 @@ fun GeoVideosApp(
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val snackbar = remember { SnackbarHostState() }
+    val context = LocalContext.current
+    val playerConnection = remember(context.applicationContext) {
+        GeoPlayerConnection.get(context.applicationContext)
+    }
 
     LaunchedEffect(state.message) {
         state.message?.let {
@@ -183,6 +175,22 @@ fun GeoVideosApp(
     }
 
     val selectedVideo = state.selectedVideo
+
+    LaunchedEffect(selectedVideo?.id, state.autoplay, state.dataSaver) {
+        selectedVideo?.let { video ->
+            playerConnection.open(
+                video = video,
+                autoplay = state.autoplay,
+                dataSaver = state.dataSaver
+            )
+        }
+    }
+
+    PlaybackProgressSaver(
+        video = selectedVideo,
+        playerConnection = playerConnection,
+        onSavePlayback = viewModel::savePlayback
+    )
 
     Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
         if (state.authStatus != AuthStatus.CONNECTED) {
@@ -206,10 +214,11 @@ fun GeoVideosApp(
                     onRefresh = viewModel::refresh,
                     onLoadMoreHome = viewModel::loadMoreHome,
                     onLoadMoreShorts = viewModel::loadMoreShorts,
+                    onLoadMoreUploads = viewModel::loadMoreUploads,
                     onLoadMoreSearch = viewModel::loadMoreSearch,
                     onOpenChannel = viewModel::openChannel,
                     onCloseChannel = viewModel::closeChannel,
-                    onDisconnect = viewModel::disconnect,
+                    onDisconnect = { playerConnection.stop(); viewModel.disconnect() },
                     onClearData = viewModel::clearLocalData,
                     onRegisterDownload = viewModel::registerDownload,
                     onRemoveDownload = viewModel::removeDownload,
@@ -226,11 +235,15 @@ fun GeoVideosApp(
                     ) {
                         PlayerScreen(
                             video = selectedVideo,
+                            playerConnection = playerConnection,
                             isWatchLater = state.watchLater.any { it.id == selectedVideo.id },
                             autoplay = state.autoplay,
                             dataSaver = state.dataSaver,
                             onBack = viewModel::minimizePlayer,
-                            onClose = viewModel::closePlayer,
+                            onClose = {
+                                playerConnection.stop()
+                                viewModel.closePlayer()
+                            },
                             onWatchLater = { viewModel.toggleWatchLater(selectedVideo) },
                             onSavePlayback = viewModel::savePlayback,
                             onRegisterDownload = viewModel::registerDownload,
@@ -241,9 +254,12 @@ fun GeoVideosApp(
                     selectedVideo?.let { video ->
                         MiniPlayer(
                             video = video,
-                            autoplay = true,
+                            playerConnection = playerConnection,
                             onExpand = viewModel::expandPlayer,
-                            onClose = viewModel::closePlayer,
+                            onClose = {
+                                playerConnection.stop()
+                                viewModel.closePlayer()
+                            },
                             onSavePlayback = viewModel::savePlayback,
                             modifier = Modifier
                                 .align(Alignment.BottomCenter)
@@ -252,6 +268,30 @@ fun GeoVideosApp(
                     }
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun PlaybackProgressSaver(
+    video: VideoItem?,
+    playerConnection: GeoPlayerConnection,
+    onSavePlayback: (VideoItem, Long, Long) -> Unit
+) {
+    val playback by playerConnection.state.collectAsStateWithLifecycle()
+    var lastSavedVideoId by remember { mutableStateOf("") }
+    var lastSavedPositionMs by remember { mutableLongStateOf(0L) }
+
+    LaunchedEffect(video?.id, playback.positionMs, playback.durationMs) {
+        val selected = video ?: return@LaunchedEffect
+        if (playback.currentVideoId != selected.id) return@LaunchedEffect
+        if (lastSavedVideoId != selected.id) {
+            lastSavedVideoId = selected.id
+            lastSavedPositionMs = selected.resumePositionMs
+        }
+        if (kotlin.math.abs(playback.positionMs - lastSavedPositionMs) >= 10_000L) {
+            lastSavedPositionMs = playback.positionMs
+            onSavePlayback(selected, playback.positionMs, playback.durationMs)
         }
     }
 }
@@ -342,6 +382,7 @@ private fun MainShell(
     onRefresh: () -> Unit,
     onLoadMoreHome: (HomeCategory) -> Unit,
     onLoadMoreShorts: () -> Unit,
+    onLoadMoreUploads: () -> Unit,
     onLoadMoreSearch: () -> Unit,
     onOpenChannel: (ChannelItem) -> Unit,
     onCloseChannel: () -> Unit,
@@ -486,11 +527,15 @@ private fun MainShell(
                 history = state.history,
                 watchLater = state.watchLater,
                 liked = state.liked,
+                uploads = state.uploads,
+                uploadsLoadingMore = state.uploadsLoadingMore,
+                uploadsCanLoadMore = state.uploadsCanLoadMore,
                 playlists = state.playlists,
                 subscriptions = state.subscriptions,
                 downloads = state.downloads,
                 onPlay = onPlay,
                 onWatchLater = onWatchLater,
+                onLoadMoreUploads = onLoadMoreUploads,
                 onOpenChannel = onOpenChannel,
                 onAddDownload = { showDownloadDialog = true },
                 onRemoveDownload = onRemoveDownload
@@ -911,11 +956,15 @@ private fun LibraryScreen(
     history: List<VideoItem>,
     watchLater: List<VideoItem>,
     liked: List<VideoItem>,
+    uploads: List<VideoItem>,
+    uploadsLoadingMore: Boolean,
+    uploadsCanLoadMore: Boolean,
     playlists: List<PlaylistItem>,
     subscriptions: List<ChannelItem>,
     downloads: List<VideoItem>,
     onPlay: (VideoItem) -> Unit,
     onWatchLater: (VideoItem) -> Unit,
+    onLoadMoreUploads: () -> Unit,
     onOpenChannel: (ChannelItem) -> Unit,
     onAddDownload: () -> Unit,
     onRemoveDownload: (Long) -> Unit
@@ -927,6 +976,30 @@ private fun LibraryScreen(
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
         item { LibraryShortcutRow(history.size, watchLater.size, liked.size, onAddDownload) }
+        item { SectionHeader("Mis videos", "Videos subidos a tu canal de YouTube") }
+        if (uploads.isEmpty()) {
+            item { EmptyBlock("Tu canal no tiene videos subidos o YouTube no devolvió esa lista.") }
+        } else {
+            items(uploads, key = { "upload-${it.id}" }) { video ->
+                CompactVideoRow(video, { onPlay(video) }, { onWatchLater(video) })
+            }
+            if (uploadsLoadingMore) {
+                item {
+                    Box(
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 16.dp),
+                        contentAlignment = Alignment.Center
+                    ) { CircularProgressIndicator(modifier = Modifier.size(28.dp), strokeWidth = 3.dp) }
+                }
+            } else if (uploadsCanLoadMore) {
+                item {
+                    OutlinedButton(onClick = onLoadMoreUploads, modifier = Modifier.fillMaxWidth()) {
+                        Icon(Icons.Default.Refresh, null)
+                        Spacer(Modifier.width(8.dp))
+                        Text("Cargar más de Mis videos")
+                    }
+                }
+            }
+        }
         if (history.isNotEmpty()) {
             item { SectionHeader("Continuar viendo", "Retoma cada video desde el punto donde lo dejaste") }
             item { HorizontalVideos(history.take(12), onPlay) }
@@ -1045,7 +1118,7 @@ private fun AccountScreen(
 
         Spacer(Modifier.height(24.dp))
         SettingSwitch("Reproducción automática", "Inicia el video al abrir el reproductor", autoplay, onAutoplayChange)
-        SettingSwitch("Ahorro de datos", "Evita que el video empiece automáticamente al abrirlo", dataSaver, onDataSaverChange)
+        SettingSwitch("Ahorro de datos", "Prioriza una calidad menor y reduce el consumo de red", dataSaver, onDataSaverChange)
         SettingSwitch("Avisos en la app", "Sincroniza actividad disponible para la campana", notificationsEnabled, onNotificationsChange)
 
         Spacer(Modifier.height(18.dp))
@@ -1165,6 +1238,7 @@ private fun ChannelScreen(
 @Composable
 private fun PlayerScreen(
     video: VideoItem,
+    playerConnection: GeoPlayerConnection,
     isWatchLater: Boolean,
     autoplay: Boolean,
     dataSaver: Boolean,
@@ -1176,31 +1250,24 @@ private fun PlayerScreen(
     onMessage: (String) -> Unit
 ) {
     val context = LocalContext.current
-    val effectiveAutoplay = autoplay && !dataSaver
-    val youtubeController = remember(video.id) { YouTubePlayerController() }
-    val directController = remember(video.id) { DirectPlayerController() }
-    var currentPositionMs by rememberSaveable(video.id) { mutableLongStateOf(video.resumePositionMs) }
-    var durationMs by rememberSaveable(video.id) { mutableLongStateOf(video.durationMs) }
-    var lastSavedMs by remember(video.id) { mutableLongStateOf(video.resumePositionMs) }
-    var isPlaying by remember(video.id) { mutableStateOf(effectiveAutoplay) }
+    val playback by playerConnection.state.collectAsStateWithLifecycle()
+    val controller by playerConnection.controller.collectAsStateWithLifecycle()
+    val currentPositionMs = playback.positionMs
+    val durationMs = playback.durationMs
+    val isPlaying = playback.isPlaying
     var isMuted by rememberSaveable(video.id) { mutableStateOf(false) }
     var repeatEnabled by rememberSaveable(video.id) { mutableStateOf(false) }
     var playbackSpeed by rememberSaveable(video.id) { mutableFloatStateOf(1f) }
     var showSettings by rememberSaveable { mutableStateOf(false) }
     var showTimer by rememberSaveable { mutableStateOf(false) }
     var timerMinutes by rememberSaveable { mutableStateOf<Int?>(null) }
-    var playerError by remember(video.id) { mutableStateOf<String?>(null) }
-    var playerReady by remember(video.id) { mutableStateOf(video.mediaKind != MediaKind.YOUTUBE) }
 
-    fun saveProgress(force: Boolean = false) {
-        if (force || kotlin.math.abs(currentPositionMs - lastSavedMs) >= 5_000L) {
-            lastSavedMs = currentPositionMs
-            onSavePlayback(video, currentPositionMs, durationMs)
-        }
+    fun saveProgress() {
+        onSavePlayback(video, currentPositionMs, durationMs)
     }
 
     fun minimize() {
-        saveProgress(force = true)
+        saveProgress()
         onBack()
     }
 
@@ -1209,9 +1276,7 @@ private fun PlayerScreen(
     LaunchedEffect(timerMinutes) {
         val minutes = timerMinutes ?: return@LaunchedEffect
         delay(minutes.toLong() * 60_000L)
-        youtubeController.pause()
-        directController.pause()
-        isPlaying = false
+        playerConnection.pause()
         timerMinutes = null
         onMessage("El temporizador detuvo la reproducción.")
     }
@@ -1230,7 +1295,7 @@ private fun PlayerScreen(
                         Icon(Icons.Default.Settings, "Controles")
                     }
                     IconButton(onClick = {
-                        saveProgress(force = true)
+                        saveProgress()
                         onClose()
                     }) {
                         Icon(Icons.Default.Close, "Cerrar")
@@ -1245,46 +1310,41 @@ private fun PlayerScreen(
                 .fillMaxSize()
                 .verticalScroll(rememberScrollState())
         ) {
-            Box(modifier = Modifier.fillMaxWidth().aspectRatio(16f / 9f).background(Color.Black)) {
-                if (video.mediaKind == MediaKind.YOUTUBE) {
-                    YouTubeNativePlayer(
-                        videoId = video.id,
-                        startPositionMs = video.resumePositionMs,
-                        autoplay = effectiveAutoplay,
-                        compact = false,
-                        controller = youtubeController,
-                        onProgress = { position, duration ->
-                            currentPositionMs = position
-                            durationMs = duration
-                            saveProgress()
-                        },
-                        onReady = { playerReady = true },
-                        onPlayingChanged = { isPlaying = it },
-                        onError = { playerError = it }
-                    )
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .aspectRatio(16f / 9f)
+                    .background(Color.Black)
+            ) {
+                if (controller != null && playback.currentVideoId == video.id) {
+                    GeoMediaPlayerView(controller = controller!!)
                 } else {
-                    DirectPlayer(
-                        source = video.source,
-                        startPositionMs = video.resumePositionMs,
-                        autoplay = effectiveAutoplay,
-                        controller = directController,
-                        onProgress = { position, duration ->
-                            currentPositionMs = position
-                            durationMs = duration
-                            saveProgress()
-                        },
-                        onPlayingChanged = { isPlaying = it },
-                        onError = { playerError = it }
-                    )
+                    Thumbnail(video.thumbnailUrl, Modifier.fillMaxSize())
                 }
 
-                if (!playerReady && playerError == null && video.mediaKind == MediaKind.YOUTUBE) {
-                    CircularProgressIndicator(modifier = Modifier.align(Alignment.Center))
-                }
-
-                playerError?.let { message ->
+                if (playback.connecting || playback.resolving) {
                     Column(
-                        modifier = Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.9f)).padding(24.dp),
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .background(Color.Black.copy(alpha = 0.55f)),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.Center
+                    ) {
+                        CircularProgressIndicator()
+                        Text(
+                            if (playback.resolving) "Preparando transmisión…" else "Iniciando reproductor…",
+                            color = Color.White,
+                            modifier = Modifier.padding(top = 12.dp)
+                        )
+                    }
+                }
+
+                playback.error?.let { message ->
+                    Column(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .background(Color.Black.copy(alpha = 0.9f))
+                            .padding(24.dp),
                         horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.Center
                     ) {
@@ -1296,13 +1356,16 @@ private fun PlayerScreen(
                             modifier = Modifier.padding(top = 12.dp),
                             textAlign = androidx.compose.ui.text.style.TextAlign.Center
                         )
-                        Button(
-                            onClick = { openExternalVideo(context, video, preferYouTubeApp = true) },
-                            modifier = Modifier.padding(top = 14.dp)
+                        Row(
+                            modifier = Modifier.padding(top = 14.dp),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            Icon(Icons.Default.OpenInBrowser, null)
-                            Spacer(Modifier.width(8.dp))
-                            Text("Abrir en YouTube")
+                            Button(onClick = {
+                                playerConnection.open(video, autoplay, dataSaver)
+                            }) { Text("Reintentar") }
+                            OutlinedButton(onClick = {
+                                openExternalVideo(context, video, preferYouTubeApp = true)
+                            }) { Text("Abrir externo") }
                         }
                     }
                 }
@@ -1316,6 +1379,11 @@ private fun PlayerScreen(
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(horizontal = 16.dp, vertical = 5.dp)
+                )
+            } else if (playback.bufferedPercentage > 0) {
+                LinearProgressIndicator(
+                    progress = { playback.bufferedPercentage / 100f },
+                    modifier = Modifier.fillMaxWidth()
                 )
             }
 
@@ -1337,23 +1405,19 @@ private fun PlayerScreen(
                     item {
                         AssistChip(
                             onClick = {
-                                if (isPlaying) {
-                                    youtubeController.pause()
-                                    directController.pause()
-                                } else {
-                                    youtubeController.play()
-                                    directController.play()
-                                }
+                                if (isPlaying) playerConnection.pause() else playerConnection.play()
                             },
                             label = { Text(if (isPlaying) "Pausar" else "Reproducir") },
-                            leadingIcon = { Icon(if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow, null) }
+                            leadingIcon = {
+                                Icon(if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow, null)
+                            }
                         )
                     }
                     item {
                         AssistChip(
                             onClick = onWatchLater,
                             label = { Text(if (isWatchLater) "Guardado" else "Ver después") },
-                            leadingIcon = { Icon(if (isWatchLater) Icons.Default.WatchLater else Icons.Outlined.WatchLater, null) }
+                            leadingIcon = { Icon(Icons.Default.WatchLater, null) }
                         )
                     }
                     item {
@@ -1365,115 +1429,107 @@ private fun PlayerScreen(
                     }
                     item {
                         AssistChip(
-                            onClick = {
-                                if (video.mediaKind == MediaKind.YOUTUBE) {
-                                    onMessage("YouTube no entrega el archivo del video. Descarga solo enlaces directos propios o autorizados desde Colección.")
-                                } else {
-                                    val id = enqueueDirectDownload(context, video.title, video.source, wifiOnly = false)
-                                    if (id >= 0L) onRegisterDownload(video.title, video.source, id)
-                                    else onMessage("El enlace directo no es válido.")
-                                }
-                            },
-                            label = { Text("Descargar") },
-                            leadingIcon = { Icon(Icons.Default.Download, null) }
+                            onClick = { showTimer = true },
+                            label = { Text(timerMinutes?.let { "$it min" } ?: "Temporizador") },
+                            leadingIcon = { Icon(Icons.Default.Timer, null) }
                         )
                     }
                     item {
                         AssistChip(
                             onClick = { enterPictureInPicture(context, onMessage) },
-                            label = { Text("Ventana") },
+                            label = { Text("Flotante") },
                             leadingIcon = { Icon(Icons.Default.PictureInPictureAlt, null) }
                         )
                     }
                 }
 
-                Row(
-                    modifier = Modifier.fillMaxWidth().padding(top = 18.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text("Información", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
-                    Spacer(Modifier.width(28.dp))
-                    Text("Comentarios", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
-                HorizontalDivider(modifier = Modifier.padding(top = 8.dp))
-
                 if (video.description.isNotBlank()) {
+                    HorizontalDivider(modifier = Modifier.padding(vertical = 18.dp))
+                    Text("Información", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
                     Text(
                         video.description,
-                        modifier = Modifier.padding(top = 14.dp),
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 10.dp)
                     )
                 }
-            }
-        }
-    }
 
-    if (showSettings) {
-        ModalBottomSheet(onDismissRequest = { showSettings = false }) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .verticalScroll(rememberScrollState())
-                    .padding(horizontal = 22.dp, vertical = 8.dp)
-            ) {
-                Text("Controles de reproducción", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
-                SettingSwitch(
-                    title = "Silencio",
-                    subtitle = if (isMuted) "Audio desactivado" else "Audio activado",
-                    checked = isMuted
-                ) { value ->
-                    isMuted = value
-                    youtubeController.mute(value)
-                    directController.mute(value)
-                }
-                SettingSwitch(
-                    title = "Repetir video",
-                    subtitle = "Vuelve al inicio al terminar",
-                    checked = repeatEnabled
-                ) { value ->
-                    repeatEnabled = value
-                    youtubeController.repeat(value)
-                    directController.repeat(value)
-                }
-                Text("Velocidad", fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(top = 10.dp))
-                LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(top = 8.dp)) {
-                    items(listOf(0.5f, 0.75f, 1f, 1.25f, 1.5f, 2f)) { rate ->
-                        FilterChip(
-                            selected = playbackSpeed == rate,
-                            onClick = {
-                                playbackSpeed = rate
-                                youtubeController.rate(rate)
-                                directController.rate(rate)
-                            },
-                            label = { Text("${rate}x") }
-                        )
+                if (video.mediaKind != MediaKind.YOUTUBE) {
+                    OutlinedButton(
+                        onClick = {
+                            val id = enqueueDirectDownload(context, video.title, video.source, false)
+                            if (id >= 0L) {
+                                onRegisterDownload(video.title, video.source, id)
+                                onMessage("Descarga iniciada.")
+                            } else {
+                                onMessage("No se pudo iniciar la descarga.")
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth().padding(top = 18.dp)
+                    ) {
+                        Icon(Icons.Default.Download, null)
+                        Spacer(Modifier.width(8.dp))
+                        Text("Descargar archivo")
                     }
                 }
-                OutlinedButton(
-                    onClick = { showTimer = true },
-                    modifier = Modifier.fillMaxWidth().padding(top = 16.dp)
-                ) {
-                    Icon(Icons.Default.Timer, null)
-                    Spacer(Modifier.width(8.dp))
-                    Text(if (timerMinutes == null) "Configurar temporizador" else "Temporizador: ${timerMinutes} min")
-                }
-                OutlinedButton(
-                    onClick = { enterPictureInPicture(context, onMessage) },
-                    modifier = Modifier.fillMaxWidth().padding(top = 10.dp)
-                ) {
-                    Icon(Icons.Default.PictureInPictureAlt, null)
-                    Spacer(Modifier.width(8.dp))
-                    Text("Ventana flotante")
-                }
+
                 OutlinedButton(
                     onClick = { openExternalVideo(context, video, preferYouTubeApp = true) },
                     modifier = Modifier.fillMaxWidth().padding(top = 10.dp)
                 ) {
                     Icon(Icons.Default.OpenInBrowser, null)
                     Spacer(Modifier.width(8.dp))
-                    Text("Abrir en YouTube / transmitir")
+                    Text("Abrir externamente / transmitir")
                 }
                 Spacer(Modifier.height(28.dp))
+            }
+        }
+    }
+
+    if (showSettings) {
+        ModalBottomSheet(onDismissRequest = { showSettings = false }) {
+            Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp)) {
+                Text("Controles", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                SettingSwitch(
+                    title = "Silencio",
+                    subtitle = "Desactiva temporalmente el audio",
+                    checked = isMuted,
+                    onChange = {
+                        isMuted = it
+                        playerConnection.setMuted(it)
+                    }
+                )
+                SettingSwitch(
+                    title = "Repetir video",
+                    subtitle = "Vuelve a comenzar al terminar",
+                    checked = repeatEnabled,
+                    onChange = {
+                        repeatEnabled = it
+                        playerConnection.setRepeat(it)
+                    }
+                )
+                Text("Velocidad: ${playbackSpeed}x", fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(top = 8.dp))
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(vertical = 12.dp)) {
+                    items(listOf(0.5f, 0.75f, 1f, 1.25f, 1.5f, 2f)) { speed ->
+                        FilterChip(
+                            selected = playbackSpeed == speed,
+                            onClick = {
+                                playbackSpeed = speed
+                                playerConnection.setSpeed(speed)
+                            },
+                            label = { Text("${speed}x") },
+                            leadingIcon = if (playbackSpeed == speed) {
+                                { Icon(Icons.Default.Speed, null) }
+                            } else null
+                        )
+                    }
+                }
+                Text(
+                    if (dataSaver) "Ahorro de datos activo: se prioriza una calidad menor."
+                    else "Calidad automática administrada por Media3.",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.bodySmall
+                )
+                Spacer(Modifier.height(22.dp))
             }
         }
     }
@@ -1491,9 +1547,7 @@ private fun PlayerScreen(
                                 showTimer = false
                             },
                             modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Text("Detener en $minutes minutos")
-                        }
+                        ) { Text("Detener en $minutes minutos") }
                     }
                     if (timerMinutes != null) {
                         TextButton(
@@ -1502,9 +1556,7 @@ private fun PlayerScreen(
                                 showTimer = false
                             },
                             modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Text("Cancelar temporizador")
-                        }
+                        ) { Text("Cancelar temporizador") }
                     }
                 }
             },
@@ -1516,334 +1568,91 @@ private fun PlayerScreen(
 @Composable
 private fun MiniPlayer(
     video: VideoItem,
-    autoplay: Boolean,
+    playerConnection: GeoPlayerConnection,
     onExpand: () -> Unit,
     onClose: () -> Unit,
     onSavePlayback: (VideoItem, Long, Long) -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val youtubeController = remember(video.id) { YouTubePlayerController() }
-    val directController = remember(video.id) { DirectPlayerController() }
-    var isPlaying by remember(video.id) { mutableStateOf(autoplay) }
-    var currentPositionMs by remember(video.id) { mutableLongStateOf(video.resumePositionMs) }
-    var durationMs by remember(video.id) { mutableLongStateOf(video.durationMs) }
-    var lastSavedMs by remember(video.id) { mutableLongStateOf(video.resumePositionMs) }
-
-    fun saveMiniProgress() {
-        if (kotlin.math.abs(currentPositionMs - lastSavedMs) >= 5_000L) {
-            lastSavedMs = currentPositionMs
-            onSavePlayback(video, currentPositionMs, durationMs)
-        }
-    }
+    val playback by playerConnection.state.collectAsStateWithLifecycle()
+    val isPlaying = playback.isPlaying
+    val currentPositionMs = playback.positionMs
+    val durationMs = playback.durationMs
 
     Surface(
-        modifier = modifier.fillMaxWidth().height(72.dp),
+        modifier = modifier.fillMaxWidth().height(74.dp),
         tonalElevation = 8.dp,
         shadowElevation = 8.dp
     ) {
-        Row(modifier = Modifier.fillMaxSize(), verticalAlignment = Alignment.CenterVertically) {
-            Box(modifier = Modifier.width(128.dp).height(72.dp).background(Color.Black)) {
-                if (video.mediaKind == MediaKind.YOUTUBE) {
-                    YouTubeNativePlayer(
-                        videoId = video.id,
-                        startPositionMs = video.resumePositionMs,
-                        autoplay = autoplay,
-                        compact = true,
-                        controller = youtubeController,
-                        onProgress = { position, duration ->
-                            currentPositionMs = position
-                            durationMs = duration
-                            saveMiniProgress()
-                        },
-                        onReady = {},
-                        onPlayingChanged = { isPlaying = it },
-                        onError = { _ -> }
-                    )
-                } else {
-                    DirectPlayer(
-                        source = video.source,
-                        startPositionMs = video.resumePositionMs,
-                        autoplay = autoplay,
-                        controller = directController,
-                        onProgress = { position, duration ->
-                            currentPositionMs = position
-                            durationMs = duration
-                            saveMiniProgress()
-                        },
-                        onPlayingChanged = { isPlaying = it },
-                        onError = { _ -> }
-                    )
+        Box(modifier = Modifier.fillMaxSize()) {
+            Row(modifier = Modifier.fillMaxSize(), verticalAlignment = Alignment.CenterVertically) {
+                Box(modifier = Modifier.width(132.dp).height(74.dp).background(Color.Black)) {
+                    Thumbnail(video.thumbnailUrl, Modifier.fillMaxSize())
+                    if (playback.resolving || playback.connecting) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.align(Alignment.Center).size(24.dp),
+                            strokeWidth = 3.dp
+                        )
+                    }
                 }
-            }
-            Column(
-                modifier = Modifier.weight(1f).clickable(onClick = onExpand).padding(horizontal = 12.dp),
-                verticalArrangement = Arrangement.Center
-            ) {
-                Text(video.title, maxLines = 1, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.SemiBold)
-                Text(video.channelTitle, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
-            IconButton(onClick = {
-                if (isPlaying) {
-                    youtubeController.pause()
-                    directController.pause()
-                } else {
-                    youtubeController.play()
-                    directController.play()
-                }
-            }) {
-                Icon(if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow, if (isPlaying) "Pausar" else "Reproducir")
-            }
-            IconButton(onClick = {
-                onSavePlayback(video, currentPositionMs, durationMs)
-                onClose()
-            }) {
-                Icon(Icons.Default.Close, "Cerrar")
-            }
-        }
-    }
-}
-
-private class YouTubePlayerController {
-    var player: com.pierfrancescosoffritti.androidyoutubeplayer.core.player.YouTubePlayer? = null
-    var playerView: com.pierfrancescosoffritti.androidyoutubeplayer.core.player.views.YouTubePlayerView? = null
-    var repeatEnabled: Boolean = false
-
-    fun play() { player?.play() }
-    fun pause() { player?.pause() }
-    fun mute(value: Boolean) { if (value) player?.mute() else player?.unMute() }
-    fun rate(value: Float) {
-        val rate = when (value) {
-            0.25f -> com.pierfrancescosoffritti.androidyoutubeplayer.core.player.PlayerConstants.PlaybackRate.RATE_0_25
-            0.5f -> com.pierfrancescosoffritti.androidyoutubeplayer.core.player.PlayerConstants.PlaybackRate.RATE_0_5
-            0.75f -> com.pierfrancescosoffritti.androidyoutubeplayer.core.player.PlayerConstants.PlaybackRate.RATE_0_75
-            1.25f -> com.pierfrancescosoffritti.androidyoutubeplayer.core.player.PlayerConstants.PlaybackRate.RATE_1_25
-            1.5f -> com.pierfrancescosoffritti.androidyoutubeplayer.core.player.PlayerConstants.PlaybackRate.RATE_1_5
-            1.75f -> com.pierfrancescosoffritti.androidyoutubeplayer.core.player.PlayerConstants.PlaybackRate.RATE_1_75
-            2f -> com.pierfrancescosoffritti.androidyoutubeplayer.core.player.PlayerConstants.PlaybackRate.RATE_2
-            else -> com.pierfrancescosoffritti.androidyoutubeplayer.core.player.PlayerConstants.PlaybackRate.RATE_1
-        }
-        player?.setPlaybackRate(rate)
-    }
-    fun repeat(value: Boolean) { repeatEnabled = value }
-    fun stop() { player?.pause() }
-}
-
-private class DirectPlayerController {
-    var player: ExoPlayer? = null
-
-    fun play() { player?.play() }
-    fun pause() { player?.pause() }
-    fun mute(value: Boolean) { player?.let { it.volume = if (value) 0f else 1f } }
-    fun rate(value: Float) { player?.setPlaybackSpeed(value) }
-    fun repeat(value: Boolean) {
-        player?.let {
-            it.repeatMode = if (value) androidx.media3.common.Player.REPEAT_MODE_ONE
-            else androidx.media3.common.Player.REPEAT_MODE_OFF
-        }
-    }
-}
-
-@Composable
-private fun YouTubeNativePlayer(
-    videoId: String,
-    startPositionMs: Long,
-    autoplay: Boolean,
-    compact: Boolean,
-    controller: YouTubePlayerController,
-    onProgress: (Long, Long) -> Unit,
-    onReady: () -> Unit,
-    onPlayingChanged: (Boolean) -> Unit,
-    onError: (String) -> Unit
-) {
-    val context = LocalContext.current
-    val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
-    val activity = context.findActivity()
-    val playerView = remember(videoId, compact) {
-        com.pierfrancescosoffritti.androidyoutubeplayer.core.player.views.YouTubePlayerView(context).apply {
-            enableAutomaticInitialization = false
-            setBackgroundColor(android.graphics.Color.BLACK)
-        }
-    }
-
-    DisposableEffect(playerView, videoId, compact) {
-        controller.playerView = playerView
-        lifecycleOwner.lifecycle.addObserver(playerView)
-        var currentSeconds = startPositionMs.coerceAtLeast(0L) / 1000f
-        var durationSeconds = 0f
-        var fullscreenView: View? = null
-        var exitFullscreenAction: (() -> Unit)? = null
-
-        val fullscreenListener = object : com.pierfrancescosoffritti.androidyoutubeplayer.core.player.listeners.FullscreenListener {
-            override fun onEnterFullscreen(fullscreen: View, exitFullscreen: () -> Unit) {
-                val host = activity?.window?.decorView as? ViewGroup ?: return
-                fullscreenView = fullscreen
-                exitFullscreenAction = exitFullscreen
-                (fullscreen.parent as? ViewGroup)?.removeView(fullscreen)
-                host.addView(
-                    fullscreen,
-                    ViewGroup.LayoutParams(
-                        ViewGroup.LayoutParams.MATCH_PARENT,
-                        ViewGroup.LayoutParams.MATCH_PARENT
-                    )
-                )
-                activity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
-                activity.window.decorView.systemUiVisibility =
-                    View.SYSTEM_UI_FLAG_FULLSCREEN or
-                        View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or
-                        View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
-            }
-
-            override fun onExitFullscreen() {
-                val host = activity?.window?.decorView as? ViewGroup
-                fullscreenView?.let { host?.removeView(it) }
-                fullscreenView = null
-                exitFullscreenAction = null
-                activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
-                activity?.window?.decorView?.systemUiVisibility = View.SYSTEM_UI_FLAG_VISIBLE
-            }
-        }
-        playerView.addFullscreenListener(fullscreenListener)
-
-        val listener = object : com.pierfrancescosoffritti.androidyoutubeplayer.core.player.listeners.AbstractYouTubePlayerListener() {
-            override fun onReady(youTubePlayer: com.pierfrancescosoffritti.androidyoutubeplayer.core.player.YouTubePlayer) {
-                controller.player = youTubePlayer
-                if (autoplay) youTubePlayer.loadVideo(videoId, currentSeconds)
-                else youTubePlayer.cueVideo(videoId, currentSeconds)
-                onReady()
-            }
-
-            override fun onCurrentSecond(
-                youTubePlayer: com.pierfrancescosoffritti.androidyoutubeplayer.core.player.YouTubePlayer,
-                second: Float
-            ) {
-                currentSeconds = second.coerceAtLeast(0f)
-                onProgress((currentSeconds * 1000f).toLong(), (durationSeconds * 1000f).toLong())
-            }
-
-            override fun onVideoDuration(
-                youTubePlayer: com.pierfrancescosoffritti.androidyoutubeplayer.core.player.YouTubePlayer,
-                duration: Float
-            ) {
-                durationSeconds = duration.coerceAtLeast(0f)
-                onProgress((currentSeconds * 1000f).toLong(), (durationSeconds * 1000f).toLong())
-            }
-
-            override fun onStateChange(
-                youTubePlayer: com.pierfrancescosoffritti.androidyoutubeplayer.core.player.YouTubePlayer,
-                state: com.pierfrancescosoffritti.androidyoutubeplayer.core.player.PlayerConstants.PlayerState
-            ) {
-                onPlayingChanged(state == com.pierfrancescosoffritti.androidyoutubeplayer.core.player.PlayerConstants.PlayerState.PLAYING)
-                if (
-                    state == com.pierfrancescosoffritti.androidyoutubeplayer.core.player.PlayerConstants.PlayerState.ENDED &&
-                    controller.repeatEnabled
+                Column(
+                    modifier = Modifier.weight(1f).clickable(onClick = onExpand).padding(horizontal = 12.dp),
+                    verticalArrangement = Arrangement.Center
                 ) {
-                    youTubePlayer.seekTo(0f)
-                    youTubePlayer.play()
+                    Text(video.title, maxLines = 1, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.SemiBold)
+                    Text(
+                        video.channelTitle,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                 }
+                IconButton(onClick = {
+                    if (isPlaying) playerConnection.pause() else playerConnection.play()
+                }) {
+                    Icon(
+                        if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
+                        if (isPlaying) "Pausar" else "Reproducir"
+                    )
+                }
+                IconButton(onClick = {
+                    onSavePlayback(video, currentPositionMs, durationMs)
+                    onClose()
+                }) { Icon(Icons.Default.Close, "Cerrar") }
             }
-
-            override fun onError(
-                youTubePlayer: com.pierfrancescosoffritti.androidyoutubeplayer.core.player.YouTubePlayer,
-                error: com.pierfrancescosoffritti.androidyoutubeplayer.core.player.PlayerConstants.PlayerError
-            ) {
-                onError(youtubeErrorMessage(error))
+            if (durationMs > 0L) {
+                LinearProgressIndicator(
+                    progress = { (currentPositionMs.toFloat() / durationMs.toFloat()).coerceIn(0f, 1f) },
+                    modifier = Modifier.align(Alignment.BottomCenter).fillMaxWidth()
+                )
             }
-        }
-
-        val options = com.pierfrancescosoffritti.androidyoutubeplayer.core.player.options.IFramePlayerOptions
-            .Builder(context)
-            .controls(if (compact) 0 else 1)
-            .fullscreen(if (compact) 0 else 1)
-            .rel(0)
-            .build()
-
-        playerView.initialize(listener, true, options)
-
-        onDispose {
-            exitFullscreenAction?.invoke()
-            fullscreenView?.let { (it.parent as? ViewGroup)?.removeView(it) }
-            controller.player = null
-            controller.playerView = null
-            lifecycleOwner.lifecycle.removeObserver(playerView)
-            playerView.release()
         }
     }
 
-    AndroidView(
-        modifier = Modifier.fillMaxSize().background(Color.Black),
-        factory = {
-            (playerView.parent as? ViewGroup)?.removeView(playerView)
-            playerView
-        },
-        update = {
-            if (it.parent == null) controller.playerView = it
-        }
-    )
 }
 
 @androidx.annotation.OptIn(markerClass = [UnstableApi::class])
 @Composable
-private fun DirectPlayer(
-    source: String,
-    startPositionMs: Long,
-    autoplay: Boolean,
-    controller: DirectPlayerController,
-    onProgress: (Long, Long) -> Unit,
-    onPlayingChanged: (Boolean) -> Unit,
-    onError: (String) -> Unit
-) {
-    val context = LocalContext.current
-    val player = remember(source) {
-        ExoPlayer.Builder(context).build().apply {
-            setMediaItem(MediaItem.fromUri(source))
-            prepare()
-            if (startPositionMs > 0L) seekTo(startPositionMs)
-            playWhenReady = autoplay
-            addListener(object : androidx.media3.common.Player.Listener {
-                override fun onIsPlayingChanged(isPlaying: Boolean) {
-                    onPlayingChanged(isPlaying)
-                }
-
-                override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
-                    onError(error.message ?: "No se pudo reproducir el archivo.")
-                }
-            })
-        }
-    }
-    controller.player = player
-    LaunchedEffect(player) {
-        while (true) {
-            onProgress(player.currentPosition.coerceAtLeast(0L), player.duration.coerceAtLeast(0L))
-            delay(1_500L)
-        }
-    }
-    DisposableEffect(player) {
-        onDispose {
-            onProgress(player.currentPosition.coerceAtLeast(0L), player.duration.coerceAtLeast(0L))
-            controller.player = null
-            player.release()
-        }
-    }
+private fun GeoMediaPlayerView(controller: MediaController) {
     AndroidView(
         modifier = Modifier.fillMaxSize().background(Color.Black),
-        factory = { PlayerView(it).apply { this.player = player; useController = true } },
-        update = { it.player = player }
+        factory = { context ->
+            PlayerView(context).apply {
+                player = controller
+                useController = true
+                controllerAutoShow = true
+                keepScreenOn = true
+                resizeMode = androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_FIT
+                setShowBuffering(PlayerView.SHOW_BUFFERING_WHEN_PLAYING)
+            }
+        },
+        update = { view ->
+            if (view.player !== controller) view.player = controller
+        }
     )
 }
 
-private fun youtubeErrorMessage(
-    error: com.pierfrancescosoffritti.androidyoutubeplayer.core.player.PlayerConstants.PlayerError
-): String = when (error) {
-    com.pierfrancescosoffritti.androidyoutubeplayer.core.player.PlayerConstants.PlayerError.INVALID_PARAMETER_IN_REQUEST ->
-        "El identificador del video no es válido."
-    com.pierfrancescosoffritti.androidyoutubeplayer.core.player.PlayerConstants.PlayerError.HTML_5_PLAYER ->
-        "El reproductor HTML5 no está disponible en este dispositivo."
-    com.pierfrancescosoffritti.androidyoutubeplayer.core.player.PlayerConstants.PlayerError.VIDEO_NOT_FOUND ->
-        "El video fue eliminado o es privado."
-    com.pierfrancescosoffritti.androidyoutubeplayer.core.player.PlayerConstants.PlayerError.VIDEO_NOT_PLAYABLE_IN_EMBEDDED_PLAYER ->
-        "El propietario no permite reproducir este video dentro de otras aplicaciones."
-    else -> "YouTube no pudo reproducir este video."
-}
 
 private fun formatDuration(milliseconds: Long): String {
     val totalSeconds = milliseconds.coerceAtLeast(0L) / 1000L
@@ -2026,7 +1835,15 @@ private fun PlaylistCard(playlist: PlaylistItem) {
 @Composable
 private fun ChannelCard(channel: ChannelItem, onClick: () -> Unit) {
     Column(modifier = Modifier.width(112.dp).clip(RoundedCornerShape(16.dp)).clickable(onClick = onClick).padding(8.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-        AsyncImage(model = channel.thumbnailUrl, contentDescription = channel.title, modifier = Modifier.size(82.dp).clip(CircleShape), contentScale = ContentScale.Crop)
+        val context = LocalContext.current
+        val request = remember(channel.thumbnailUrl) {
+            ImageRequest.Builder(context)
+                .data(channel.thumbnailUrl)
+                .size(180)
+                .crossfade(false)
+                .build()
+        }
+        AsyncImage(model = request, contentDescription = channel.title, modifier = Modifier.size(82.dp).clip(CircleShape), contentScale = ContentScale.Crop)
         Text(channel.title, fontWeight = FontWeight.SemiBold, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 8.dp), textAlign = androidx.compose.ui.text.style.TextAlign.Center)
     }
 }
@@ -2039,7 +1856,15 @@ private fun ProfileAvatar(profile: GoogleProfile?, size: androidx.compose.ui.uni
             Text(profile?.name?.take(1)?.uppercase() ?: "G", fontWeight = FontWeight.Bold)
         }
     } else {
-        AsyncImage(model = profile?.pictureUrl, contentDescription = "Cuenta", modifier = modifier, contentScale = ContentScale.Crop)
+        val context = LocalContext.current
+        val request = remember(profile?.pictureUrl) {
+            ImageRequest.Builder(context)
+                .data(profile?.pictureUrl)
+                .size(220)
+                .crossfade(false)
+                .build()
+        }
+        AsyncImage(model = request, contentDescription = "Cuenta", modifier = modifier, contentScale = ContentScale.Crop)
     }
 }
 

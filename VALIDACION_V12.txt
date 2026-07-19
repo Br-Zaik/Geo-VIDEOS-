@@ -1,0 +1,19 @@
+VALIDACIÓN ESTÁTICA — GEO VIDEOS V12
+
+Fecha: 2026-07-19
+Versión: 12.0.0 (versionCode 12)
+
+COMPROBACIONES REALIZADAS
+- No quedan referencias al reproductor android-youtube-player, YouTubePlayerView ni al IFrame anterior.
+- El reproductor usa Media3/ExoPlayer mediante PlaybackService y MediaSessionService.
+- Se añadió resolución de transmisiones públicas con NewPipe Extractor v0.26.3.
+- Principal ya no usa una semilla aleatoria al actualizar.
+- Existe paginación separada para categorías, Shorts y Mis videos.
+- La playlist de subidos del canal se consulta y se muestra en Colección > Mis videos.
+- Se evitó que el estado del reproductor recomponga todo el feed cada 750 ms.
+- Se añadió protección contra resultados atrasados al cambiar rápidamente de video.
+- MainActivity.kt, la llave de firma y el paquete de la aplicación se conservaron.
+- El análisis sintáctico de Kotlin no detectó llaves sin cerrar ni errores de parseo.
+
+LIMITACIÓN DE ESTA VALIDACIÓN
+Este entorno no dispone del Android SDK ni de las dependencias Gradle descargadas. Por ello no se generó ni se instaló una APK y no se afirma que exista una prueba real en teléfono. La primera compilación debe hacerse en Android Studio y luego probar inicio de sesión, reproducción, segundo plano, minirreproductor y contenido restringido.

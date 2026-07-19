@@ -60,6 +60,8 @@ data class GeoVideosUiState(
     val canLoadMoreMusic: Boolean = true,
     val shortsLoadingMore: Boolean = false,
     val shortsCanLoadMore: Boolean = true,
+    val uploadsLoadingMore: Boolean = false,
+    val uploadsCanLoadMore: Boolean = true,
     val searchLoadingMore: Boolean = false,
     val personalized: List<VideoItem> = emptyList(),
     val popular: List<VideoItem> = emptyList(),
@@ -71,6 +73,7 @@ data class GeoVideosUiState(
     val subscriptions: List<ChannelItem> = emptyList(),
     val playlists: List<PlaylistItem> = emptyList(),
     val liked: List<VideoItem> = emptyList(),
+    val uploads: List<VideoItem> = emptyList(),
     val notifications: List<NotificationItem> = emptyList(),
     val history: List<VideoItem> = emptyList(),
     val watchLater: List<VideoItem> = emptyList(),
@@ -102,15 +105,16 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
 
     private var accessToken: String? = null
     private var likesPlaylistId: String = ""
+    private var uploadsPlaylistId: String = ""
     private var popularNextToken: String = ""
     private var liveNextToken: String = ""
     private var gamingNextToken: String = ""
     private var musicNextToken: String = ""
     private var shortsNextToken: String = ""
+    private var uploadsNextToken: String = ""
     private var searchNextToken: String = ""
     private var lastSearchQuery: String = ""
     private var subscriptionOffset: Int = 0
-    private var refreshCounter: Int = 0
 
     private val cachedProfile = repository.loadProfile()
     private val _uiState = MutableStateFlow(
@@ -130,6 +134,7 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
             subscriptions = repository.loadSubscriptions(),
             playlists = repository.loadPlaylists(),
             liked = repository.loadLiked(),
+            uploads = repository.loadUploads(),
             notifications = repository.loadNotifications(),
             history = repository.loadHistory(),
             watchLater = repository.loadWatchLater(),
@@ -202,6 +207,7 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
                     refreshing = false,
                     loadingMoreCategory = null,
                     shortsLoadingMore = false,
+                    uploadsLoadingMore = false,
                     message = if (cloudSetupLikely) {
                         "Google rechazó la firma registrada. Se conservaron los datos guardados."
                     } else {
@@ -217,7 +223,8 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
                     loading = false,
                     refreshing = false,
                     loadingMoreCategory = null,
-                    shortsLoadingMore = false
+                    shortsLoadingMore = false,
+                    uploadsLoadingMore = false
                 )
             }
         }
@@ -226,6 +233,7 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
     fun disconnect() {
         accessToken = null
         likesPlaylistId = ""
+        uploadsPlaylistId = ""
         resetPagination()
         repository.clearAccountCache()
         _uiState.update {
@@ -263,18 +271,19 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
             }
             return
         }
-        refreshCounter++
         resetPagination(keepSearch = true)
         _uiState.update {
             it.copy(
                 refreshing = true,
                 loadingMoreCategory = null,
                 shortsLoadingMore = false,
+                uploadsLoadingMore = false,
                 canLoadMoreForYou = true,
                 canLoadMoreLive = true,
                 canLoadMoreGaming = true,
                 canLoadMoreMusic = true,
-                shortsCanLoadMore = true
+                shortsCanLoadMore = true,
+                uploadsCanLoadMore = true
             )
         }
         loadAll(initialLoad = false)
@@ -324,7 +333,11 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
                     val baseProfile = userDeferred.await()
                     val channelDetails = runCatching { api.getMyChannel(token, baseProfile) }.getOrNull()
                     likesPlaylistId = channelDetails?.likesPlaylistId.orEmpty()
+                    uploadsPlaylistId = channelDetails?.uploadsPlaylistId.orEmpty()
 
+                    val uploadsPage = runCatching {
+                        api.playlistVideosPage(token, uploadsPlaylistId, maxResults = 25)
+                    }.getOrDefault(VideoPage(previous.uploads))
                     val likedRaw = runCatching { api.playlistVideos(token, likesPlaylistId, 40) }
                         .getOrDefault(previous.liked)
                     val subscriptions = subscriptionsDeferred.await()
@@ -342,15 +355,6 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
                         .flatten()
                         .sortedByDescending { it.publishedAt }
 
-                    val recommendationSeed = chooseRecommendationSeed(previous, likedRaw)
-                    val recommendedRaw: List<VideoItem> = if (recommendationSeed.isBlank()) {
-                        emptyList()
-                    } else {
-                        runCatching {
-                            api.searchVideosPage(token, recommendationSeed, maxResults = 15).items
-                        }.getOrDefault(emptyList())
-                    }
-
                     val popularPage = popularDeferred.await()
                     val livePage = liveDeferred.await()
                     val gamingPage = gamingDeferred.await()
@@ -361,8 +365,8 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
 
                     val allRaw = mergeUniqueVideos(
                         subscriptionFeedRaw,
-                        recommendedRaw,
                         activityVideosRaw,
+                        uploadsPage.items,
                         likedRaw,
                         previous.history.take(20),
                         popularPage.items,
@@ -383,7 +387,7 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
                     val shorts = enriched(shortsPage.items)
                     val liked = enriched(likedRaw)
                     val subscriptionFeed = enriched(subscriptionFeedRaw)
-                    val recommendations = enriched(recommendedRaw)
+                    val uploads = enriched(uploadsPage.items)
                     val activityVideos = enriched(activityVideosRaw)
                     val notifications = notificationsRaw.map { item ->
                         item.copy(video = item.video?.let { enrichedById[it.id] ?: it })
@@ -391,10 +395,10 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
 
                     val personalizedBase = mergeUniqueVideos(
                         subscriptionFeed,
-                        recommendations,
                         activityVideos,
-                        liked.take(16),
-                        previous.history.take(12),
+                        if (initialLoad) emptyList() else previous.personalized,
+                        liked.take(12),
+                        previous.history.take(10),
                         popular
                     ).take(MAX_HOME_ITEMS)
                     val previousPersonalizedIds = previous.personalized.asSequence()
@@ -414,6 +418,7 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
                     gamingNextToken = gamingPage.nextPageToken
                     musicNextToken = musicPage.nextPageToken
                     shortsNextToken = shortsPage.nextPageToken
+                    uploadsNextToken = uploadsPage.nextPageToken
 
                     val previousRemoteIds = mergeUniqueVideos(
                         previous.personalized,
@@ -444,6 +449,7 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
                             music = music,
                             shorts = shorts,
                             liked = liked,
+                            uploads = uploads,
                             subscriptions = subscriptions,
                             playlists = playlists,
                             notifications = notifications,
@@ -457,12 +463,14 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
                             loading = false,
                             refreshing = false,
                             loadingMoreCategory = null,
-                        shortsLoadingMore = false,
+                            shortsLoadingMore = false,
+                            uploadsLoadingMore = false,
                             canLoadMoreForYou = subscriptionOffset < subscriptions.size || popularNextToken.isNotBlank(),
                             canLoadMoreLive = liveNextToken.isNotBlank(),
                             canLoadMoreGaming = gamingNextToken.isNotBlank(),
                             canLoadMoreMusic = musicNextToken.isNotBlank(),
                             shortsCanLoadMore = shortsNextToken.isNotBlank(),
+                            uploadsCanLoadMore = uploadsNextToken.isNotBlank(),
                             profile = profile,
                             personalized = personalized,
                             popular = popular,
@@ -473,6 +481,7 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
                             subscriptions = subscriptions,
                             playlists = playlists,
                             liked = liked,
+                            uploads = uploads,
                             notifications = notifications,
                             lastSyncMs = syncTime,
                             authError = "",
@@ -495,6 +504,7 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
                         refreshing = false,
                         loadingMoreCategory = null,
                         shortsLoadingMore = false,
+                        uploadsLoadingMore = false,
                         authStatus = if (it.profile != null) AuthStatus.CONNECTED else AuthStatus.ERROR,
                         authError = if (it.profile == null) error.message ?: "No se pudo cargar el servicio de video." else "",
                         message = if (it.profile != null) {
@@ -581,6 +591,40 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
+    fun loadMoreUploads() {
+        val token = accessToken ?: return
+        val state = _uiState.value
+        if (state.uploadsLoadingMore || state.refreshing || !state.uploadsCanLoadMore || uploadsNextToken.isBlank()) return
+        _uiState.update { it.copy(uploadsLoadingMore = true) }
+        viewModelScope.launch {
+            try {
+                val page = api.playlistVideosPage(
+                    token = token,
+                    playlistId = uploadsPlaylistId,
+                    pageToken = uploadsNextToken,
+                    maxResults = 25
+                )
+                uploadsNextToken = page.nextPageToken
+                val enriched = enrichVideosWithCache(token, page.items)
+                _uiState.update {
+                    it.copy(
+                        uploads = mergeUniqueVideos(it.uploads, enriched).take(MAX_HOME_ITEMS),
+                        uploadsLoadingMore = false,
+                        uploadsCanLoadMore = page.nextPageToken.isNotBlank()
+                    )
+                }
+                persistCurrentSnapshot()
+            } catch (_: Exception) {
+                _uiState.update {
+                    it.copy(
+                        uploadsLoadingMore = false,
+                        message = "No se pudieron cargar más videos de tu canal."
+                    )
+                }
+            }
+        }
+    }
+
     private suspend fun loadMorePersonalized(token: String) {
         val current = _uiState.value
         val subscriptions = current.subscriptions
@@ -650,25 +694,6 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
-    private fun chooseRecommendationSeed(
-        previous: GeoVideosUiState,
-        liked: List<VideoItem>
-    ): String {
-        val candidates = mergeUniqueVideos(liked, previous.history, previous.personalized)
-        if (candidates.isEmpty()) return ""
-        val seed = candidates[(refreshCounter % candidates.size)]
-        val compactTitle = seed.title
-            .replace(Regex("[#|/\\[\\](){}]"), " ")
-            .split(Regex("\\s+"))
-            .filter { it.length > 2 }
-            .take(5)
-            .joinToString(" ")
-        return listOf(seed.channelTitle, compactTitle)
-            .filter { it.isNotBlank() }
-            .joinToString(" ")
-            .take(90)
-    }
-
     private fun mergeUniqueVideos(vararg groups: List<VideoItem>): List<VideoItem> {
         val seen = LinkedHashSet<String>()
         val result = ArrayList<VideoItem>()
@@ -686,6 +711,7 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
         gamingNextToken = ""
         musicNextToken = ""
         shortsNextToken = ""
+        uploadsNextToken = ""
         subscriptionOffset = 0
         if (!keepSearch) {
             searchNextToken = ""
@@ -745,6 +771,7 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
                 music = state.music,
                 shorts = state.shorts,
                 liked = state.liked,
+                uploads = state.uploads,
                 subscriptions = state.subscriptions,
                 playlists = state.playlists,
                 notifications = state.notifications,
@@ -942,6 +969,7 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
                 refreshing = false,
                 loadingMoreCategory = null,
                 shortsLoadingMore = false,
+                uploadsLoadingMore = false,
                 searchLoadingMore = false,
                 authStatus = if (it.profile != null) AuthStatus.CONNECTED else AuthStatus.ERROR,
                 authError = if (it.profile == null) error.message else "",

@@ -205,36 +205,49 @@ class YouTubeApi {
         token: String,
         playlistId: String,
         maxResults: Int = 25
-    ): List<VideoItem> = withContext(Dispatchers.IO) {
-        if (playlistId.isBlank()) return@withContext emptyList()
+    ): List<VideoItem> = playlistVideosPage(token, playlistId, maxResults = maxResults).items
+
+    suspend fun playlistVideosPage(
+        token: String,
+        playlistId: String,
+        pageToken: String = "",
+        maxResults: Int = 25
+    ): VideoPage = withContext(Dispatchers.IO) {
+        if (playlistId.isBlank()) return@withContext VideoPage(emptyList())
+        val page = pageToken.takeIf { it.isNotBlank() }
+            ?.let { "&pageToken=${encode(it)}" }
+            .orEmpty()
         val json = requestJson(
-            "https://www.googleapis.com/youtube/v3/playlistItems?part=snippet,contentDetails&playlistId=${encode(playlistId)}&maxResults=${maxResults.coerceIn(1, 50)}",
+            "https://www.googleapis.com/youtube/v3/playlistItems?part=snippet,contentDetails&playlistId=${encode(playlistId)}&maxResults=${maxResults.coerceIn(1, 50)}$page",
             token
         )
-        val items = json.optJSONArray("items") ?: return@withContext emptyList()
-        buildList {
-            for (index in 0 until items.length()) {
-                val item = items.optJSONObject(index) ?: continue
-                val snippet = item.optJSONObject("snippet") ?: continue
-                val videoId = item.optJSONObject("contentDetails")?.optString("videoId")
-                    .orEmpty().ifBlank {
-                        snippet.optJSONObject("resourceId")?.optString("videoId").orEmpty()
-                    }
-                if (videoId.isBlank()) continue
-                val ownerChannelId = snippet.optString("videoOwnerChannelId")
-                    .ifBlank { snippet.optString("channelId") }
-                val ownerChannelTitle = snippet.optString("videoOwnerChannelTitle")
-                    .ifBlank { snippet.optString("channelTitle", "Canal") }
-                add(
-                    videoFromSnippet(
-                        id = videoId,
-                        snippet = snippet,
-                        channelIdOverride = ownerChannelId,
-                        channelTitleOverride = ownerChannelTitle
+        val items = json.optJSONArray("items")
+        val videos = buildList {
+            if (items != null) {
+                for (index in 0 until items.length()) {
+                    val item = items.optJSONObject(index) ?: continue
+                    val snippet = item.optJSONObject("snippet") ?: continue
+                    val videoId = item.optJSONObject("contentDetails")?.optString("videoId")
+                        .orEmpty().ifBlank {
+                            snippet.optJSONObject("resourceId")?.optString("videoId").orEmpty()
+                        }
+                    if (videoId.isBlank()) continue
+                    val ownerChannelId = snippet.optString("videoOwnerChannelId")
+                        .ifBlank { snippet.optString("channelId") }
+                    val ownerChannelTitle = snippet.optString("videoOwnerChannelTitle")
+                        .ifBlank { snippet.optString("channelTitle", "Canal") }
+                    add(
+                        videoFromSnippet(
+                            id = videoId,
+                            snippet = snippet,
+                            channelIdOverride = ownerChannelId,
+                            channelTitleOverride = ownerChannelTitle
+                        )
                     )
-                )
+                }
             }
         }
+        VideoPage(videos, json.optString("nextPageToken"))
     }
 
     suspend fun homeActivities(token: String): List<NotificationItem> = withContext(Dispatchers.IO) {
