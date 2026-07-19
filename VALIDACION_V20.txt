@@ -1,0 +1,35 @@
+GEO VIDEOS V20 - VALIDACION DE RENDIMIENTO
+Fecha: 2026-07-19
+
+VERSION
+- versionName: 20.0.0
+- versionCode: 22
+- applicationId: com.geovideos.app
+
+CAMBIOS REVISADOS
+- Gesto vertical sobre todo el rectangulo del video para minimizarlo.
+- Desplazamiento del reproductor realizado en fase de colocacion con Modifier.offset, evitando recomponer la pagina por cada pixel del gesto.
+- PlayerView nativo de Media3 usado para reproducir, pausar, avanzar, retroceder y mover la barra de tiempo.
+- Eliminados los controles Compose personalizados que consultaban el progreso cada 500 ms.
+- Controles nativos ocultos al inicio, visibles al tocar y con ocultamiento automatico.
+- MainShell retirado de la composicion mientras el reproductor esta expandido para no mantener el feed completo renderizando detras.
+- SaveableStateHolder conserva el estado de desplazamiento al volver al feed.
+- La apertura del reproductor ya no depende directamente de expandir/minimizar, evitando llamadas repetidas para el mismo video.
+- Precarga del siguiente Short retrasada hasta que el paginador esta quieto.
+- Limite de memoria del feed reducido de 80 a 50 elementos.
+- Relacionados limitados a 50 elementos.
+- SurfaceView y una sola sesion Media3 conservados.
+
+ARCHIVOS PROTEGIDOS (SHA-256 SIN CAMBIOS)
+- MainActivity.kt: 6e7dec6198e5a39cef00ecea729da49d3876b8721d87e61648363ac85c415c7f
+- AndroidManifest.xml: cc23515ce99095fb2fba9bec3d48a6900de6128df3fbb5e91fac86d24d5d06a5
+- geovideos-dev.jks: 6ea4c0bbb2141367772ea6ed632738097c886752314500b5cc8e4fab306792ab
+
+COMPROBACIONES
+- 13 archivos Kotlin incluidos.
+- 13 archivos XML parseados correctamente.
+- El analizador Kotlin no encontro errores sintacticos del tipo "expecting", redeclaraciones ni comentarios sin cerrar. Los errores restantes al analizar sin classpath corresponden a clases Android/Compose no disponibles en el compilador aislado.
+- Se verifico que "Mi mix" y el antiguo PlayerProgressControls no existan en el codigo activo.
+
+LIMITACION DE VALIDACION
+No se pudo ejecutar assembleRelease en este entorno porque no dispone de Android SDK ni acceso directo a los repositorios Gradle. GitHub Actions debe hacer la compilacion definitiva. La fluidez real solo puede confirmarse instalando la APK release en el telefono.

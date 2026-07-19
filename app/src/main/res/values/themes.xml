@@ -1,10 +1,10 @@
-<resources xmlns:tools="http://schemas.android.com/tools">
-    <style name="Theme.GeoSusuAudio" parent="Theme.MaterialComponents.DayNight.NoActionBar">
-        <item name="colorPrimary">@color/purple_500</item>
-        <item name="colorPrimaryVariant">@color/purple_700</item>
-        <item name="colorOnPrimary">@color/white</item>
-        <item name="colorSecondary">@color/teal_200</item>
-        <item name="android:statusBarColor">@android:color/transparent</item>
-        <item name="android:windowLightStatusBar" tools:targetApi="23">false</item>
+<resources>
+    <style name="Theme.GeoVideos" parent="android:style/Theme.Material.NoActionBar">
+        <item name="android:fontFamily">sans</item>
+        <item name="android:windowActionModeOverlay">true</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:statusBarColor">#0B0B0F</item>
+        <item name="android:navigationBarColor">#0B0B0F</item>
+        <item name="android:windowBackground">#0B0B0F</item>
     </style>
 </resources>
