@@ -125,6 +125,7 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
     private var relatedVideoId: String = ""
     private var lastSearchQuery: String = ""
     private var subscriptionOffset: Int = 0
+    private var subscriptionRefreshCursor: Int = 0
 
     private val cachedProfile = repository.loadProfile()
     private val _uiState = MutableStateFlow(
@@ -349,9 +350,22 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
                         .getOrDefault(previous.liked)
                     val subscriptions = subscriptionsDeferred.await()
                     subscriptionOffset = minOf(INITIAL_SUBSCRIPTION_BATCH, subscriptions.size)
+                    val subscriptionWindow = if (subscriptions.isEmpty()) {
+                        emptyList()
+                    } else if (initialLoad || subscriptions.size <= INITIAL_SUBSCRIPTION_BATCH) {
+                        subscriptions.take(INITIAL_SUBSCRIPTION_BATCH).also {
+                            subscriptionRefreshCursor = it.size % subscriptions.size
+                        }
+                    } else {
+                        val start = subscriptionRefreshCursor % subscriptions.size
+                        List(minOf(INITIAL_SUBSCRIPTION_BATCH, subscriptions.size)) { index ->
+                            subscriptions[(start + index) % subscriptions.size]
+                        }.also {
+                            subscriptionRefreshCursor = (start + it.size) % subscriptions.size
+                        }
+                    }
 
-                    val subscriptionFeedRaw: List<VideoItem> = subscriptions
-                        .take(subscriptionOffset)
+                    val subscriptionFeedRaw: List<VideoItem> = subscriptionWindow
                         .map { channel ->
                             async {
                                 runCatching { api.channelActivities(token, channel.id, 5) }
@@ -950,27 +964,43 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
             return
         }
 
-        relatedNextToken = FIRST_RELATED_PAGE
+        relatedNextToken = ""
         _uiState.update {
             if (it.selectedVideo?.id != video.id) it else it.copy(
-                relatedVideos = fallback,
-                relatedLoading = false,
+                relatedVideos = fallback.take(6),
+                relatedLoading = true,
                 relatedCanLoadMore = true
             )
         }
         viewModelScope.launch {
-            val details = runCatching { api.videoDetails(token, video) }.getOrNull()
-            if (_uiState.value.selectedVideo?.id != video.id || relatedVideoId != video.id) return@launch
-            _uiState.update {
-                if (it.selectedVideo?.id != video.id) it else it.copy(
-                    playerDetails = details ?: VideoDetails(
-                        videoId = video.id,
-                        channelThumbnailUrl = video.channelThumbnailUrl,
-                        publishedAt = video.publishedAt,
-                        description = video.description
-                    ),
-                    playerDetailsLoading = false
-                )
+            supervisorScope {
+                val detailsDeferred = async { runCatching { api.videoDetails(token, video) }.getOrNull() }
+                val relatedDeferred = async {
+                    runCatching { api.relatedVideosPage(token, video, pageToken = "") }.getOrNull()
+                }
+                val details = detailsDeferred.await()
+                val relatedPage = relatedDeferred.await()
+                if (_uiState.value.selectedVideo?.id != video.id || relatedVideoId != video.id) return@supervisorScope
+
+                relatedNextToken = relatedPage?.nextPageToken.orEmpty()
+                val related = mergeUniqueVideos(
+                    relatedPage?.items.orEmpty().filterNot { it.id == video.id },
+                    fallback
+                ).take(40)
+                _uiState.update {
+                    if (it.selectedVideo?.id != video.id) it else it.copy(
+                        playerDetails = details ?: VideoDetails(
+                            videoId = video.id,
+                            channelThumbnailUrl = video.channelThumbnailUrl,
+                            publishedAt = video.publishedAt,
+                            description = video.description
+                        ),
+                        playerDetailsLoading = false,
+                        relatedVideos = related,
+                        relatedLoading = false,
+                        relatedCanLoadMore = relatedNextToken.isNotBlank()
+                    )
+                }
             }
         }
     }

@@ -1,0 +1,19 @@
+Geo Videos V15.0.0
+
+VALIDACIONES REALIZADAS
+- MainActivity.kt: hash idéntico a V14.1.
+- AndroidManifest.xml: hash idéntico a V14.1.
+- app/geovideos-dev.jks: hash idéntico a V14.1.
+- Balance de llaves, paréntesis y corchetes correcto en GeoVideosApp.kt, GeoVideosViewModel.kt y GeoPlayerConnection.kt.
+- Revisión de sintaxis con kotlinc: no se detectaron errores de sintaxis ni parámetros nuevos sin correspondencia.
+- Intento de compilación Gradle realizado; no comenzó porque el entorno no pudo resolver services.gradle.org.
+
+CAMBIOS DE V15
+- Restauración de orientación y barras del sistema al salir de pantalla completa.
+- Reproductor fijo y controles integrados.
+- Gesto hacia abajo para minimizar.
+- Minirreproductor con gestos arriba/abajo.
+- Relacionados estilo YouTube y consulta inicial real.
+- Un solo indicador de actualización.
+- Rotación de canales suscritos en cada actualización.
+- Reducción de precarga y frecuencia de actualización del estado.

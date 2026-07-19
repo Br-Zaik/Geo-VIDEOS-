@@ -1,23 +1,25 @@
-# Geo Videos V14.1 — final de reproducción normal
+# Geo Videos V15 — reproductor y feed estabilizados
 
 Proyecto Android en Kotlin y Jetpack Compose.
 
 ## Cambios principales
 
-- Shorts rediseñados como un visor vertical de una página por video, con deslizamiento tipo TikTok.
-- El Short visible se reproduce dentro del feed en formato vertical, sin abrir primero la pantalla normal.
-- Precarga de los dos Shorts siguientes y cancelación de la transmisión anterior al deslizar.
-- Los Shorts se forman primero con publicaciones cortas de suscripciones, Me gusta e historial; después se completa con una búsqueda basada en esos intereses.
-- Se eliminó la consulta genérica fija `shorts español`, que era la causa principal del contenido ajeno al usuario.
-- El visor de Shorts repite el clip visible y oculta el encabezado principal para aprovechar más pantalla.
-- Al terminar un video normal, la reproducción automática pasa al primer relacionado disponible.
-- Al terminar un video ya no aparece una pantalla adicional con botones de **Repetir** y **Siguiente**.
-- Con reproducción automática encendida pasa directamente al siguiente relacionado; con repetición encendida vuelve a empezar el mismo video; con ambas apagadas termina normalmente.
-- Se añadió un botón visible para activar o desactivar la repetición del video actual.
-- Suscripciones aparece al comienzo de Colección en una tarjeta destacada con todos los canales autorizados y sus publicaciones recientes.
-- Se redujeron recomposiciones grandes del reproductor: la pantalla completa ya no se reconstruye por cada actualización de posición.
-- El estado del reproductor se actualiza con menor frecuencia y la barra de progreso de Shorts se aísla del resto del visor.
-- Versión de aplicación: `14.1.0` (`versionCode 16`).
+- Al salir de pantalla completa, la aplicación restaura la orientación vertical, las barras del sistema y el diseño normal.
+- El reproductor queda fijo arriba mientras se consulta la información, descripción y videos relacionados.
+- Controles superiores integrados: minimizar, calidad, velocidad, ajustes, siguiente y cerrar.
+- Modos de pantalla **Ajustar** y **Rellenar**.
+- Menú de reproducción ampliado con autoplay, repetición, silencio, temporizador, ventana flotante y apertura externa.
+- El reproductor puede minimizarse arrastrándolo hacia abajo; el minirreproductor puede abrirse deslizando hacia arriba o cerrarse deslizando hacia abajo.
+- Los videos relacionados se muestran con un diseño tipo YouTube: miniatura 16:9, duración, canal, fecha y menú de opciones.
+- Los primeros relacionados se consultan al abrir el video y se combinan con la caché local; ya no se espera a llegar al final de la pantalla.
+- La actualización de Principal usa un solo indicador al deslizar hacia abajo.
+- Se eliminaron los dos indicadores duplicados del encabezado.
+- Cada actualización consulta un grupo distinto de canales suscritos y coloca los videos realmente nuevos al principio.
+- Si no existen videos nuevos, conserva el contenido y lo informa mediante un mensaje; no simula una actualización.
+- Se eliminó la precarga de transmisiones mientras se navega por Principal, Buscar o Colección.
+- En Shorts y relacionados solo se precarga el siguiente video, con retraso, para reducir consumo y trabas.
+- El estado del reproductor se consulta con menor frecuencia para reducir recomposiciones.
+- Versión de aplicación: `15.0.0` (`versionCode 17`).
 
 ## Inicio de sesión protegido
 
@@ -29,7 +31,7 @@ No se modificaron:
 - llave `app/geovideos-dev.jks`
 - flujo OAuth ni permisos de Google
 
-Los hashes de esos tres archivos fueron comparados antes y después de los cambios y permanecen idénticos.
+Los hashes de esos tres archivos fueron comparados antes y después y permanecen idénticos.
 
 ## Compilación
 
@@ -38,11 +40,11 @@ Los hashes de esos tres archivos fueron comparados antes y después de los cambi
 3. Conserva la carpeta `.github/workflows` que ya existe en tu repositorio.
 4. Ejecuta **Compilar APK**.
 
-Este entorno no contiene Android SDK ni las dependencias Gradle descargadas. Se verificó balance de sintaxis en todos los archivos Kotlin y no se detectaron errores de estructura, pero la comprobación definitiva sigue siendo la compilación de GitHub Actions.
+El entorno de trabajo no pudo descargar Gradle porque no tiene resolución de red. Se verificó el balance estructural de los archivos Kotlin modificados y el compilador de Kotlin no detectó errores de sintaxis, pero la validación definitiva sigue siendo GitHub Actions.
 
-## Limitación real del feed de Shorts
+## Limitación del feed
 
-La API pública de YouTube no expone el algoritmo privado exacto de YouTube Shorts. Geo Videos crea un feed aproximado usando suscripciones, historial, Me gusta y términos frecuentes. Debe ser bastante más relevante que la búsqueda genérica anterior, pero no será idéntico al feed de la aplicación oficial.
+La API pública de YouTube no expone el algoritmo privado exacto de recomendaciones. Geo Videos construye el feed con suscripciones, actividad, Me gusta, historial y contenido popular, y rota los canales consultados al actualizar para ampliar resultados sin introducir búsquedas aleatorias.
 
 ## Licencias
 

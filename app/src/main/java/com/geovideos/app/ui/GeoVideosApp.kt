@@ -5,6 +5,7 @@ import android.app.Activity
 import android.app.DownloadManager
 import android.app.PictureInPictureParams
 import android.content.pm.ActivityInfo
+import android.content.res.Configuration
 import android.content.Context
 import android.content.ContextWrapper
 import android.content.Intent
@@ -19,6 +20,7 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -80,6 +82,7 @@ import androidx.compose.material.icons.filled.Replay
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Speed
+import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Subscriptions
 import androidx.compose.material.icons.filled.Timer
@@ -136,6 +139,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
@@ -147,6 +152,9 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
@@ -193,33 +201,6 @@ fun GeoVideosApp(
     }
 
     val selectedVideo = state.selectedVideo
-    val preloadCandidates = when (state.section) {
-        MainSection.HOME -> when (state.homeCategory) {
-            HomeCategory.FOR_YOU -> state.personalized.ifEmpty { state.popular }
-            HomeCategory.LIVE -> state.live
-            HomeCategory.GAMING -> state.gaming
-            HomeCategory.MUSIC -> state.music
-        }
-        MainSection.SHORTS -> state.shorts
-        MainSection.SEARCH -> state.searchResults
-        MainSection.LIBRARY -> state.history.ifEmpty { state.liked }
-        MainSection.ACCOUNT -> emptyList()
-    }
-
-    LaunchedEffect(
-        state.authStatus,
-        state.section,
-        state.homeCategory,
-        preloadCandidates.take(2).map { it.id },
-        state.dataSaver,
-        selectedVideo?.id
-    ) {
-        if (state.authStatus == AuthStatus.CONNECTED && selectedVideo == null && preloadCandidates.isNotEmpty()) {
-            delay(600L)
-            playerConnection.preload(preloadCandidates.take(2), state.dataSaver)
-        }
-    }
-
     LaunchedEffect(selectedVideo?.id, state.autoplay, state.dataSaver, state.section, state.playerExpanded) {
         autoAdvancedVideoId = ""
         selectedVideo?.let { video ->
@@ -313,6 +294,7 @@ fun GeoVideosApp(
                             onWatchLater = { viewModel.toggleWatchLater(selectedVideo) },
                             onPlayRelated = viewModel::play,
                             onPlayNext = viewModel::playNext,
+                            onAutoplayChange = viewModel::setAutoplay,
                             onWatchLaterRelated = viewModel::toggleWatchLater,
                             onLoadMoreRelated = viewModel::loadMoreRelated,
                             onOpenChannel = { channel ->
@@ -530,10 +512,6 @@ private fun MainShell(
                     }
                 },
                 actions = {
-                    IconButton(onClick = onRefresh, enabled = !state.refreshing) {
-                        if (state.refreshing) CircularProgressIndicator(modifier = Modifier.size(22.dp), strokeWidth = 2.dp)
-                        else Icon(Icons.Default.Refresh, contentDescription = "Actualizar")
-                    }
                     IconButton(onClick = { showNotifications = true }) {
                         BadgedBox(badge = {
                             if (state.notifications.isNotEmpty()) Badge { Text(state.notifications.size.coerceAtMost(99).toString()) }
@@ -775,13 +753,6 @@ private fun HomeScreen(
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
-                    IconButton(onClick = onRefresh, enabled = !refreshing) {
-                        if (refreshing) {
-                            CircularProgressIndicator(modifier = Modifier.size(22.dp), strokeWidth = 2.dp)
-                        } else {
-                            Icon(Icons.Default.Refresh, "Actualizar")
-                        }
-                    }
                 }
             }
             if (lastSyncMs > 0L) {
@@ -918,7 +889,8 @@ private fun ShortsScreen(
         val current = videos.getOrNull(pagerState.currentPage) ?: return@LaunchedEffect
         onPreview(current)
         playerConnection.setRepeat(true)
-        playerConnection.preload(videos.drop(pagerState.currentPage + 1).take(2), dataSaver)
+        delay(700L)
+        playerConnection.preload(videos.drop(pagerState.currentPage + 1).take(1), dataSaver)
     }
     LaunchedEffect(pagerState.currentPage, videos.size, loadingMore, canLoadMore) {
         if (pagerState.currentPage >= videos.lastIndex - 2 && !loadingMore && canLoadMore) onLoadMore()
@@ -1523,6 +1495,7 @@ private fun PlayerScreen(
     onWatchLater: () -> Unit,
     onPlayRelated: (VideoItem) -> Unit,
     onPlayNext: () -> Unit,
+    onAutoplayChange: (Boolean) -> Unit,
     onWatchLaterRelated: (VideoItem) -> Unit,
     onLoadMoreRelated: () -> Unit,
     onOpenChannel: (ChannelItem) -> Unit,
@@ -1531,6 +1504,7 @@ private fun PlayerScreen(
     onMessage: (String) -> Unit
 ) {
     val context = LocalContext.current
+    val activity = context.findActivity()
     val playback by remember(playerConnection) {
         playerConnection.state
             .map { state ->
@@ -1555,7 +1529,9 @@ private fun PlayerScreen(
     var timerMinutes by rememberSaveable { mutableStateOf<Int?>(null) }
     var descriptionExpanded by rememberSaveable(video.id) { mutableStateOf(false) }
     var isFullscreen by rememberSaveable(video.id) { mutableStateOf(false) }
+    var fillScreenMode by rememberSaveable(video.id) { mutableStateOf(false) }
     var showDelayedLoading by remember(video.id) { mutableStateOf(false) }
+    var playerDragOffset by remember(video.id) { mutableFloatStateOf(0f) }
 
     val detectedRatio = if (playback.videoWidth > 0 && playback.videoHeight > 0) {
         playback.videoWidth.toFloat() / playback.videoHeight.toFloat()
@@ -1582,21 +1558,54 @@ private fun PlayerScreen(
         onSavePlayback(video, positionMs, durationMs)
     }
 
+    fun restorePortraitMode() {
+        val currentActivity = activity ?: return
+        WindowCompat.setDecorFitsSystemWindows(currentActivity.window, true)
+        WindowInsetsControllerCompat(currentActivity.window, currentActivity.window.decorView)
+            .show(WindowInsetsCompat.Type.systemBars())
+        currentActivity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+    }
+
     fun minimize() {
+        if (isFullscreen) {
+            isFullscreen = false
+            restorePortraitMode()
+            return
+        }
         saveProgress()
+        restorePortraitMode()
         onBack()
     }
 
-    BackHandler {
-        if (isFullscreen) isFullscreen = false else minimize()
+    fun closePlayer() {
+        saveProgress()
+        restorePortraitMode()
+        onClose()
     }
 
-    DisposableEffect(isFullscreen) {
-        val activity = context.findActivity()
-        if (isFullscreen) activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
-        onDispose {
-            if (isFullscreen) activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+    BackHandler { minimize() }
+
+    LaunchedEffect(isFullscreen) {
+        val currentActivity = activity ?: return@LaunchedEffect
+        val insets = WindowInsetsControllerCompat(currentActivity.window, currentActivity.window.decorView)
+        if (isFullscreen) {
+            currentActivity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+            WindowCompat.setDecorFitsSystemWindows(currentActivity.window, false)
+            insets.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            insets.hide(WindowInsetsCompat.Type.systemBars())
+        } else {
+            WindowCompat.setDecorFitsSystemWindows(currentActivity.window, true)
+            insets.show(WindowInsetsCompat.Type.systemBars())
+            if (currentActivity.resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE) {
+                currentActivity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+                delay(250L)
+            }
+            currentActivity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
         }
+    }
+
+    DisposableEffect(Unit) {
+        onDispose { restorePortraitMode() }
     }
 
     LaunchedEffect(playback.connecting, playback.resolving, video.id) {
@@ -1615,8 +1624,8 @@ private fun PlayerScreen(
 
     LaunchedEffect(relatedVideos.map { it.id }, dataSaver, playback.resolving, playback.currentVideoId) {
         if (!playback.resolving && playback.currentVideoId == video.id) {
-            delay(800L)
-            playerConnection.preload(relatedVideos.take(2), dataSaver)
+            delay(1_500L)
+            playerConnection.preload(relatedVideos.take(1), dataSaver)
         }
     }
 
@@ -1632,6 +1641,24 @@ private fun PlayerScreen(
         onMessage("El temporizador detuvo la reproducción.")
     }
 
+
+    val embeddedPlayerModifier = Modifier
+        .fillMaxWidth()
+        .aspectRatio(playerRatio)
+        .graphicsLayer { translationY = playerDragOffset }
+        .pointerInput(video.id) {
+            detectVerticalDragGestures(
+                onVerticalDrag = { _, dragAmount ->
+                    playerDragOffset = (playerDragOffset + dragAmount).coerceAtLeast(0f)
+                },
+                onDragEnd = {
+                    if (playerDragOffset >= size.height * 0.22f) minimize()
+                    playerDragOffset = 0f
+                },
+                onDragCancel = { playerDragOffset = 0f }
+            )
+        }
+
     if (isFullscreen) {
         Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
             PlayerViewport(
@@ -1642,59 +1669,52 @@ private fun PlayerScreen(
                 qualityLabel = qualityLabel,
                 playbackSpeed = playbackSpeed,
                 modifier = Modifier.fillMaxSize(),
+                onMinimize = { isFullscreen = false },
+                onClose = ::closePlayer,
                 onSettings = { showSettings = true },
+                onNext = onPlayNext,
                 onFullscreen = { isFullscreen = false },
                 fullscreen = true,
-                onRetry = { playerConnection.open(video, autoplay, dataSaver) },
+                resizeMode = if (fillScreenMode) {
+                    androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_ZOOM
+                } else {
+                    androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_FIT
+                },
+                screenModeLabel = if (fillScreenMode) "Rellenar" else "Ajustar",
+                onRetry = { playerConnection.open(video, autoplay, dataSaver, repeatEnabled) },
                 onOpenExternal = { openExternalVideo(context, video, preferYouTubeApp = true) }
             )
         }
     } else {
-        Scaffold(
-            topBar = {
-                TopAppBar(
-                    title = { Text("Reproduciendo", maxLines = 1) },
-                    navigationIcon = {
-                        IconButton(onClick = ::minimize) {
-                            Icon(Icons.Default.KeyboardArrowDown, "Minimizar")
-                        }
-                    },
-                    actions = {
-                        IconButton(onClick = { showSettings = true }) {
-                            Icon(Icons.Default.Settings, "Controles")
-                        }
-                        IconButton(onClick = {
-                            saveProgress()
-                            onClose()
-                        }) {
-                            Icon(Icons.Default.Close, "Cerrar")
-                        }
-                    }
-                )
-            }
-        ) { padding ->
+        Column(modifier = Modifier.fillMaxSize()) {
+            PlayerViewport(
+                video = video,
+                controller = controller,
+                playback = playback,
+                showDelayedLoading = showDelayedLoading,
+                qualityLabel = qualityLabel,
+                playbackSpeed = playbackSpeed,
+                modifier = embeddedPlayerModifier,
+                onMinimize = ::minimize,
+                onClose = ::closePlayer,
+                onSettings = { showSettings = true },
+                onNext = onPlayNext,
+                onFullscreen = { isFullscreen = true },
+                fullscreen = false,
+                resizeMode = if (fillScreenMode) {
+                    androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_ZOOM
+                } else {
+                    androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_FIT
+                },
+                screenModeLabel = if (fillScreenMode) "Rellenar" else "Ajustar",
+                onRetry = { playerConnection.open(video, autoplay, dataSaver, repeatEnabled) },
+                onOpenExternal = { openExternalVideo(context, video, preferYouTubeApp = true) }
+            )
             LazyColumn(
                 state = listState,
-                modifier = Modifier.padding(padding).fillMaxSize(),
+                modifier = Modifier.weight(1f).fillMaxWidth(),
                 contentPadding = PaddingValues(bottom = 28.dp)
             ) {
-                item(key = "player-${video.id}", contentType = "player") {
-                    PlayerViewport(
-                        video = video,
-                        controller = controller,
-                        playback = playback,
-                        showDelayedLoading = showDelayedLoading,
-                        qualityLabel = qualityLabel,
-                        playbackSpeed = playbackSpeed,
-                        modifier = Modifier.fillMaxWidth().aspectRatio(playerRatio),
-                        onSettings = { showSettings = true },
-                        onFullscreen = { isFullscreen = true },
-                        fullscreen = false,
-                        onRetry = { playerConnection.open(video, autoplay, dataSaver) },
-                        onOpenExternal = { openExternalVideo(context, video, preferYouTubeApp = true) }
-                    )
-                }
-
                 item(key = "details-${video.id}", contentType = "details") {
                     Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 16.dp)) {
                         if (video.isLive) {
@@ -1873,15 +1893,12 @@ private fun PlayerScreen(
 
                 item(key = "related-title-${video.id}", contentType = "related-title") {
                     HorizontalDivider()
-                    Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 16.dp)) {
-                        Text("Videos relacionados", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-                        Text(
-                            "Relacionados con el video actual, sin cambiar tu feed principal.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.padding(top = 3.dp)
-                        )
-                    }
+                    Text(
+                        "Siguiente y relacionados",
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 16.dp)
+                    )
                 }
 
                 if (relatedLoading && relatedVideos.isEmpty()) {
@@ -1892,13 +1909,12 @@ private fun PlayerScreen(
                     }
                 } else {
                     items(relatedVideos, key = { "related-${it.id}" }, contentType = { "related" }) { related ->
-                        Box(modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)) {
-                            CompactVideoRow(
-                                video = related,
-                                onPlay = { onPlayRelated(related) },
-                                onWatchLater = { onWatchLaterRelated(related) }
-                            )
-                        }
+                        RelatedVideoCard(
+                            video = related,
+                            onPlay = { onPlayRelated(related) },
+                            onWatchLater = { onWatchLaterRelated(related) }
+                        )
+                        HorizontalDivider()
                     }
                 }
 
@@ -1925,7 +1941,12 @@ private fun PlayerScreen(
 
     if (showSettings) {
         ModalBottomSheet(onDismissRequest = { showSettings = false }) {
-            Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp)) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState())
+                    .padding(horizontal = 20.dp, vertical = 8.dp)
+            ) {
                 Text("Reproducción", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
                 Text("Calidad: $qualityLabel", fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(top = 14.dp))
                 LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(vertical = 10.dp)) {
@@ -1957,6 +1978,30 @@ private fun PlayerScreen(
                     }
                 }
                 SettingSwitch(
+                    title = "Reproducción automática",
+                    subtitle = "Pasa al siguiente video al terminar",
+                    checked = autoplay,
+                    onChange = onAutoplayChange
+                )
+                Text("Pantalla", fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(top = 8.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    FilterChip(
+                        selected = !fillScreenMode,
+                        onClick = { fillScreenMode = false },
+                        label = { Text("Ajustar") },
+                        leadingIcon = if (!fillScreenMode) { { Icon(Icons.Default.Fullscreen, null) } } else null
+                    )
+                    FilterChip(
+                        selected = fillScreenMode,
+                        onClick = { fillScreenMode = true },
+                        label = { Text("Rellenar") },
+                        leadingIcon = if (fillScreenMode) { { Icon(Icons.Default.Fullscreen, null) } } else null
+                    )
+                }
+                SettingSwitch(
                     title = "Silencio",
                     subtitle = "Desactiva temporalmente el audio",
                     checked = isMuted,
@@ -1974,6 +2019,29 @@ private fun PlayerScreen(
                         playerConnection.setRepeat(it)
                     }
                 )
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    OutlinedButton(onClick = { showSettings = false; showTimer = true }, modifier = Modifier.weight(1f)) {
+                        Icon(Icons.Default.Timer, null)
+                        Spacer(Modifier.width(6.dp))
+                        Text(timerMinutes?.let { "$it min" } ?: "Temporizador")
+                    }
+                    OutlinedButton(onClick = { showSettings = false; enterPictureInPicture(context, onMessage) }, modifier = Modifier.weight(1f)) {
+                        Icon(Icons.Default.PictureInPictureAlt, null)
+                        Spacer(Modifier.width(6.dp))
+                        Text("Ventana")
+                    }
+                }
+                OutlinedButton(
+                    onClick = { showSettings = false; openExternalVideo(context, video, preferYouTubeApp = true) },
+                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp)
+                ) {
+                    Icon(Icons.Default.OpenInBrowser, null)
+                    Spacer(Modifier.width(8.dp))
+                    Text("Abrir externamente o transmitir")
+                }
                 Text(
                     if (dataSaver) "Ahorro de datos activo. Puedes elevar la calidad manualmente."
                     else "Automático permite que Media3 elija según la conexión.",
@@ -2026,61 +2094,146 @@ private fun PlayerViewport(
     qualityLabel: String,
     playbackSpeed: Float,
     modifier: Modifier,
+    onMinimize: () -> Unit,
+    onClose: () -> Unit,
     onSettings: () -> Unit,
+    onNext: () -> Unit,
     onFullscreen: () -> Unit,
     fullscreen: Boolean,
+    resizeMode: Int,
+    screenModeLabel: String,
     onRetry: () -> Unit,
     onOpenExternal: () -> Unit
 ) {
     Box(modifier = modifier.background(Color.Black)) {
-        Thumbnail(video.thumbnailUrl, Modifier.fillMaxSize(), contentScale = ContentScale.Fit)
+        Thumbnail(
+            video.thumbnailUrl,
+            Modifier.fillMaxSize(),
+            contentScale = if (resizeMode == androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_ZOOM) {
+                ContentScale.Crop
+            } else {
+                ContentScale.Fit
+            }
+        )
 
         if (controller != null && controller.currentMediaItem?.mediaId == video.id && !playback.resolving) {
-            GeoMediaPlayerView(controller = controller)
+            GeoMediaPlayerView(
+                controller = controller,
+                useController = true,
+                resizeMode = resizeMode
+            )
+        }
+
+        Box(
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .fillMaxWidth()
+                .height(70.dp)
+                .background(
+                    Brush.verticalGradient(
+                        listOf(Color.Black.copy(alpha = 0.72f), Color.Transparent)
+                    )
+                )
+        )
+
+        Row(
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .fillMaxWidth()
+                .padding(horizontal = 6.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            IconButton(
+                onClick = onMinimize,
+                modifier = Modifier.background(Color.Black.copy(alpha = 0.42f), CircleShape)
+            ) {
+                Icon(
+                    if (fullscreen) Icons.Default.ArrowBack else Icons.Default.KeyboardArrowDown,
+                    if (fullscreen) "Salir de pantalla completa" else "Minimizar",
+                    tint = Color.White
+                )
+            }
+            Spacer(Modifier.weight(1f))
+            Surface(
+                onClick = onSettings,
+                color = Color.Black.copy(alpha = 0.55f),
+                shape = RoundedCornerShape(16.dp)
+            ) {
+                Text(
+                    if (qualityLabel == "Automático") "Auto" else qualityLabel,
+                    color = Color.White,
+                    style = MaterialTheme.typography.labelMedium,
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp)
+                )
+            }
+            Spacer(Modifier.width(6.dp))
+            Surface(
+                onClick = onSettings,
+                color = Color.Black.copy(alpha = 0.55f),
+                shape = RoundedCornerShape(16.dp)
+            ) {
+                Text(
+                    "${playbackSpeed}x",
+                    color = Color.White,
+                    style = MaterialTheme.typography.labelMedium,
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp)
+                )
+            }
+            IconButton(onClick = onSettings) {
+                Icon(Icons.Default.Settings, "Opciones de reproducción", tint = Color.White)
+            }
+            IconButton(onClick = onClose) {
+                Icon(Icons.Default.Close, "Cerrar", tint = Color.White)
+            }
+        }
+
+        Row(
+            modifier = Modifier.align(Alignment.BottomEnd).padding(10.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Surface(
+                onClick = onSettings,
+                color = Color.Black.copy(alpha = 0.55f),
+                shape = RoundedCornerShape(16.dp)
+            ) {
+                Text(
+                    screenModeLabel,
+                    color = Color.White,
+                    style = MaterialTheme.typography.labelSmall,
+                    modifier = Modifier.padding(horizontal = 9.dp, vertical = 6.dp)
+                )
+            }
+            IconButton(
+                onClick = onNext,
+                modifier = Modifier.background(Color.Black.copy(alpha = 0.50f), CircleShape)
+            ) {
+                Icon(Icons.Default.SkipNext, "Siguiente", tint = Color.White)
+            }
+            IconButton(
+                onClick = onFullscreen,
+                modifier = Modifier.background(Color.Black.copy(alpha = 0.50f), CircleShape)
+            ) {
+                Icon(
+                    if (fullscreen) Icons.Default.FullscreenExit else Icons.Default.Fullscreen,
+                    "Pantalla completa",
+                    tint = Color.White
+                )
+            }
         }
 
         if (showDelayedLoading && playback.error == null) {
             Box(
-                modifier = Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.2f)),
+                modifier = Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.16f)),
                 contentAlignment = Alignment.Center
             ) {
                 CircularProgressIndicator(modifier = Modifier.size(38.dp), strokeWidth = 4.dp)
             }
         }
 
-        Row(
-            modifier = Modifier.align(Alignment.TopEnd).padding(8.dp),
-            horizontalArrangement = Arrangement.spacedBy(6.dp)
-        ) {
-            Surface(
-                onClick = onSettings,
-                color = Color.Black.copy(alpha = 0.62f),
-                shape = RoundedCornerShape(18.dp)
-            ) {
-                Row(modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Default.HighQuality, null, tint = Color.White, modifier = Modifier.size(17.dp))
-                    Text(qualityLabel, color = Color.White, style = MaterialTheme.typography.labelMedium, modifier = Modifier.padding(start = 5.dp))
-                }
-            }
-            Surface(
-                onClick = onSettings,
-                color = Color.Black.copy(alpha = 0.62f),
-                shape = RoundedCornerShape(18.dp)
-            ) {
-                Text("${playbackSpeed}x", color = Color.White, style = MaterialTheme.typography.labelMedium, modifier = Modifier.padding(horizontal = 11.dp, vertical = 8.dp))
-            }
-        }
-
-        IconButton(
-            onClick = onFullscreen,
-            modifier = Modifier.align(Alignment.BottomEnd).padding(8.dp).background(Color.Black.copy(alpha = 0.55f), CircleShape)
-        ) {
-            Icon(if (fullscreen) Icons.Default.FullscreenExit else Icons.Default.Fullscreen, "Pantalla completa", tint = Color.White)
-        }
-
         playback.error?.let { message ->
             Column(
-                modifier = Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.9f)).padding(24.dp),
+                modifier = Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.92f)).padding(24.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.Center
             ) {
@@ -2115,9 +2268,29 @@ private fun MiniPlayer(
     val isPlaying = playback.isPlaying
     val currentPositionMs = playback.positionMs
     val durationMs = playback.durationMs
+    var dragOffset by remember(video.id) { mutableFloatStateOf(0f) }
 
     Surface(
-        modifier = modifier.fillMaxWidth().height(74.dp),
+        modifier = modifier
+            .fillMaxWidth()
+            .height(74.dp)
+            .graphicsLayer { translationY = dragOffset }
+            .pointerInput(video.id) {
+                detectVerticalDragGestures(
+                    onVerticalDrag = { _, amount -> dragOffset += amount },
+                    onDragEnd = {
+                        when {
+                            dragOffset <= -70f -> onExpand()
+                            dragOffset >= 70f -> {
+                                onSavePlayback(video, currentPositionMs, durationMs)
+                                onClose()
+                            }
+                        }
+                        dragOffset = 0f
+                    },
+                    onDragCancel = { dragOffset = 0f }
+                )
+            },
         tonalElevation = 8.dp,
         shadowElevation = 8.dp
     ) {
@@ -2315,6 +2488,98 @@ private fun VideoCard(
                         text = { Text("Reproducir") },
                         leadingIcon = { Icon(Icons.Default.PlayArrow, null) },
                         onClick = { menu = false; onPlay() }
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun RelatedVideoCard(video: VideoItem, onPlay: () -> Unit, onWatchLater: () -> Unit) {
+    var menuExpanded by remember { mutableStateOf(false) }
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onPlay)
+            .padding(bottom = 10.dp)
+    ) {
+        Box(modifier = Modifier.fillMaxWidth().aspectRatio(16f / 9f).background(Color.Black)) {
+            Thumbnail(video.thumbnailUrl, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
+            if (video.durationMs > 0L) {
+                Text(
+                    formatDuration(video.durationMs),
+                    color = Color.White,
+                    style = MaterialTheme.typography.labelMedium,
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .padding(8.dp)
+                        .background(Color.Black.copy(alpha = 0.82f), RoundedCornerShape(4.dp))
+                        .padding(horizontal = 5.dp, vertical = 2.dp)
+                )
+            }
+            if (video.isLive) {
+                Text(
+                    "EN VIVO",
+                    color = Color.White,
+                    fontWeight = FontWeight.Bold,
+                    style = MaterialTheme.typography.labelSmall,
+                    modifier = Modifier
+                        .align(Alignment.BottomStart)
+                        .padding(8.dp)
+                        .background(Color(0xFFD32F2F), RoundedCornerShape(4.dp))
+                        .padding(horizontal = 6.dp, vertical = 3.dp)
+                )
+            }
+            ResumeProgress(video, Modifier.align(Alignment.BottomCenter).fillMaxWidth())
+        }
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(start = 12.dp, top = 10.dp, end = 4.dp),
+            verticalAlignment = Alignment.Top
+        ) {
+            ChannelAvatar(video.channelThumbnailUrl, video.channelTitle, 38.dp)
+            Column(modifier = Modifier.weight(1f).padding(horizontal = 10.dp)) {
+                Text(
+                    video.title,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+                val metadata = listOfNotNull(
+                    video.channelTitle.takeIf { it.isNotBlank() },
+                    formatPublishedAt(video.publishedAt).takeIf { it.isNotBlank() }
+                ).joinToString(" · ")
+                if (metadata.isNotBlank()) {
+                    Text(
+                        metadata,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.padding(top = 3.dp)
+                    )
+                }
+            }
+            Box {
+                IconButton(onClick = { menuExpanded = true }) {
+                    Icon(Icons.Default.MoreVert, "Opciones")
+                }
+                DropdownMenu(expanded = menuExpanded, onDismissRequest = { menuExpanded = false }) {
+                    DropdownMenuItem(
+                        text = { Text("Ver después") },
+                        leadingIcon = { Icon(Icons.Outlined.WatchLater, null) },
+                        onClick = {
+                            menuExpanded = false
+                            onWatchLater()
+                        }
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Reproducir") },
+                        leadingIcon = { Icon(Icons.Default.PlayArrow, null) },
+                        onClick = {
+                            menuExpanded = false
+                            onPlay()
+                        }
                     )
                 }
             }
