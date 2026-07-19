@@ -191,19 +191,6 @@ fun GeoVideosApp(
                 error = state.authError,
                 onConnect = onConnectGoogle
             )
-        } else if (state.playerExpanded && selectedVideo != null) {
-            PlayerScreen(
-                video = selectedVideo,
-                isWatchLater = state.watchLater.any { it.id == selectedVideo.id },
-                autoplay = state.autoplay,
-                dataSaver = state.dataSaver,
-                onBack = viewModel::minimizePlayer,
-                onClose = viewModel::closePlayer,
-                onWatchLater = { viewModel.toggleWatchLater(selectedVideo) },
-                onSavePlayback = viewModel::savePlayback,
-                onRegisterDownload = viewModel::registerDownload,
-                onMessage = viewModel::showMessage
-            )
         } else {
             Box(modifier = Modifier.fillMaxSize()) {
                 MainShell(
@@ -218,6 +205,7 @@ fun GeoVideosApp(
                     onSearch = viewModel::search,
                     onRefresh = viewModel::refresh,
                     onLoadMoreHome = viewModel::loadMoreHome,
+                    onLoadMoreShorts = viewModel::loadMoreShorts,
                     onLoadMoreSearch = viewModel::loadMoreSearch,
                     onOpenChannel = viewModel::openChannel,
                     onCloseChannel = viewModel::closeChannel,
@@ -231,17 +219,37 @@ fun GeoVideosApp(
                     onMessage = viewModel::showMessage
                 )
 
-                state.selectedVideo?.let { video ->
-                    MiniPlayer(
-                        video = video,
-                        autoplay = true,
-                        onExpand = viewModel::expandPlayer,
-                        onClose = viewModel::closePlayer,
-                        onSavePlayback = viewModel::savePlayback,
-                        modifier = Modifier
-                            .align(Alignment.BottomCenter)
-                            .padding(bottom = 80.dp)
-                    )
+                if (state.playerExpanded && selectedVideo != null) {
+                    Surface(
+                        modifier = Modifier.fillMaxSize(),
+                        color = MaterialTheme.colorScheme.background
+                    ) {
+                        PlayerScreen(
+                            video = selectedVideo,
+                            isWatchLater = state.watchLater.any { it.id == selectedVideo.id },
+                            autoplay = state.autoplay,
+                            dataSaver = state.dataSaver,
+                            onBack = viewModel::minimizePlayer,
+                            onClose = viewModel::closePlayer,
+                            onWatchLater = { viewModel.toggleWatchLater(selectedVideo) },
+                            onSavePlayback = viewModel::savePlayback,
+                            onRegisterDownload = viewModel::registerDownload,
+                            onMessage = viewModel::showMessage
+                        )
+                    }
+                } else {
+                    selectedVideo?.let { video ->
+                        MiniPlayer(
+                            video = video,
+                            autoplay = true,
+                            onExpand = viewModel::expandPlayer,
+                            onClose = viewModel::closePlayer,
+                            onSavePlayback = viewModel::savePlayback,
+                            modifier = Modifier
+                                .align(Alignment.BottomCenter)
+                                .padding(bottom = 80.dp)
+                        )
+                    }
                 }
             }
         }
@@ -333,6 +341,7 @@ private fun MainShell(
     onSearch: (String) -> Unit,
     onRefresh: () -> Unit,
     onLoadMoreHome: (HomeCategory) -> Unit,
+    onLoadMoreShorts: () -> Unit,
     onLoadMoreSearch: () -> Unit,
     onOpenChannel: (ChannelItem) -> Unit,
     onCloseChannel: () -> Unit,
@@ -441,8 +450,8 @@ private fun MainShell(
                 music = state.music,
                 loading = state.loading,
                 refreshing = state.refreshing,
-                loadingMore = state.loadingMore,
-                canLoadMore = state.canLoadMore,
+                loadingMore = state.isLoadingMore(state.homeCategory),
+                canLoadMore = state.canLoadMore(state.homeCategory),
                 lastSyncMs = state.lastSyncMs,
                 watchLater = state.watchLater,
                 onRefresh = onRefresh,
@@ -455,6 +464,9 @@ private fun MainShell(
                 modifier = Modifier.padding(padding),
                 videos = state.shorts,
                 loading = state.loading,
+                loadingMore = state.shortsLoadingMore,
+                canLoadMore = state.shortsCanLoadMore,
+                onLoadMore = onLoadMoreShorts,
                 onPlay = onPlay,
                 onWatchLater = onWatchLater
             )
@@ -740,29 +752,69 @@ private fun ShortsScreen(
     modifier: Modifier,
     videos: List<VideoItem>,
     loading: Boolean,
+    loadingMore: Boolean,
+    canLoadMore: Boolean,
+    onLoadMore: () -> Unit,
     onPlay: (VideoItem) -> Unit,
     onWatchLater: (VideoItem) -> Unit
 ) {
+    val listState = rememberLazyListState()
+    val shouldLoadMore by remember(listState, videos.size) {
+        derivedStateOf {
+            val lastVisible = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
+            val total = listState.layoutInfo.totalItemsCount
+            total > 0 && videos.isNotEmpty() && lastVisible >= total - 3
+        }
+    }
+    LaunchedEffect(shouldLoadMore, loadingMore, canLoadMore) {
+        if (shouldLoadMore && !loadingMore && canLoadMore) onLoadMore()
+    }
+
     LazyColumn(
+        state = listState,
         modifier = modifier.fillMaxSize(),
         contentPadding = PaddingValues(horizontal = 14.dp, vertical = 12.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
-        item { SectionHeader("Clips verticales", "Resultados cortos disponibles en YouTube") }
-        if (loading && videos.isEmpty()) item { LoadingBlock() }
-        else items(videos, key = { "short-${it.id}" }) { video ->
-            Card(onClick = { onPlay(video) }, shape = RoundedCornerShape(24.dp), modifier = Modifier.fillMaxWidth()) {
-                Box(modifier = Modifier.fillMaxWidth().aspectRatio(9f / 14f)) {
-                    Thumbnail(video.thumbnailUrl, Modifier.fillMaxSize())
-                    Box(modifier = Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(0.85f)))))
-                    Column(modifier = Modifier.align(Alignment.BottomStart).padding(18.dp).fillMaxWidth(0.82f)) {
-                        Text(video.title, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleLarge, maxLines = 3, overflow = TextOverflow.Ellipsis)
-                        Text(video.channelTitle, color = Color.White.copy(0.75f), modifier = Modifier.padding(top = 6.dp))
-                    }
-                    IconButton(onClick = { onWatchLater(video) }, modifier = Modifier.align(Alignment.BottomEnd).padding(10.dp)) {
-                        Icon(Icons.Outlined.WatchLater, "Ver después")
+        item(contentType = "shorts-heading") {
+            SectionHeader("Clips verticales", "Resultados cortos disponibles en YouTube")
+        }
+        if (loading && videos.isEmpty()) {
+            item(contentType = "shorts-loading") { LoadingBlock() }
+        } else {
+            items(videos, key = { "short-${it.id}" }, contentType = { "short" }) { video ->
+                Card(onClick = { onPlay(video) }, shape = RoundedCornerShape(24.dp), modifier = Modifier.fillMaxWidth()) {
+                    Box(modifier = Modifier.fillMaxWidth().aspectRatio(9f / 14f)) {
+                        Thumbnail(video.thumbnailUrl, Modifier.fillMaxSize())
+                        Box(modifier = Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(0.85f)))))
+                        Column(modifier = Modifier.align(Alignment.BottomStart).padding(18.dp).fillMaxWidth(0.82f)) {
+                            Text(video.title, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleLarge, maxLines = 3, overflow = TextOverflow.Ellipsis)
+                            Text(video.channelTitle, color = Color.White.copy(0.75f), modifier = Modifier.padding(top = 6.dp))
+                        }
+                        IconButton(onClick = { onWatchLater(video) }, modifier = Modifier.align(Alignment.BottomEnd).padding(10.dp)) {
+                            Icon(Icons.Outlined.WatchLater, "Ver después")
+                        }
                     }
                 }
+            }
+        }
+        if (loadingMore) {
+            item(contentType = "shorts-more") {
+                Box(
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 22.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    CircularProgressIndicator(modifier = Modifier.size(28.dp), strokeWidth = 3.dp)
+                }
+            }
+        } else if (!canLoadMore && videos.isNotEmpty()) {
+            item(contentType = "shorts-end") {
+                Text(
+                    "No hay más Shorts disponibles por ahora.",
+                    modifier = Modifier.fillMaxWidth().padding(20.dp),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                )
             }
         }
     }
@@ -1999,7 +2051,8 @@ private fun ChannelAvatar(
 ) {
     val context = LocalContext.current
     val modifier = Modifier.size(size).clip(CircleShape)
-    if (url.isBlank()) {
+    var imageFailed by remember(url) { mutableStateOf(false) }
+    if (url.isBlank() || imageFailed) {
         Box(
             modifier = modifier.background(MaterialTheme.colorScheme.primaryContainer),
             contentAlignment = Alignment.Center
@@ -2018,14 +2071,16 @@ private fun ChannelAvatar(
             model = request,
             contentDescription = channelTitle,
             modifier = modifier,
-            contentScale = ContentScale.Crop
+            contentScale = ContentScale.Crop,
+            onError = { imageFailed = true }
         )
     }
 }
 
 @Composable
 private fun Thumbnail(url: String, modifier: Modifier) {
-    if (url.isBlank()) {
+    var imageFailed by remember(url) { mutableStateOf(false) }
+    if (url.isBlank() || imageFailed) {
         Box(
             modifier = modifier.background(
                 Brush.linearGradient(listOf(Color(0xFF301A56), Color(0xFF7C4DFF), Color(0xFF111118)))
@@ -2039,7 +2094,7 @@ private fun Thumbnail(url: String, modifier: Modifier) {
         val request = remember(url) {
             ImageRequest.Builder(context)
                 .data(url)
-                .size(1280, 720)
+                .size(640, 360)
                 .crossfade(false)
                 .build()
         }
@@ -2047,7 +2102,8 @@ private fun Thumbnail(url: String, modifier: Modifier) {
             model = request,
             contentDescription = null,
             modifier = modifier.background(Color.Black),
-            contentScale = ContentScale.Crop
+            contentScale = ContentScale.Crop,
+            onError = { imageFailed = true }
         )
     }
 }

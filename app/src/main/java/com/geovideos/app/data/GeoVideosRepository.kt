@@ -41,6 +41,32 @@ class GeoVideosRepository(context: Context) {
     fun loadPlaylists(): List<PlaylistItem> = decodePlaylists(preferences.getString(KEY_PLAYLISTS, "[]").orEmpty())
     fun loadNotifications(): List<NotificationItem> = decodeNotifications(preferences.getString(KEY_REMOTE_NOTIFICATIONS, "[]").orEmpty())
 
+    fun loadChannelAvatars(): Map<String, String> = runCatching {
+        val json = JSONObject(preferences.getString(KEY_CHANNEL_AVATARS, "{}").orEmpty().ifBlank { "{}" })
+        buildMap {
+            val keys = json.keys()
+            while (keys.hasNext()) {
+                val channelId = keys.next()
+                val url = json.optString(channelId)
+                if (channelId.isNotBlank() && url.isNotBlank()) put(channelId, url)
+            }
+        }
+    }.getOrDefault(emptyMap())
+
+    fun saveChannelAvatars(avatars: Map<String, String>) {
+        if (avatars.isEmpty()) return
+        val merged = LinkedHashMap(loadChannelAvatars())
+        avatars.forEach { (channelId, url) ->
+            if (channelId.isNotBlank() && url.isNotBlank()) merged[channelId] = url
+        }
+        while (merged.size > MAX_CHANNEL_AVATARS) {
+            merged.remove(merged.keys.first())
+        }
+        val json = JSONObject()
+        merged.forEach { (channelId, url) -> json.put(channelId, url) }
+        preferences.edit().putString(KEY_CHANNEL_AVATARS, json.toString()).apply()
+    }
+
     fun setAutoplay(value: Boolean) {
         preferences.edit().putBoolean(KEY_AUTOPLAY, value).apply()
     }
@@ -377,6 +403,8 @@ class GeoVideosRepository(context: Context) {
         const val KEY_SUBSCRIPTIONS = "subscriptions"
         const val KEY_PLAYLISTS = "playlists"
         const val KEY_REMOTE_NOTIFICATIONS = "remote_notifications"
+        const val KEY_CHANNEL_AVATARS = "channel_avatars"
         const val KEY_LAST_SYNC = "last_sync"
+        const val MAX_CHANNEL_AVATARS = 1_000
     }
 }

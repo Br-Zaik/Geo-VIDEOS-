@@ -53,8 +53,13 @@ data class GeoVideosUiState(
     val homeCategory: HomeCategory = HomeCategory.FOR_YOU,
     val loading: Boolean = false,
     val refreshing: Boolean = false,
-    val loadingMore: Boolean = false,
-    val canLoadMore: Boolean = true,
+    val loadingMoreCategory: HomeCategory? = null,
+    val canLoadMoreForYou: Boolean = true,
+    val canLoadMoreLive: Boolean = true,
+    val canLoadMoreGaming: Boolean = true,
+    val canLoadMoreMusic: Boolean = true,
+    val shortsLoadingMore: Boolean = false,
+    val shortsCanLoadMore: Boolean = true,
     val searchLoadingMore: Boolean = false,
     val personalized: List<VideoItem> = emptyList(),
     val popular: List<VideoItem> = emptyList(),
@@ -80,7 +85,16 @@ data class GeoVideosUiState(
     val notificationsEnabled: Boolean = true,
     val lastSyncMs: Long = 0L,
     val message: String? = null
-)
+) {
+    fun isLoadingMore(category: HomeCategory): Boolean = loadingMoreCategory == category
+
+    fun canLoadMore(category: HomeCategory): Boolean = when (category) {
+        HomeCategory.FOR_YOU -> canLoadMoreForYou
+        HomeCategory.LIVE -> canLoadMoreLive
+        HomeCategory.GAMING -> canLoadMoreGaming
+        HomeCategory.MUSIC -> canLoadMoreMusic
+    }
+}
 
 class GeoVideosViewModel(application: Application) : AndroidViewModel(application) {
     private val repository = GeoVideosRepository(application)
@@ -186,7 +200,8 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
                     authError = "",
                     loading = false,
                     refreshing = false,
-                    loadingMore = false,
+                    loadingMoreCategory = null,
+                    shortsLoadingMore = false,
                     message = if (cloudSetupLikely) {
                         "Google rechazó la firma registrada. Se conservaron los datos guardados."
                     } else {
@@ -201,7 +216,8 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
                     authError = message,
                     loading = false,
                     refreshing = false,
-                    loadingMore = false
+                    loadingMoreCategory = null,
+                    shortsLoadingMore = false
                 )
             }
         }
@@ -249,7 +265,18 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
         }
         refreshCounter++
         resetPagination(keepSearch = true)
-        _uiState.update { it.copy(refreshing = true, canLoadMore = true) }
+        _uiState.update {
+            it.copy(
+                refreshing = true,
+                loadingMoreCategory = null,
+                shortsLoadingMore = false,
+                canLoadMoreForYou = true,
+                canLoadMoreLive = true,
+                canLoadMoreGaming = true,
+                canLoadMoreMusic = true,
+                shortsCanLoadMore = true
+            )
+        }
         loadAll(initialLoad = false)
     }
 
@@ -344,8 +371,7 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
                         musicPage.items,
                         shortsPage.items
                     )
-                    val enrichedById = runCatching { api.enrichVideos(token, allRaw) }
-                        .getOrDefault(allRaw)
+                    val enrichedById = enrichVideosWithCache(token, allRaw)
                         .associateBy { it.id }
                     fun enriched(items: List<VideoItem>): List<VideoItem> =
                         items.map { enrichedById[it.id] ?: it }
@@ -371,13 +397,38 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
                         previous.history.take(12),
                         popular
                     ).take(MAX_HOME_ITEMS)
-                    val personalized = rotateForRefresh(personalizedBase)
+                    val previousPersonalizedIds = previous.personalized.asSequence()
+                        .map { it.id }
+                        .filter { it.isNotBlank() }
+                        .toHashSet()
+                    val newPersonalized = personalizedBase.filter { it.id !in previousPersonalizedIds }
+                    val personalized = if (initialLoad) {
+                        personalizedBase
+                    } else {
+                        mergeUniqueVideos(newPersonalized, personalizedBase, previous.personalized)
+                            .take(MAX_HOME_ITEMS)
+                    }
 
                     popularNextToken = popularPage.nextPageToken
                     liveNextToken = livePage.nextPageToken
                     gamingNextToken = gamingPage.nextPageToken
                     musicNextToken = musicPage.nextPageToken
                     shortsNextToken = shortsPage.nextPageToken
+
+                    val previousRemoteIds = mergeUniqueVideos(
+                        previous.personalized,
+                        previous.live,
+                        previous.gaming,
+                        previous.music,
+                        previous.shorts
+                    ).asSequence().map { it.id }.filter { it.isNotBlank() }.toHashSet()
+                    val newContentCount = mergeUniqueVideos(
+                        personalized,
+                        live,
+                        gaming,
+                        music,
+                        shorts
+                    ).count { it.id !in previousRemoteIds }
 
                     val profile = channelDetails?.profile ?: baseProfile
                     val playlists = playlistsDeferred.await()
@@ -405,8 +456,13 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
                             authStatus = AuthStatus.CONNECTED,
                             loading = false,
                             refreshing = false,
-                            loadingMore = false,
-                            canLoadMore = true,
+                            loadingMoreCategory = null,
+                        shortsLoadingMore = false,
+                            canLoadMoreForYou = subscriptionOffset < subscriptions.size || popularNextToken.isNotBlank(),
+                            canLoadMoreLive = liveNextToken.isNotBlank(),
+                            canLoadMoreGaming = gamingNextToken.isNotBlank(),
+                            canLoadMoreMusic = musicNextToken.isNotBlank(),
+                            shortsCanLoadMore = shortsNextToken.isNotBlank(),
                             profile = profile,
                             personalized = personalized,
                             popular = popular,
@@ -420,7 +476,13 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
                             notifications = notifications,
                             lastSyncMs = syncTime,
                             authError = "",
-                            message = if (!initialLoad) "Contenido sincronizado y renovado." else null
+                            message = if (!initialLoad) {
+                                if (newContentCount > 0) {
+                                    "$newContentCount videos nuevos encontrados."
+                                } else {
+                                    "No se encontraron videos nuevos; se mantuvo el contenido anterior."
+                                }
+                            } else null
                         )
                     }
                 }
@@ -431,7 +493,8 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
                     it.copy(
                         loading = false,
                         refreshing = false,
-                        loadingMore = false,
+                        loadingMoreCategory = null,
+                        shortsLoadingMore = false,
                         authStatus = if (it.profile != null) AuthStatus.CONNECTED else AuthStatus.ERROR,
                         authError = if (it.profile == null) error.message ?: "No se pudo cargar el servicio de video." else "",
                         message = if (it.profile != null) {
@@ -448,26 +511,29 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
     fun loadMoreHome(category: HomeCategory) {
         val token = accessToken ?: return
         val state = _uiState.value
-        if (state.loadingMore || state.refreshing || !state.canLoadMore) return
-        _uiState.update { it.copy(loadingMore = true) }
+        if (state.loadingMoreCategory != null || state.refreshing || !state.canLoadMore(category)) return
+        _uiState.update { it.copy(loadingMoreCategory = category) }
 
         viewModelScope.launch {
             try {
                 when (category) {
                     HomeCategory.FOR_YOU -> loadMorePersonalized(token)
                     HomeCategory.LIVE -> loadMorePagedCategory(
+                        category = category,
                         current = _uiState.value.live,
                         loader = { api.liveVideosPage(token, liveNextToken) },
                         tokenSetter = { liveNextToken = it },
                         updater = { stateNow, items -> stateNow.copy(live = items) }
                     )
                     HomeCategory.GAMING -> loadMorePagedCategory(
+                        category = category,
                         current = _uiState.value.gaming,
                         loader = { api.mostPopularPage(token, "20", gamingNextToken) },
                         tokenSetter = { gamingNextToken = it },
                         updater = { stateNow, items -> stateNow.copy(gaming = items) }
                     )
                     HomeCategory.MUSIC -> loadMorePagedCategory(
+                        category = category,
                         current = _uiState.value.music,
                         loader = { api.musicVideosPage(token, musicNextToken) },
                         tokenSetter = { musicNextToken = it },
@@ -478,8 +544,37 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
             } catch (error: Exception) {
                 _uiState.update {
                     it.copy(
-                        loadingMore = false,
-                        message = "No se pudieron cargar más videos."
+                        loadingMoreCategory = null,
+                        message = "No se pudieron cargar más videos. Desliza nuevamente para reintentar."
+                    )
+                }
+            }
+        }
+    }
+
+    fun loadMoreShorts() {
+        val token = accessToken ?: return
+        val state = _uiState.value
+        if (state.shortsLoadingMore || state.refreshing || !state.shortsCanLoadMore || shortsNextToken.isBlank()) return
+        _uiState.update { it.copy(shortsLoadingMore = true) }
+        viewModelScope.launch {
+            try {
+                val page = api.shortsPage(token, shortsNextToken)
+                shortsNextToken = page.nextPageToken
+                val enriched = enrichVideosWithCache(token, page.items)
+                _uiState.update {
+                    it.copy(
+                        shorts = mergeUniqueVideos(it.shorts, enriched).take(MAX_HOME_ITEMS),
+                        shortsLoadingMore = false,
+                        shortsCanLoadMore = page.nextPageToken.isNotBlank()
+                    )
+                }
+                persistCurrentSnapshot()
+            } catch (error: Exception) {
+                _uiState.update {
+                    it.copy(
+                        shortsLoadingMore = false,
+                        message = "No se pudieron cargar más Shorts."
                     )
                 }
             }
@@ -507,32 +602,33 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
 
         val popularMorePage = if (subscriptionMore.size < 8 && popularNextToken.isNotBlank()) {
             runCatching { api.mostPopularPage(token, pageToken = popularNextToken) }
-                .getOrDefault(VideoPage(emptyList()))
+                .getOrDefault(VideoPage(emptyList(), popularNextToken))
         } else {
             VideoPage(emptyList(), popularNextToken)
         }
-        if (popularMorePage.items.isNotEmpty() || popularMorePage.nextPageToken.isNotBlank()) {
-            popularNextToken = popularMorePage.nextPageToken
-        }
+        popularNextToken = popularMorePage.nextPageToken
 
         val raw = mergeUniqueVideos(subscriptionMore, popularMorePage.items)
-        val enriched = runCatching { api.enrichVideos(token, raw) }.getOrDefault(raw)
+        val enriched = enrichVideosWithCache(token, raw)
         val appended = mergeUniqueVideos(current.personalized, enriched).take(MAX_HOME_ITEMS)
         val canContinue = subscriptionOffset < subscriptions.size || popularNextToken.isNotBlank()
+        val popularPageIds = popularMorePage.items.asSequence().map { it.id }.toHashSet()
 
         _uiState.update {
             it.copy(
                 personalized = appended,
-                popular = mergeUniqueVideos(it.popular, enriched.filter { video ->
-                    popularMorePage.items.any { pageItem -> pageItem.id == video.id }
-                }).take(MAX_HOME_ITEMS),
-                loadingMore = false,
-                canLoadMore = canContinue
+                popular = mergeUniqueVideos(
+                    it.popular,
+                    enriched.filter { video -> video.id in popularPageIds }
+                ).take(MAX_HOME_ITEMS),
+                loadingMoreCategory = null,
+                canLoadMoreForYou = canContinue
             )
         }
     }
 
     private suspend fun loadMorePagedCategory(
+        category: HomeCategory,
         current: List<VideoItem>,
         loader: suspend () -> VideoPage,
         tokenSetter: (String) -> Unit,
@@ -541,13 +637,16 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
         val token = accessToken ?: return
         val page = loader()
         tokenSetter(page.nextPageToken)
-        val enriched = runCatching { api.enrichVideos(token, page.items) }.getOrDefault(page.items)
+        val enriched = enrichVideosWithCache(token, page.items)
         val appended = mergeUniqueVideos(current, enriched).take(MAX_HOME_ITEMS)
         _uiState.update { state ->
-            updater(state, appended).copy(
-                loadingMore = false,
-                canLoadMore = page.nextPageToken.isNotBlank()
-            )
+            val updated = updater(state, appended).copy(loadingMoreCategory = null)
+            when (category) {
+                HomeCategory.FOR_YOU -> updated.copy(canLoadMoreForYou = page.nextPageToken.isNotBlank())
+                HomeCategory.LIVE -> updated.copy(canLoadMoreLive = page.nextPageToken.isNotBlank())
+                HomeCategory.GAMING -> updated.copy(canLoadMoreGaming = page.nextPageToken.isNotBlank())
+                HomeCategory.MUSIC -> updated.copy(canLoadMoreMusic = page.nextPageToken.isNotBlank())
+            }
         }
     }
 
@@ -568,13 +667,6 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
             .filter { it.isNotBlank() }
             .joinToString(" ")
             .take(90)
-    }
-
-    private fun rotateForRefresh(videos: List<VideoItem>): List<VideoItem> {
-        if (videos.size < 3 || refreshCounter == 0) return videos
-        val offset = (refreshCounter % minOf(videos.size, 7))
-        if (offset == 0) return videos
-        return videos.drop(offset) + videos.take(offset)
     }
 
     private fun mergeUniqueVideos(vararg groups: List<VideoItem>): List<VideoItem> {
@@ -598,6 +690,45 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
         if (!keepSearch) {
             searchNextToken = ""
             lastSearchQuery = ""
+        }
+    }
+
+    private suspend fun enrichVideosWithCache(
+        token: String,
+        videos: List<VideoItem>
+    ): List<VideoItem> {
+        if (videos.isEmpty()) return videos
+        val cached = withContext(Dispatchers.IO) { repository.loadChannelAvatars() }
+        val embedded = videos.asSequence()
+            .filter { it.channelId.isNotBlank() && it.channelThumbnailUrl.isNotBlank() }
+            .associate { it.channelId to it.channelThumbnailUrl }
+        val known = cached + embedded
+        val withKnownAvatars = videos.map { video ->
+            val avatar = known[video.channelId].orEmpty()
+            if (video.channelThumbnailUrl.isNotBlank() || avatar.isBlank()) video
+            else video.copy(channelThumbnailUrl = avatar)
+        }
+        val unresolved = withKnownAvatars.filter {
+            it.channelId.isNotBlank() && it.channelThumbnailUrl.isBlank()
+        }
+        if (unresolved.isEmpty()) {
+            if (embedded.isNotEmpty()) withContext(Dispatchers.IO) { repository.saveChannelAvatars(embedded) }
+            return withKnownAvatars
+        }
+
+        val fetched = runCatching { api.enrichVideos(token, unresolved) }
+            .getOrDefault(unresolved)
+        val fresh = fetched.asSequence()
+            .filter { it.channelId.isNotBlank() && it.channelThumbnailUrl.isNotBlank() }
+            .associate { it.channelId to it.channelThumbnailUrl }
+        if (embedded.isNotEmpty() || fresh.isNotEmpty()) {
+            withContext(Dispatchers.IO) { repository.saveChannelAvatars(embedded + fresh) }
+        }
+        val allKnown = known + fresh
+        return withKnownAvatars.map { video ->
+            val avatar = allKnown[video.channelId].orEmpty()
+            if (video.channelThumbnailUrl.isNotBlank() || avatar.isBlank()) video
+            else video.copy(channelThumbnailUrl = avatar)
         }
     }
 
@@ -627,13 +758,7 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     fun selectHomeCategory(category: HomeCategory) {
-        val canLoad = when (category) {
-            HomeCategory.FOR_YOU -> subscriptionOffset < _uiState.value.subscriptions.size || popularNextToken.isNotBlank()
-            HomeCategory.LIVE -> liveNextToken.isNotBlank() || _uiState.value.live.isNotEmpty()
-            HomeCategory.GAMING -> gamingNextToken.isNotBlank() || _uiState.value.gaming.isNotEmpty()
-            HomeCategory.MUSIC -> musicNextToken.isNotBlank() || _uiState.value.music.isNotEmpty()
-        }
-        _uiState.update { it.copy(homeCategory = category, canLoadMore = canLoad) }
+        _uiState.update { it.copy(homeCategory = category) }
     }
 
     fun play(video: VideoItem) {
@@ -709,7 +834,7 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
             try {
                 val page = api.searchVideosPage(token, clean)
                 searchNextToken = page.nextPageToken
-                val results = api.enrichVideos(token, page.items)
+                val results = enrichVideosWithCache(token, page.items)
                 _uiState.update {
                     it.copy(
                         loading = false,
@@ -735,7 +860,7 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
             try {
                 val page = api.searchVideosPage(token, lastSearchQuery, pageToken = searchNextToken)
                 searchNextToken = page.nextPageToken
-                val enriched = api.enrichVideos(token, page.items)
+                val enriched = enrichVideosWithCache(token, page.items)
                 _uiState.update {
                     it.copy(
                         searchResults = mergeUniqueVideos(it.searchResults, enriched),
@@ -758,7 +883,7 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
         viewModelScope.launch {
             try {
                 val raw = api.channelVideos(token, channel.id)
-                val videos = api.enrichVideos(token, raw)
+                val videos = enrichVideosWithCache(token, raw)
                 _uiState.update { it.copy(loading = false, channelVideos = videos) }
             } catch (error: Exception) {
                 _uiState.update { it.copy(loading = false, message = error.message ?: "No se pudo abrir el canal.") }
@@ -815,7 +940,8 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
             it.copy(
                 loading = false,
                 refreshing = false,
-                loadingMore = false,
+                loadingMoreCategory = null,
+                shortsLoadingMore = false,
                 searchLoadingMore = false,
                 authStatus = if (it.profile != null) AuthStatus.CONNECTED else AuthStatus.ERROR,
                 authError = if (it.profile == null) error.message else "",

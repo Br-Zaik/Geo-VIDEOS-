@@ -1,29 +1,20 @@
-# Geo Videos V10
+# Geo Videos V11
 
-Versión centrada en corregir el feed y la fluidez, sin volver a llenar la app de botones sin función.
+Versión enfocada en corregir la carga continua, la actualización real, los iconos de canal y la fluidez del feed, manteniendo la autenticación existente.
 
-## Cambios realizados
+## Cambios aplicados
 
-- Fotos reales de los canales en las tarjetas y resultados de búsqueda cuando la API las entrega.
-- Carga automática de más videos al llegar cerca del final del feed.
-- Paginación real en **Principal, En vivo, Juegos, Música** y en los resultados de **Buscar**.
-- Actualización real: vuelve a consultar novedades de canales suscritos, actividad, Me gusta y una búsqueda relacionada distinta; además reordena el primer bloque para que el cambio sea visible.
-- Eliminación de videos duplicados al actualizar o cargar más.
-- Caché persistente: conserva el contenido anterior si la red falla.
-- Miniaturas solicitadas a un tamaño controlado y sin animaciones de transición para reducir trabas al desplazarse.
-- Listas con claves y tipos de contenido estables para reducir recomposiciones innecesarias.
-- Indicador discreto al cargar más contenido y aviso cuando no quedan más páginas disponibles.
-- `versionCode 10` y `versionName 10.0.0`.
+- Paginación independiente para **Principal, En vivo, Juegos y Música**. Una categoría ya no bloquea a las demás.
+- Paginación automática añadida a **Shorts**.
+- La actualización compara IDs y coloca primero el contenido realmente nuevo; ya no simula cambios rotando los mismos videos.
+- Mensaje con la cantidad de videos nuevos, o aviso claro cuando la API devuelve el mismo contenido.
+- Caché persistente de iconos de canales para conservarlos cuando una consulta temporal falla.
+- Consulta de iconos por lotes de hasta 50 canales, sin descartar silenciosamente los canales posteriores.
+- Miniaturas reducidas de 1280×720 a 640×360 para disminuir decodificación, memoria y trabas al desplazarse.
+- Fallback visual cuando falla una miniatura o un avatar.
+- Indicadores de carga y fin de resultados independientes por sección.
+- `versionCode 11` y `versionName 11.0.0`.
 
-## Cuenta y firma
+## Inicio de sesión preservado
 
-Se mantienen:
-
-- Paquete: `com.geovideos.app`
-- SHA-1: `61:39:FF:D0:D5:6B:DC:06:FA:13:AD:3D:7A:88:93:9F:6D:4A:52:7F`
-
-No es necesario repetir la configuración de Google Cloud.
-
-## Límite técnico que no se oculta
-
-El contenido conectado a la cuenta sigue obteniéndose mediante la API autorizada y los videos de esa plataforma se reproducen con un reproductor incrustado permitido. Esta versión no intenta extraer ni ocultar la identidad del proveedor del video. El trabajo de V10 se concentra en el feed, los iconos de canal, la carga continua, la actualización y la fluidez.
+No se modificaron `MainActivity.kt`, el manifiesto, la llave de firma, el paquete, los permisos OAuth ni el flujo de cuenta de Google. La única modificación en `app/build.gradle.kts` es el número de versión.

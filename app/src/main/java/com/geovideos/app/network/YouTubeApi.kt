@@ -283,23 +283,21 @@ class YouTubeApi {
             .map { it.channelId }
             .filter { it.isNotBlank() }
             .distinct()
-            .take(50)
             .toList()
         if (ids.isEmpty()) return@withContext videos
 
-        val json = requestJson(
-            "https://www.googleapis.com/youtube/v3/channels?part=snippet&id=${ids.joinToString(",")}&maxResults=50",
-            token
-        )
-        val items = json.optJSONArray("items")
-        val avatars = buildMap<String, String> {
-            if (items != null) {
-                for (index in 0 until items.length()) {
-                    val item = items.optJSONObject(index) ?: continue
-                    val id = item.optString("id")
-                    val image = bestThumbnail(item.optJSONObject("snippet"))
-                    if (id.isNotBlank() && image.isNotBlank()) put(id, image)
-                }
+        val avatars = LinkedHashMap<String, String>()
+        ids.chunked(50).forEach { channelIds ->
+            val json = requestJson(
+                "https://www.googleapis.com/youtube/v3/channels?part=snippet&id=${channelIds.joinToString(",")}&maxResults=50",
+                token
+            )
+            val items = json.optJSONArray("items") ?: return@forEach
+            for (index in 0 until items.length()) {
+                val item = items.optJSONObject(index) ?: continue
+                val id = item.optString("id")
+                val image = bestThumbnail(item.optJSONObject("snippet"))
+                if (id.isNotBlank() && image.isNotBlank()) avatars[id] = image
             }
         }
         videos.map { video ->
