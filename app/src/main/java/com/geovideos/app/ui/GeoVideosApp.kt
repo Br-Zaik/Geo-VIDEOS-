@@ -180,8 +180,6 @@ import com.geovideos.app.data.VideoDetails
 import com.geovideos.app.playback.GeoPlayerConnection
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collect
-import kotlinx.coroutines.flow.distinctUntilChanged
-import kotlinx.coroutines.flow.map
 
 private const val PACKAGE_NAME = "com.geovideos.app"
 private const val DEV_SHA1 = "61:39:FF:D0:D5:6B:DC:06:FA:13:AD:3D:7A:88:93:9F:6D:4A:52:7F"
@@ -256,6 +254,7 @@ fun GeoVideosApp(
                     onSection = viewModel::selectSection,
                     onCategory = viewModel::selectHomeCategory,
                     onPlay = viewModel::play,
+                    onOpenVideo = viewModel::openPlayer,
                     onPreviewShort = viewModel::previewShort,
                     onWatchLater = viewModel::toggleWatchLater,
                     onLike = viewModel::toggleLocalLike,
@@ -348,7 +347,7 @@ private fun PlaybackProgressSaver(
     playerConnection: GeoPlayerConnection,
     onSavePlayback: (VideoItem, Long, Long) -> Unit
 ) {
-    val playback by playerConnection.state.collectAsStateWithLifecycle()
+    val playback by playerConnection.progressState.collectAsStateWithLifecycle()
     var lastSavedVideoId by remember { mutableStateOf("") }
     var lastSavedPositionMs by remember { mutableLongStateOf(0L) }
 
@@ -448,6 +447,7 @@ private fun MainShell(
     onSection: (MainSection) -> Unit,
     onCategory: (HomeCategory) -> Unit,
     onPlay: (VideoItem) -> Unit,
+    onOpenVideo: (VideoItem) -> Unit,
     onPreviewShort: (VideoItem) -> Unit,
     onWatchLater: (VideoItem) -> Unit,
     onLike: (VideoItem) -> Unit,
@@ -604,6 +604,7 @@ private fun MainShell(
                 dataSaver = state.dataSaver,
                 onLoadMore = onLoadMoreShorts,
                 onPreview = onPreviewShort,
+                onOpenVideo = onOpenVideo,
                 onWatchLater = onWatchLater,
                 onLike = onLike,
                 onDislike = onDislike
@@ -764,8 +765,7 @@ private fun HomeScreen(
         HomeCategory.GAMING -> gaming
         HomeCategory.MUSIC -> music
     }
-    val mixVideo = if (category == HomeCategory.FOR_YOU) videos.firstOrNull() else null
-    val displayVideos = if (category == HomeCategory.FOR_YOU && videos.size > 1) videos.drop(1) else videos
+    val displayVideos = videos
     val watchLaterIds = remember(watchLater) { watchLater.mapTo(HashSet<String>()) { it.id } }
     val listState = rememberLazyListState()
     val shouldLoadMore by remember(listState, displayVideos.size) {
@@ -796,7 +796,7 @@ private fun HomeScreen(
                     contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp),
                     horizontalArrangement = Arrangement.spacedBy(9.dp)
                 ) {
-                    item { CategoryChip("Para ti", Icons.Default.Explore, category == HomeCategory.FOR_YOU) { onCategory(HomeCategory.FOR_YOU) } }
+                    item { CategoryChip("Todos", Icons.Default.Explore, category == HomeCategory.FOR_YOU) { onCategory(HomeCategory.FOR_YOU) } }
                     item { CategoryChip("En vivo", Icons.Default.LiveTv, category == HomeCategory.LIVE) { onCategory(HomeCategory.LIVE) } }
                     item { CategoryChip("Juegos", Icons.Default.Games, category == HomeCategory.GAMING) { onCategory(HomeCategory.GAMING) } }
                     item { CategoryChip("Música", Icons.Default.PlaylistPlay, category == HomeCategory.MUSIC) { onCategory(HomeCategory.MUSIC) } }
@@ -820,7 +820,7 @@ private fun HomeScreen(
                         )
                         Text(
                             when (category) {
-                                HomeCategory.FOR_YOU -> "Novedades de tus canales, Me gusta e historial"
+                                HomeCategory.FOR_YOU -> "Videos recientes y recomendaciones"
                                 HomeCategory.LIVE -> "Transmisiones públicas disponibles"
                                 HomeCategory.GAMING -> "Videos populares de juegos"
                                 HomeCategory.MUSIC -> "Videos musicales populares"
@@ -839,11 +839,6 @@ private fun HomeScreen(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp)
                     )
-                }
-            }
-            if (category == HomeCategory.FOR_YOU && mixVideo != null) {
-                item(key = "home-mix", contentType = "home-mix") {
-                    HomeMixSection(mixVideo, onPlay)
                 }
             }
             if (category == HomeCategory.FOR_YOU && shorts.isNotEmpty()) {
@@ -950,6 +945,7 @@ private fun ShortsScreen(
     dataSaver: Boolean,
     onLoadMore: () -> Unit,
     onPreview: (VideoItem) -> Unit,
+    onOpenVideo: (VideoItem) -> Unit,
     onWatchLater: (VideoItem) -> Unit,
     onLike: (VideoItem) -> Unit,
     onDislike: (VideoItem) -> Unit
@@ -967,16 +963,11 @@ private fun ShortsScreen(
 
     val initialShortPage = remember(videos, selectedVideoId) { videos.indexOfFirst { it.id == selectedVideoId }.coerceAtLeast(0) }
     val pagerState = rememberPagerState(initialPage = initialShortPage, pageCount = { videos.size })
+    val context = LocalContext.current
     val controller by playerConnection.controller.collectAsStateWithLifecycle()
-    val playback by remember(playerConnection) {
-        playerConnection.state
-            .map { state ->
-                state.copy(positionMs = 0L, durationMs = 0L, bufferedPercentage = 0)
-            }
-            .distinctUntilChanged()
-    }.collectAsStateWithLifecycle(initialValue = com.geovideos.app.playback.PlaybackUiState())
+    val playback by playerConnection.coreState.collectAsStateWithLifecycle()
 
-    LaunchedEffect(selectedVideoId, videos.map { it.id }) {
+    LaunchedEffect(selectedVideoId, videos.size, videos.lastOrNull()?.id) {
         val index = videos.indexOfFirst { it.id == selectedVideoId }
         if (index >= 0 && index != pagerState.currentPage) pagerState.scrollToPage(index)
     }
@@ -1002,29 +993,42 @@ private fun ShortsScreen(
         VerticalPager(
             state = pagerState,
             modifier = Modifier.fillMaxSize(),
-            beyondViewportPageCount = 1
+            beyondViewportPageCount = 0
         ) { page ->
             val video = videos[page]
             val isCurrent = page == pagerState.currentPage && playback.currentVideoId == video.id
             Box(
-                modifier = Modifier.fillMaxSize().background(Color.Black).clickable {
-                    if (isCurrent && playback.isPlaying) playerConnection.pause()
-                    else if (isCurrent) playerConnection.play()
-                    else onPreview(video)
-                }
+                modifier = Modifier.fillMaxSize().background(Color.Black)
             ) {
-                Thumbnail(
-                    url = video.thumbnailUrl,
-                    modifier = Modifier.fillMaxSize(),
-                    contentScale = ContentScale.Crop
-                )
-                if (!playerExpanded && isCurrent && controller != null && !playback.resolving) {
+                val showThumbnail = !isCurrent || controller == null || playback.resolving ||
+                    playback.connecting || playback.playbackState != Player.STATE_READY
+                if (showThumbnail) {
+                    Thumbnail(
+                        url = video.thumbnailUrl,
+                        modifier = Modifier.fillMaxSize(),
+                        contentScale = ContentScale.Crop,
+                        requestWidth = 480,
+                        requestHeight = 854
+                    )
+                }
+                if (!playerExpanded && isCurrent && controller != null && !playback.resolving && !playback.connecting) {
                     GeoMediaPlayerView(
                         controller = controller!!,
                         useController = false,
                         resizeMode = androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_FIT
                     )
                 }
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .pointerInput(video.id, isCurrent) {
+                            detectTapGestures(onTap = {
+                                if (isCurrent && playback.isPlaying) playerConnection.pause()
+                                else if (isCurrent) playerConnection.play()
+                                else onPreview(video)
+                            })
+                        }
+                )
                 Box(
                     modifier = Modifier.fillMaxSize().background(
                         Brush.verticalGradient(
@@ -1042,7 +1046,7 @@ private fun ShortsScreen(
                     modifier = Modifier.align(Alignment.TopStart).padding(start = 14.dp, top = 36.dp)
                 ) {
                     Text(
-                        "Para ti · Tus gustos",
+                        "Shorts",
                         color = Color.White,
                         fontWeight = FontWeight.SemiBold,
                         modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp)
@@ -1088,32 +1092,35 @@ private fun ShortsScreen(
                 Column(
                     modifier = Modifier.align(Alignment.BottomEnd).padding(end = 10.dp, bottom = 22.dp),
                     horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
-                    IconButton(
-                        onClick = { onLike(video) },
-                        modifier = Modifier.background(Color.Black.copy(alpha = 0.45f), CircleShape)
-                    ) {
-                        Icon(
-                            Icons.Default.ThumbUp,
-                            "Me gusta",
-                            tint = if (video.id in localLikedIds) MaterialTheme.colorScheme.primary else Color.White
-                        )
-                    }
-                    IconButton(
-                        onClick = { onDislike(video) },
-                        modifier = Modifier.background(Color.Black.copy(alpha = 0.45f), CircleShape)
-                    ) {
-                        Icon(
-                            Icons.Default.ThumbDown,
-                            "No me gusta",
-                            tint = if (video.id in localDislikedIds) MaterialTheme.colorScheme.primary else Color.White
-                        )
-                    }
-                    IconButton(
-                        onClick = { onWatchLater(video) },
-                        modifier = Modifier.background(Color.Black.copy(alpha = 0.45f), CircleShape)
-                    ) { Icon(Icons.Outlined.WatchLater, "Ver después", tint = Color.White) }
+                    ShortActionButton(
+                        icon = Icons.Default.ThumbUp,
+                        label = "Me gusta",
+                        tint = if (video.id in localLikedIds) MaterialTheme.colorScheme.primary else Color.White,
+                        onClick = { onLike(video) }
+                    )
+                    ShortActionButton(
+                        icon = Icons.Default.ThumbDown,
+                        label = "No me gusta",
+                        tint = if (video.id in localDislikedIds) MaterialTheme.colorScheme.primary else Color.White,
+                        onClick = { onDislike(video) }
+                    )
+                    ShortActionButton(
+                        icon = Icons.Default.Share,
+                        label = "Compartir",
+                        onClick = { shareVideo(context, video) }
+                    )
+                    ShortActionButton(
+                        icon = Icons.Default.Fullscreen,
+                        label = "Abrir",
+                        onClick = { onOpenVideo(video) }
+                    )
+                    ShortActionButton(
+                        icon = Icons.Outlined.WatchLater,
+                        label = "Guardar",
+                        onClick = { onWatchLater(video) }
+                    )
                 }
                 if (isCurrent) {
                     ShortProgress(
@@ -1137,11 +1144,34 @@ private fun ShortProgress(
     playerConnection: GeoPlayerConnection,
     modifier: Modifier = Modifier
 ) {
-    val playback by playerConnection.state.collectAsStateWithLifecycle()
+    val playback by playerConnection.progressState.collectAsStateWithLifecycle()
     if (playback.durationMs > 0L) {
         LinearProgressIndicator(
             progress = { (playback.positionMs.toFloat() / playback.durationMs.toFloat()).coerceIn(0f, 1f) },
             modifier = modifier
+        )
+    }
+}
+
+@Composable
+private fun ShortActionButton(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    label: String,
+    tint: Color = Color.White,
+    onClick: () -> Unit
+) {
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        IconButton(
+            onClick = onClick,
+            modifier = Modifier.background(Color.Black.copy(alpha = 0.45f), CircleShape)
+        ) {
+            Icon(icon, label, tint = tint)
+        }
+        Text(
+            label,
+            color = Color.White,
+            style = MaterialTheme.typography.labelSmall,
+            maxLines = 1
         )
     }
 }
@@ -1666,17 +1696,7 @@ private fun PlayerScreen(
 ) {
     val context = LocalContext.current
     val activity = context.findActivity()
-    val playback by remember(playerConnection) {
-        playerConnection.state
-            .map { state ->
-                state.copy(
-                    positionMs = 0L,
-                    durationMs = if (state.durationMs > 0L) 1L else 0L,
-                    bufferedPercentage = 0
-                )
-            }
-            .distinctUntilChanged()
-    }.collectAsStateWithLifecycle(initialValue = com.geovideos.app.playback.PlaybackUiState())
+    val playback by playerConnection.coreState.collectAsStateWithLifecycle()
     val controller by playerConnection.controller.collectAsStateWithLifecycle()
     val listState = rememberLazyListState()
 
@@ -1775,13 +1795,6 @@ private fun PlayerScreen(
 
     LaunchedEffect(selectedQuality) {
         playerConnection.setMaxVideoHeight(selectedQuality)
-    }
-
-    LaunchedEffect(relatedVideos.map { it.id }, dataSaver, playback.resolving, playback.currentVideoId) {
-        if (!playback.resolving && playback.currentVideoId == video.id) {
-            delay(1_500L)
-            playerConnection.preload(relatedVideos.take(1), dataSaver)
-        }
     }
 
     LaunchedEffect(shouldLoadMoreRelated, relatedLoadingMore) {
@@ -2214,7 +2227,7 @@ private fun PlayerScreen(
 private fun PlayerViewport(
     video: VideoItem,
     controller: MediaController?,
-    playback: com.geovideos.app.playback.PlaybackUiState,
+    playback: com.geovideos.app.playback.PlaybackCoreState,
     showDelayedLoading: Boolean,
     qualityLabel: String,
     playbackSpeed: Float,
@@ -2232,26 +2245,12 @@ private fun PlayerViewport(
 ) {
     var controlsVisible by remember(video.id) { mutableStateOf(true) }
     var interactionSerial by remember(video.id) { mutableStateOf(0) }
-    var positionMs by remember(video.id) { mutableLongStateOf(0L) }
-    var durationMs by remember(video.id) { mutableLongStateOf(video.durationMs.coerceAtLeast(0L)) }
-    var draggingProgress by remember(video.id) { mutableStateOf(false) }
-    var draggedPositionMs by remember(video.id) { mutableLongStateOf(0L) }
 
     fun revealControls() {
         controlsVisible = true
         interactionSerial += 1
     }
 
-    LaunchedEffect(controller, video.id, controlsVisible) {
-        while (true) {
-            val activeController = controller
-            if (!draggingProgress && activeController?.currentMediaItem?.mediaId == video.id) {
-                positionMs = activeController.currentPosition.coerceAtLeast(0L)
-                durationMs = activeController.duration.takeIf { it > 0L } ?: durationMs
-            }
-            delay(if (controlsVisible) 350L else 900L)
-        }
-    }
 
     LaunchedEffect(controlsVisible, interactionSerial, playback.isPlaying, fullscreen) {
         if (controlsVisible && playback.isPlaying) {
@@ -2267,17 +2266,23 @@ private fun PlayerViewport(
     }
 
     Box(modifier = modifier.background(Color.Black)) {
-        Thumbnail(
-            video.thumbnailUrl,
-            Modifier.fillMaxSize(),
-            contentScale = if (resizeMode == androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_ZOOM) {
-                ContentScale.Crop
-            } else {
-                ContentScale.Fit
-            }
-        )
+        val showThumbnail = controller == null || playback.resolving || playback.connecting ||
+            playback.playbackState != Player.STATE_READY
+        if (showThumbnail) {
+            Thumbnail(
+                video.thumbnailUrl,
+                Modifier.fillMaxSize(),
+                contentScale = if (resizeMode == androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_ZOOM) {
+                    ContentScale.Crop
+                } else {
+                    ContentScale.Fit
+                },
+                requestWidth = 720,
+                requestHeight = 720
+            )
+        }
 
-        if (controller != null && controller.currentMediaItem?.mediaId == video.id && !playback.resolving) {
+        if (controller != null && controller.currentMediaItem?.mediaId == video.id && !playback.resolving && !playback.connecting) {
             GeoMediaPlayerView(
                 controller = controller,
                 useController = false,
@@ -2393,8 +2398,10 @@ private fun PlayerViewport(
                 FilledIconButton(
                     onClick = {
                         revealControls()
-                        val target = controller?.currentPosition?.plus(15_000L) ?: 15_000L
-                        controller?.seekTo(if (durationMs > 0L) target.coerceAtMost(durationMs) else target)
+                        val active = controller
+                        val target = active?.currentPosition?.plus(15_000L) ?: 15_000L
+                        val duration = active?.duration?.takeIf { it > 0L } ?: 0L
+                        active?.seekTo(if (duration > 0L) target.coerceAtMost(duration) else target)
                     },
                     modifier = Modifier.size(if (fullscreen) 50.dp else 44.dp),
                     colors = IconButtonDefaults.filledIconButtonColors(
@@ -2406,60 +2413,19 @@ private fun PlayerViewport(
                 }
             }
 
-            Column(
+            PlayerProgressControls(
+                controller = controller,
+                videoId = video.id,
+                initialDurationMs = video.durationMs,
+                screenModeLabel = screenModeLabel,
+                fullscreen = fullscreen,
+                onInteraction = ::revealControls,
+                onNext = onNext,
+                onFullscreen = onFullscreen,
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
                     .fillMaxWidth()
-                    .background(
-                        Brush.verticalGradient(
-                            listOf(Color.Transparent, Color.Black.copy(alpha = 0.82f))
-                        )
-                    )
-                    .padding(horizontal = 12.dp, vertical = 8.dp)
-            ) {
-                Slider(
-                    value = if (durationMs > 0L) {
-                        (if (draggingProgress) draggedPositionMs else positionMs).toFloat()
-                    } else 0f,
-                    onValueChange = { value ->
-                        draggingProgress = true
-                        draggedPositionMs = value.toLong()
-                        revealControls()
-                    },
-                    onValueChangeFinished = {
-                        controller?.seekTo(draggedPositionMs.coerceAtLeast(0L))
-                        positionMs = draggedPositionMs
-                        draggingProgress = false
-                        revealControls()
-                    },
-                    valueRange = 0f..durationMs.coerceAtLeast(1L).toFloat(),
-                    modifier = Modifier.fillMaxWidth().height(30.dp)
-                )
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        "${formatDuration(if (draggingProgress) draggedPositionMs else positionMs)} / ${formatDuration(durationMs)}",
-                        color = Color.White,
-                        style = MaterialTheme.typography.labelMedium
-                    )
-                    Spacer(Modifier.weight(1f))
-                    Text(
-                        screenModeLabel,
-                        color = Color.White.copy(alpha = 0.86f),
-                        style = MaterialTheme.typography.labelSmall,
-                        modifier = Modifier.padding(end = 6.dp)
-                    )
-                    IconButton(onClick = { revealControls(); onNext() }) {
-                        Icon(Icons.Default.SkipNext, "Siguiente", tint = Color.White)
-                    }
-                    IconButton(onClick = { revealControls(); onFullscreen() }) {
-                        Icon(
-                            if (fullscreen) Icons.Default.FullscreenExit else Icons.Default.Fullscreen,
-                            if (fullscreen) "Salir de pantalla completa" else "Pantalla completa",
-                            tint = Color.White
-                        )
-                    }
-                }
-            }
+            )
         }
 
         if (showDelayedLoading && playback.error == null) {
@@ -2495,6 +2461,88 @@ private fun PlayerViewport(
 }
 
 @Composable
+private fun PlayerProgressControls(
+    controller: MediaController?,
+    videoId: String,
+    initialDurationMs: Long,
+    screenModeLabel: String,
+    fullscreen: Boolean,
+    onInteraction: () -> Unit,
+    onNext: () -> Unit,
+    onFullscreen: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    var positionMs by remember(videoId) { mutableLongStateOf(0L) }
+    var durationMs by remember(videoId) { mutableLongStateOf(initialDurationMs.coerceAtLeast(0L)) }
+    var dragging by remember(videoId) { mutableStateOf(false) }
+    var draggedPositionMs by remember(videoId) { mutableLongStateOf(0L) }
+
+    LaunchedEffect(controller, videoId, dragging) {
+        while (true) {
+            val active = controller
+            if (!dragging && active?.currentMediaItem?.mediaId == videoId) {
+                positionMs = active.currentPosition.coerceAtLeast(0L)
+                durationMs = active.duration.takeIf { it > 0L } ?: durationMs
+            }
+            delay(500L)
+        }
+    }
+
+    Column(
+        modifier = modifier
+            .background(
+                Brush.verticalGradient(
+                    listOf(Color.Transparent, Color.Black.copy(alpha = 0.82f))
+                )
+            )
+            .padding(horizontal = 12.dp, vertical = 8.dp)
+    ) {
+        Slider(
+            value = if (durationMs > 0L) {
+                (if (dragging) draggedPositionMs else positionMs).toFloat()
+            } else 0f,
+            onValueChange = { value ->
+                dragging = true
+                draggedPositionMs = value.toLong()
+                onInteraction()
+            },
+            onValueChangeFinished = {
+                controller?.seekTo(draggedPositionMs.coerceAtLeast(0L))
+                positionMs = draggedPositionMs
+                dragging = false
+                onInteraction()
+            },
+            valueRange = 0f..durationMs.coerceAtLeast(1L).toFloat(),
+            modifier = Modifier.fillMaxWidth().height(30.dp)
+        )
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                "${formatDuration(if (dragging) draggedPositionMs else positionMs)} / ${formatDuration(durationMs)}",
+                color = Color.White,
+                style = MaterialTheme.typography.labelMedium
+            )
+            Spacer(Modifier.weight(1f))
+            Text(
+                screenModeLabel,
+                color = Color.White.copy(alpha = 0.86f),
+                style = MaterialTheme.typography.labelSmall,
+                modifier = Modifier.padding(end = 6.dp)
+            )
+            IconButton(onClick = { onInteraction(); onNext() }) {
+                Icon(Icons.Default.SkipNext, "Siguiente", tint = Color.White)
+            }
+            IconButton(onClick = { onInteraction(); onFullscreen() }) {
+                Icon(
+                    if (fullscreen) Icons.Default.FullscreenExit else Icons.Default.Fullscreen,
+                    if (fullscreen) "Salir de pantalla completa" else "Pantalla completa",
+                    tint = Color.White
+                )
+            }
+        }
+    }
+}
+
+@Composable
 private fun MiniPlayer(
     video: VideoItem,
     playerConnection: GeoPlayerConnection,
@@ -2503,11 +2551,19 @@ private fun MiniPlayer(
     onSavePlayback: (VideoItem, Long, Long) -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val playback by playerConnection.state.collectAsStateWithLifecycle()
+    val playback by playerConnection.coreState.collectAsStateWithLifecycle()
+    val controller by playerConnection.controller.collectAsStateWithLifecycle()
     val isPlaying = playback.isPlaying
-    val currentPositionMs = playback.positionMs
-    val durationMs = playback.durationMs
     var dragOffset by remember(video.id) { mutableFloatStateOf(0f) }
+
+    fun saveCurrentProgress() {
+        val active = controller
+        onSavePlayback(
+            video,
+            active?.currentPosition?.coerceAtLeast(0L) ?: video.resumePositionMs,
+            active?.duration?.takeIf { it > 0L } ?: video.durationMs
+        )
+    }
 
     Surface(
         modifier = modifier
@@ -2521,7 +2577,7 @@ private fun MiniPlayer(
                         when {
                             dragOffset <= -70f -> onExpand()
                             dragOffset >= 70f -> {
-                                onSavePlayback(video, currentPositionMs, durationMs)
+                                saveCurrentProgress()
                                 onClose()
                             }
                         }
@@ -2566,19 +2622,31 @@ private fun MiniPlayer(
                     )
                 }
                 IconButton(onClick = {
-                    onSavePlayback(video, currentPositionMs, durationMs)
+                    saveCurrentProgress()
                     onClose()
                 }) { Icon(Icons.Default.Close, "Cerrar") }
             }
-            if (durationMs > 0L) {
-                LinearProgressIndicator(
-                    progress = { (currentPositionMs.toFloat() / durationMs.toFloat()).coerceIn(0f, 1f) },
-                    modifier = Modifier.align(Alignment.BottomCenter).fillMaxWidth()
-                )
-            }
+            MiniPlayerProgress(
+                playerConnection = playerConnection,
+                modifier = Modifier.align(Alignment.BottomCenter).fillMaxWidth()
+            )
         }
     }
 
+}
+
+@Composable
+private fun MiniPlayerProgress(
+    playerConnection: GeoPlayerConnection,
+    modifier: Modifier = Modifier
+) {
+    val progress by playerConnection.progressState.collectAsStateWithLifecycle()
+    if (progress.durationMs > 0L) {
+        LinearProgressIndicator(
+            progress = { (progress.positionMs.toFloat() / progress.durationMs.toFloat()).coerceIn(0f, 1f) },
+            modifier = modifier
+        )
+    }
 }
 
 @androidx.annotation.OptIn(markerClass = [UnstableApi::class])
@@ -3011,7 +3079,9 @@ private fun ChannelAvatar(
 private fun Thumbnail(
     url: String,
     modifier: Modifier,
-    contentScale: ContentScale = ContentScale.Crop
+    contentScale: ContentScale = ContentScale.Crop,
+    requestWidth: Int = 640,
+    requestHeight: Int = 360
 ) {
     var imageFailed by remember(url) { mutableStateOf(false) }
     if (url.isBlank() || imageFailed) {
@@ -3025,10 +3095,10 @@ private fun Thumbnail(
         }
     } else {
         val context = LocalContext.current
-        val request = remember(url) {
+        val request = remember(url, requestWidth, requestHeight) {
             ImageRequest.Builder(context)
                 .data(url)
-                .size(640, 360)
+                .size(requestWidth, requestHeight)
                 .crossfade(false)
                 .build()
         }

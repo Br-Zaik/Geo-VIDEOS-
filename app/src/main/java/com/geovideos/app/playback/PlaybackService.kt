@@ -104,11 +104,11 @@ class PlaybackService : MediaSessionService() {
     }
 
     private companion object {
-        const val CACHE_SIZE_BYTES = 256L * 1024L * 1024L
-        const val MIN_BUFFER_MS = 10_000
-        const val MAX_BUFFER_MS = 45_000
-        const val BUFFER_FOR_PLAYBACK_MS = 750
-        const val BUFFER_AFTER_REBUFFER_MS = 1_500
+        const val CACHE_SIZE_BYTES = 128L * 1024L * 1024L
+        const val MIN_BUFFER_MS = 6_000
+        const val MAX_BUFFER_MS = 25_000
+        const val BUFFER_FOR_PLAYBACK_MS = 500
+        const val BUFFER_AFTER_REBUFFER_MS = 1_000
         const val USER_AGENT =
             "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 " +
                 "(KHTML, like Gecko) Chrome/124.0 Mobile Safari/537.36"

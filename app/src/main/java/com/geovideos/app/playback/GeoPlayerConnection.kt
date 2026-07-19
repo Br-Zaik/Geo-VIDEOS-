@@ -18,16 +18,41 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
+
+
+
+data class PlaybackCoreState(
+    val connecting: Boolean = true,
+    val resolving: Boolean = false,
+    val currentVideoId: String = "",
+    val isPlaying: Boolean = false,
+    val videoWidth: Int = 0,
+    val videoHeight: Int = 0,
+    val playbackState: Int = Player.STATE_IDLE,
+    val repeatMode: Int = Player.REPEAT_MODE_OFF,
+    val error: String? = null
+)
+
+data class PlaybackProgressState(
+    val currentVideoId: String = "",
+    val positionMs: Long = 0L,
+    val durationMs: Long = 0L,
+    val bufferedPercentage: Int = 0
+)
 
 data class PlaybackUiState(
     val connecting: Boolean = true,
@@ -58,6 +83,35 @@ class GeoPlayerConnection private constructor(context: Context) {
     private val _state = MutableStateFlow(PlaybackUiState())
     val state: StateFlow<PlaybackUiState> = _state.asStateFlow()
 
+    val coreState: StateFlow<PlaybackCoreState> = _state
+        .map { playback ->
+            PlaybackCoreState(
+                connecting = playback.connecting,
+                resolving = playback.resolving,
+                currentVideoId = playback.currentVideoId,
+                isPlaying = playback.isPlaying,
+                videoWidth = playback.videoWidth,
+                videoHeight = playback.videoHeight,
+                playbackState = playback.playbackState,
+                repeatMode = playback.repeatMode,
+                error = playback.error
+            )
+        }
+        .distinctUntilChanged()
+        .stateIn(scope, SharingStarted.Eagerly, PlaybackCoreState())
+
+    val progressState: StateFlow<PlaybackProgressState> = _state
+        .map { playback ->
+            PlaybackProgressState(
+                currentVideoId = playback.currentVideoId,
+                positionMs = playback.positionMs,
+                durationMs = playback.durationMs,
+                bufferedPercentage = playback.bufferedPercentage
+            )
+        }
+        .distinctUntilChanged()
+        .stateIn(scope, SharingStarted.Eagerly, PlaybackProgressState())
+
     private val _endedEvents = MutableSharedFlow<String>(extraBufferCapacity = 1)
     val endedEvents: SharedFlow<String> = _endedEvents.asSharedFlow()
 
@@ -82,7 +136,7 @@ class GeoPlayerConnection private constructor(context: Context) {
             _state.update {
                 it.copy(
                     resolving = false,
-                    error = error.localizedMessage ?: "No se pudo reproducir el video."
+                    error = friendlyPlaybackError(error.localizedMessage)
                 )
             }
         }
@@ -107,7 +161,7 @@ class GeoPlayerConnection private constructor(context: Context) {
                             it.copy(
                                 connecting = false,
                                 resolving = false,
-                                error = error.message ?: "No se pudo iniciar el reproductor."
+                                error = friendlyPlaybackError(error.message)
                             )
                         }
                     }
@@ -118,7 +172,7 @@ class GeoPlayerConnection private constructor(context: Context) {
         scope.launch {
             while (isActive) {
                 _controller.value?.let(::updateFrom)
-                delay(1_000L)
+                delay(1_500L)
             }
         }
     }
@@ -187,9 +241,7 @@ class GeoPlayerConnection private constructor(context: Context) {
                 _state.update {
                     it.copy(
                         resolving = false,
-                        error = error.message
-                            ?.takeIf(String::isNotBlank)
-                            ?: "No se pudo obtener la transmisión del video."
+                        error = friendlyPlaybackError(error.message)
                     )
                 }
             }
@@ -235,6 +287,20 @@ class GeoPlayerConnection private constructor(context: Context) {
             action(ready)
         } else {
             synchronized(pendingControllerActions) { pendingControllerActions.add(action) }
+        }
+    }
+
+    private fun friendlyPlaybackError(rawMessage: String?): String {
+        val message = rawMessage.orEmpty()
+        return when {
+            message.contains("unable to resolve host", ignoreCase = true) ||
+                message.contains("no address associated with hostname", ignoreCase = true) ||
+                message.contains("youtubei.googleapis.com", ignoreCase = true) ->
+                "No se pudo conectar con el servicio de video. Revisa tu conexión y pulsa Reintentar."
+            message.contains("timeout", ignoreCase = true) ->
+                "La conexión tardó demasiado. Pulsa Reintentar."
+            message.isBlank() -> "No se pudo reproducir el video. Pulsa Reintentar."
+            else -> "No se pudo reproducir el video. Pulsa Reintentar."
         }
     }
 

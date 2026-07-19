@@ -1,11 +1,14 @@
 package com.geovideos.app.data
 
+import androidx.compose.runtime.Immutable
+
 enum class MediaKind {
     YOUTUBE,
     DIRECT,
     LOCAL
 }
 
+@Immutable
 data class GoogleProfile(
     val name: String,
     val email: String,
@@ -14,6 +17,7 @@ data class GoogleProfile(
     val channelId: String = ""
 )
 
+@Immutable
 data class VideoItem(
     val id: String,
     val title: String,
@@ -31,6 +35,7 @@ data class VideoItem(
     val downloadId: Long = -1L
 )
 
+@Immutable
 data class ChannelItem(
     val id: String,
     val title: String,
@@ -38,6 +43,7 @@ data class ChannelItem(
     val description: String = ""
 )
 
+@Immutable
 data class PlaylistItem(
     val id: String,
     val title: String,
@@ -45,6 +51,7 @@ data class PlaylistItem(
     val itemCount: Int = 0
 )
 
+@Immutable
 data class NotificationItem(
     val id: String,
     val title: String,
@@ -53,12 +60,14 @@ data class NotificationItem(
     val video: VideoItem? = null
 )
 
+@Immutable
 data class ChannelDetails(
     val profile: GoogleProfile,
     val likesPlaylistId: String = "",
     val uploadsPlaylistId: String = ""
 )
 
+@Immutable
 data class VideoDetails(
     val videoId: String,
     val viewCount: Long = 0L,

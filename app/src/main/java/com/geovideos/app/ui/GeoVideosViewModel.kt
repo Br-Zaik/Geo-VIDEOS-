@@ -906,6 +906,10 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
             previewShort(video)
             return
         }
+        openPlayer(video)
+    }
+
+    fun openPlayer(video: VideoItem) {
         val saved = repository.loadHistory().firstOrNull { it.id == video.id }
         val playable = video.copy(
             resumePositionMs = saved?.resumePositionMs ?: video.resumePositionMs,
@@ -1397,8 +1401,8 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
 
     private companion object {
         const val FIRST_RELATED_PAGE = "__first__"
-        const val INITIAL_SUBSCRIPTION_BATCH = 14
-        const val SUBSCRIPTION_PAGE_SIZE = 10
-        const val MAX_HOME_ITEMS = 180
+        const val INITIAL_SUBSCRIPTION_BATCH = 8
+        const val SUBSCRIPTION_PAGE_SIZE = 6
+        const val MAX_HOME_ITEMS = 80
     }
 }
