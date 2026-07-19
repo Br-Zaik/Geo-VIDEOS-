@@ -1,0 +1,27 @@
+GEOVIDEOS V13 - VALIDACION REALIZADA
+Fecha: 2026-07-19
+
+CAMBIOS REVISADOS
+- VersionCode 13 / VersionName 13.0.0.
+- Reproductor Media3 conservado; no se reintrodujo android-youtube-player ni IFrame.
+- Miniatura visible mientras se resuelve la transmisión.
+- Indicador de carga retrasado 450 ms.
+- Ajuste FIT para no deformar ni recortar el video en la pantalla de reproducción.
+- Pantalla completa, calidad, velocidad, temporizador y acciones rápidas.
+- Datos ampliados del video y canal.
+- Descripción desplegable.
+- Relacionados locales inmediatos y consulta remota paginada.
+- Caché de enlaces resueltos y precarga de dos videos.
+- Búfer inicial reducido.
+
+AUTENTICACION Y FIRMA
+Los siguientes archivos mantienen exactamente el SHA-256 de V12.1:
+- MainActivity.kt: 6e7dec6198e5a39cef00ecea729da49d3876b8721d87e61648363ac85c415c7f
+- AndroidManifest.xml: cc23515ce99095fb2fba9bec3d48a6900de6128df3fbb5e91fac86d24d5d06a5
+- geovideos-dev.jks: 6ea4c0bbb2141367772ea6ed632738097c886752314500b5cc8e4fab306792ab
+
+COMPROBACIONES ESTATICAS
+- Estructura de llaves, parentesis y cadenas revisada.
+- No se detectaron declaraciones duplicadas ni escapes ilegales.
+- Dependencia y clase de cache Media3 conservadas como LeastRecentlyUsedCacheEvictor.
+- ZIP debe probarse mediante Gradle/Android SDK antes de considerarse una APK validada.

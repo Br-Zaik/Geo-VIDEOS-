@@ -58,3 +58,14 @@ data class ChannelDetails(
     val likesPlaylistId: String = "",
     val uploadsPlaylistId: String = ""
 )
+
+data class VideoDetails(
+    val videoId: String,
+    val viewCount: Long = 0L,
+    val likeCount: Long = 0L,
+    val commentCount: Long = 0L,
+    val subscriberCount: Long = 0L,
+    val channelThumbnailUrl: String = "",
+    val publishedAt: String = "",
+    val description: String = ""
+)

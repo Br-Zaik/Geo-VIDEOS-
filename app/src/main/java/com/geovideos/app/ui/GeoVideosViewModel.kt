@@ -9,6 +9,7 @@ import com.geovideos.app.data.GoogleProfile
 import com.geovideos.app.data.NotificationItem
 import com.geovideos.app.data.PlaylistItem
 import com.geovideos.app.data.VideoItem
+import com.geovideos.app.data.VideoDetails
 import com.geovideos.app.network.VideoPage
 import com.geovideos.app.network.YouTubeApi
 import com.geovideos.app.network.YouTubeApiException
@@ -81,6 +82,12 @@ data class GeoVideosUiState(
     val searchHistory: List<String> = emptyList(),
     val selectedVideo: VideoItem? = null,
     val playerExpanded: Boolean = false,
+    val playerDetails: VideoDetails? = null,
+    val playerDetailsLoading: Boolean = false,
+    val relatedVideos: List<VideoItem> = emptyList(),
+    val relatedLoading: Boolean = false,
+    val relatedLoadingMore: Boolean = false,
+    val relatedCanLoadMore: Boolean = true,
     val selectedChannelTitle: String = "",
     val channelVideos: List<VideoItem> = emptyList(),
     val autoplay: Boolean = true,
@@ -113,6 +120,8 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
     private var shortsNextToken: String = ""
     private var uploadsNextToken: String = ""
     private var searchNextToken: String = ""
+    private var relatedNextToken: String = ""
+    private var relatedVideoId: String = ""
     private var lastSearchQuery: String = ""
     private var subscriptionOffset: Int = 0
 
@@ -795,13 +804,22 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
             durationMs = saved?.durationMs ?: video.durationMs
         )
         val history = repository.addToHistory(playable)
+        relatedNextToken = ""
+        relatedVideoId = playable.id
         _uiState.update {
             it.copy(
                 selectedVideo = playable,
                 playerExpanded = true,
-                history = history
+                history = history,
+                playerDetails = null,
+                playerDetailsLoading = true,
+                relatedVideos = emptyList(),
+                relatedLoading = true,
+                relatedLoadingMore = false,
+                relatedCanLoadMore = true
             )
         }
+        loadPlayerContext(playable)
     }
 
     fun expandPlayer() {
@@ -831,7 +849,131 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     fun closePlayer() {
-        _uiState.update { it.copy(selectedVideo = null, playerExpanded = false) }
+        relatedNextToken = ""
+        relatedVideoId = ""
+        _uiState.update {
+            it.copy(
+                selectedVideo = null,
+                playerExpanded = false,
+                playerDetails = null,
+                playerDetailsLoading = false,
+                relatedVideos = emptyList(),
+                relatedLoading = false,
+                relatedLoadingMore = false,
+                relatedCanLoadMore = true
+            )
+        }
+    }
+
+    private fun loadPlayerContext(video: VideoItem) {
+        val token = accessToken
+        val fallback = localRelated(video)
+        if (token.isNullOrBlank()) {
+            _uiState.update {
+                if (it.selectedVideo?.id != video.id) it else it.copy(
+                    playerDetails = VideoDetails(
+                        videoId = video.id,
+                        channelThumbnailUrl = video.channelThumbnailUrl,
+                        publishedAt = video.publishedAt,
+                        description = video.description
+                    ),
+                    playerDetailsLoading = false,
+                    relatedVideos = fallback,
+                    relatedLoading = false,
+                    relatedCanLoadMore = false
+                )
+            }
+            return
+        }
+
+        relatedNextToken = FIRST_RELATED_PAGE
+        _uiState.update {
+            if (it.selectedVideo?.id != video.id) it else it.copy(
+                relatedVideos = fallback,
+                relatedLoading = false,
+                relatedCanLoadMore = true
+            )
+        }
+        viewModelScope.launch {
+            val details = runCatching { api.videoDetails(token, video) }.getOrNull()
+            if (_uiState.value.selectedVideo?.id != video.id || relatedVideoId != video.id) return@launch
+            _uiState.update {
+                if (it.selectedVideo?.id != video.id) it else it.copy(
+                    playerDetails = details ?: VideoDetails(
+                        videoId = video.id,
+                        channelThumbnailUrl = video.channelThumbnailUrl,
+                        publishedAt = video.publishedAt,
+                        description = video.description
+                    ),
+                    playerDetailsLoading = false
+                )
+            }
+        }
+    }
+
+    fun loadMoreRelated() {
+        val state = _uiState.value
+        val video = state.selectedVideo ?: return
+        val token = accessToken ?: return
+        if (state.relatedLoading || state.relatedLoadingMore || !state.relatedCanLoadMore) return
+        if (relatedVideoId != video.id || relatedNextToken.isBlank()) return
+        val requestedToken = relatedNextToken
+        _uiState.update { it.copy(relatedLoadingMore = true) }
+        viewModelScope.launch {
+            val page = runCatching {
+                api.relatedVideosPage(
+                    token,
+                    video,
+                    pageToken = requestedToken.takeUnless { it == FIRST_RELATED_PAGE }.orEmpty()
+                )
+            }.getOrNull()
+            if (_uiState.value.selectedVideo?.id != video.id || relatedVideoId != video.id) return@launch
+            if (page == null) {
+                _uiState.update { it.copy(relatedLoadingMore = false, relatedCanLoadMore = false) }
+                return@launch
+            }
+            relatedNextToken = page.nextPageToken
+            _uiState.update {
+                it.copy(
+                    relatedVideos = (it.relatedVideos + page.items)
+                        .filterNot { candidate -> candidate.id == video.id }
+                        .distinctBy { candidate -> candidate.id },
+                    relatedLoadingMore = false,
+                    relatedCanLoadMore = relatedNextToken.isNotBlank()
+                )
+            }
+        }
+    }
+
+    private fun localRelated(video: VideoItem): List<VideoItem> {
+        val state = _uiState.value
+        val titleWords = video.title.lowercase()
+            .split(Regex("""[^\p{L}\p{N}]+"""))
+            .filter { it.length >= 4 }
+            .toSet()
+        return sequenceOf(
+            state.personalized,
+            state.popular,
+            state.music,
+            state.gaming,
+            state.live,
+            state.shorts,
+            state.liked,
+            state.history
+        ).flatten()
+            .filterNot { it.id == video.id }
+            .distinctBy { it.id }
+            .sortedByDescending { candidate ->
+                var score = 0
+                if (candidate.channelId.isNotBlank() && candidate.channelId == video.channelId) score += 6
+                if (candidate.channelTitle.equals(video.channelTitle, ignoreCase = true)) score += 4
+                val candidateWords = candidate.title.lowercase()
+                    .split(Regex("""[^\p{L}\p{N}]+"""))
+                    .toSet()
+                score + titleWords.count { it in candidateWords }
+            }
+            .take(24)
+            .toList()
     }
 
     fun toggleWatchLater(video: VideoItem) {
@@ -983,6 +1125,7 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     private companion object {
+        const val FIRST_RELATED_PAGE = "__first__"
         const val INITIAL_SUBSCRIPTION_BATCH = 14
         const val SUBSCRIPTION_PAGE_SIZE = 10
         const val MAX_HOME_ITEMS = 180

@@ -6,6 +6,7 @@ import com.geovideos.app.data.GoogleProfile
 import com.geovideos.app.data.NotificationItem
 import com.geovideos.app.data.PlaylistItem
 import com.geovideos.app.data.VideoItem
+import com.geovideos.app.data.VideoDetails
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
@@ -50,6 +51,79 @@ class YouTubeApi {
             likesPlaylistId = playlists?.optString("likes").orEmpty(),
             uploadsPlaylistId = playlists?.optString("uploads").orEmpty()
         )
+    }
+
+
+    suspend fun videoDetails(token: String, video: VideoItem): VideoDetails = withContext(Dispatchers.IO) {
+        if (video.id.isBlank()) return@withContext VideoDetails(videoId = video.id)
+        val videoJson = requestJson(
+            "https://www.googleapis.com/youtube/v3/videos?part=snippet,statistics&id=${encode(video.id)}&maxResults=1",
+            token
+        )
+        val item = videoJson.optJSONArray("items")?.optJSONObject(0)
+        val snippet = item?.optJSONObject("snippet")
+        val statistics = item?.optJSONObject("statistics")
+        val channelId = snippet?.optString("channelId").orEmpty().ifBlank { video.channelId }
+
+        var subscriberCount = 0L
+        var channelThumbnail = video.channelThumbnailUrl
+        if (channelId.isNotBlank()) {
+            val channelJson = requestJson(
+                "https://www.googleapis.com/youtube/v3/channels?part=snippet,statistics&id=${encode(channelId)}&maxResults=1",
+                token
+            )
+            val channel = channelJson.optJSONArray("items")?.optJSONObject(0)
+            subscriberCount = channel?.optJSONObject("statistics")
+                ?.optString("subscriberCount")
+                ?.toLongOrNull() ?: 0L
+            channelThumbnail = bestThumbnail(channel?.optJSONObject("snippet")).ifBlank { channelThumbnail }
+        }
+
+        VideoDetails(
+            videoId = video.id,
+            viewCount = statistics?.optString("viewCount")?.toLongOrNull() ?: 0L,
+            likeCount = statistics?.optString("likeCount")?.toLongOrNull() ?: 0L,
+            commentCount = statistics?.optString("commentCount")?.toLongOrNull() ?: 0L,
+            subscriberCount = subscriberCount,
+            channelThumbnailUrl = channelThumbnail,
+            publishedAt = snippet?.optString("publishedAt").orEmpty().ifBlank { video.publishedAt },
+            description = snippet?.optString("description").orEmpty().decodeHtml().ifBlank { video.description }
+        )
+    }
+
+    suspend fun relatedVideosPage(
+        token: String,
+        video: VideoItem,
+        pageToken: String = "",
+        maxResults: Int = 20
+    ): VideoPage = withContext(Dispatchers.IO) {
+        val query = relatedQuery(video)
+        val page = searchVideosPage(
+            token = token,
+            query = query,
+            pageToken = pageToken,
+            maxResults = maxResults
+        )
+        val filtered = page.items
+            .filterNot { it.id == video.id }
+            .distinctBy { it.id }
+        VideoPage(
+            items = enrichVideos(token, filtered),
+            nextPageToken = page.nextPageToken
+        )
+    }
+
+    private fun relatedQuery(video: VideoItem): String {
+        val cleaned = video.title
+            .replace(Regex("""#[\p{L}\p{N}_-]+"""), " ")
+            .replace(Regex("""[^\p{L}\p{N} ]+"""), " ")
+            .replace(Regex("""\s+"""), " ")
+            .trim()
+        val words = cleaned.split(' ')
+            .filter { it.length >= 3 }
+            .take(8)
+            .joinToString(" ")
+        return words.ifBlank { video.channelTitle.ifBlank { "videos recomendados" } }
     }
 
     suspend fun mostPopular(

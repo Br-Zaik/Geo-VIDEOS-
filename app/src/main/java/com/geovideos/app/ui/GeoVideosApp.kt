@@ -4,6 +4,7 @@ import android.Manifest
 import android.app.Activity
 import android.app.DownloadManager
 import android.app.PictureInPictureParams
+import android.content.pm.ActivityInfo
 import android.content.Context
 import android.content.ContextWrapper
 import android.content.Intent
@@ -49,6 +50,13 @@ import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.DownloadDone
 import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.Explore
+import androidx.compose.material.icons.filled.ThumbUp
+import androidx.compose.material.icons.filled.HighQuality
+import androidx.compose.material.icons.filled.Headphones
+import androidx.compose.material.icons.filled.FullscreenExit
+import androidx.compose.material.icons.filled.Fullscreen
+import androidx.compose.material.icons.filled.ExpandMore
+import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.Games
 import androidx.compose.material.icons.filled.History
@@ -148,6 +156,7 @@ import com.geovideos.app.data.MediaKind
 import com.geovideos.app.data.NotificationItem
 import com.geovideos.app.data.PlaylistItem
 import com.geovideos.app.data.VideoItem
+import com.geovideos.app.data.VideoDetails
 import com.geovideos.app.playback.GeoPlayerConnection
 import kotlinx.coroutines.delay
 
@@ -175,6 +184,32 @@ fun GeoVideosApp(
     }
 
     val selectedVideo = state.selectedVideo
+    val preloadCandidates = when (state.section) {
+        MainSection.HOME -> when (state.homeCategory) {
+            HomeCategory.FOR_YOU -> state.personalized.ifEmpty { state.popular }
+            HomeCategory.LIVE -> state.live
+            HomeCategory.GAMING -> state.gaming
+            HomeCategory.MUSIC -> state.music
+        }
+        MainSection.SHORTS -> state.shorts
+        MainSection.SEARCH -> state.searchResults
+        MainSection.LIBRARY -> state.history.ifEmpty { state.liked }
+        MainSection.ACCOUNT -> emptyList()
+    }
+
+    LaunchedEffect(
+        state.authStatus,
+        state.section,
+        state.homeCategory,
+        preloadCandidates.take(2).map { it.id },
+        state.dataSaver,
+        selectedVideo?.id
+    ) {
+        if (state.authStatus == AuthStatus.CONNECTED && selectedVideo == null && preloadCandidates.isNotEmpty()) {
+            delay(600L)
+            playerConnection.preload(preloadCandidates.take(2), state.dataSaver)
+        }
+    }
 
     LaunchedEffect(selectedVideo?.id, state.autoplay, state.dataSaver) {
         selectedVideo?.let { video ->
@@ -239,12 +274,25 @@ fun GeoVideosApp(
                             isWatchLater = state.watchLater.any { it.id == selectedVideo.id },
                             autoplay = state.autoplay,
                             dataSaver = state.dataSaver,
+                            details = state.playerDetails,
+                            detailsLoading = state.playerDetailsLoading,
+                            relatedVideos = state.relatedVideos,
+                            relatedLoading = state.relatedLoading,
+                            relatedLoadingMore = state.relatedLoadingMore,
+                            relatedCanLoadMore = state.relatedCanLoadMore,
                             onBack = viewModel::minimizePlayer,
                             onClose = {
                                 playerConnection.stop()
                                 viewModel.closePlayer()
                             },
                             onWatchLater = { viewModel.toggleWatchLater(selectedVideo) },
+                            onPlayRelated = viewModel::play,
+                            onWatchLaterRelated = viewModel::toggleWatchLater,
+                            onLoadMoreRelated = viewModel::loadMoreRelated,
+                            onOpenChannel = { channel ->
+                                viewModel.openChannel(channel)
+                                viewModel.minimizePlayer()
+                            },
                             onSavePlayback = viewModel::savePlayback,
                             onRegisterDownload = viewModel::registerDownload,
                             onMessage = viewModel::showMessage
@@ -1242,9 +1290,19 @@ private fun PlayerScreen(
     isWatchLater: Boolean,
     autoplay: Boolean,
     dataSaver: Boolean,
+    details: VideoDetails?,
+    detailsLoading: Boolean,
+    relatedVideos: List<VideoItem>,
+    relatedLoading: Boolean,
+    relatedLoadingMore: Boolean,
+    relatedCanLoadMore: Boolean,
     onBack: () -> Unit,
     onClose: () -> Unit,
     onWatchLater: () -> Unit,
+    onPlayRelated: (VideoItem) -> Unit,
+    onWatchLaterRelated: (VideoItem) -> Unit,
+    onLoadMoreRelated: () -> Unit,
+    onOpenChannel: (ChannelItem) -> Unit,
     onSavePlayback: (VideoItem, Long, Long) -> Unit,
     onRegisterDownload: (String, String, Long) -> Unit,
     onMessage: (String) -> Unit
@@ -1255,12 +1313,37 @@ private fun PlayerScreen(
     val currentPositionMs = playback.positionMs
     val durationMs = playback.durationMs
     val isPlaying = playback.isPlaying
+    val listState = rememberLazyListState()
+
     var isMuted by rememberSaveable(video.id) { mutableStateOf(false) }
     var repeatEnabled by rememberSaveable(video.id) { mutableStateOf(false) }
     var playbackSpeed by rememberSaveable(video.id) { mutableFloatStateOf(1f) }
+    var selectedQuality by rememberSaveable(video.id) { mutableStateOf(if (dataSaver) 360 else 0) }
     var showSettings by rememberSaveable { mutableStateOf(false) }
     var showTimer by rememberSaveable { mutableStateOf(false) }
     var timerMinutes by rememberSaveable { mutableStateOf<Int?>(null) }
+    var descriptionExpanded by rememberSaveable(video.id) { mutableStateOf(false) }
+    var isFullscreen by rememberSaveable(video.id) { mutableStateOf(false) }
+    var showDelayedLoading by remember(video.id) { mutableStateOf(false) }
+
+    val detectedRatio = if (playback.videoWidth > 0 && playback.videoHeight > 0) {
+        playback.videoWidth.toFloat() / playback.videoHeight.toFloat()
+    } else {
+        16f / 9f
+    }
+    val playerRatio = if (detectedRatio >= 1f) detectedRatio.coerceIn(4f / 3f, 2.1f) else 16f / 9f
+    val qualityLabel = if (selectedQuality <= 0) "Automático" else "${selectedQuality}p"
+    val description = details?.description.orEmpty().ifBlank { video.description }
+    val channelAvatar = details?.channelThumbnailUrl.orEmpty().ifBlank { video.channelThumbnailUrl }
+    val publishedAt = details?.publishedAt.orEmpty().ifBlank { video.publishedAt }
+
+    val shouldLoadMoreRelated by remember(listState, relatedVideos.size, relatedCanLoadMore) {
+        derivedStateOf {
+            val lastVisible = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
+            val total = listState.layoutInfo.totalItemsCount
+            total > 0 && relatedVideos.isNotEmpty() && relatedCanLoadMore && lastVisible >= total - 4
+        }
+    }
 
     fun saveProgress() {
         onSavePlayback(video, currentPositionMs, durationMs)
@@ -1271,7 +1354,42 @@ private fun PlayerScreen(
         onBack()
     }
 
-    BackHandler(onBack = ::minimize)
+    BackHandler {
+        if (isFullscreen) isFullscreen = false else minimize()
+    }
+
+    DisposableEffect(isFullscreen) {
+        val activity = context.findActivity()
+        if (isFullscreen) activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+        onDispose {
+            if (isFullscreen) activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+        }
+    }
+
+    LaunchedEffect(playback.connecting, playback.resolving, video.id) {
+        if (playback.connecting || playback.resolving) {
+            showDelayedLoading = false
+            delay(450L)
+            if (playback.connecting || playback.resolving) showDelayedLoading = true
+        } else {
+            showDelayedLoading = false
+        }
+    }
+
+    LaunchedEffect(selectedQuality) {
+        playerConnection.setMaxVideoHeight(selectedQuality)
+    }
+
+    LaunchedEffect(relatedVideos.map { it.id }, dataSaver, playback.resolving, playback.currentVideoId) {
+        if (!playback.resolving && playback.currentVideoId == video.id) {
+            delay(800L)
+            playerConnection.preload(relatedVideos.take(2), dataSaver)
+        }
+    }
+
+    LaunchedEffect(shouldLoadMoreRelated, relatedLoadingMore) {
+        if (shouldLoadMoreRelated && !relatedLoadingMore) onLoadMoreRelated()
+    }
 
     LaunchedEffect(timerMinutes) {
         val minutes = timerMinutes ?: return@LaunchedEffect
@@ -1281,206 +1399,283 @@ private fun PlayerScreen(
         onMessage("El temporizador detuvo la reproducción.")
     }
 
-    Scaffold(
-        topBar = {
-            TopAppBar(
-                title = { Text("Reproduciendo", maxLines = 1) },
-                navigationIcon = {
-                    IconButton(onClick = ::minimize) {
-                        Icon(Icons.Default.KeyboardArrowDown, "Minimizar")
-                    }
-                },
-                actions = {
-                    IconButton(onClick = { showSettings = true }) {
-                        Icon(Icons.Default.Settings, "Controles")
-                    }
-                    IconButton(onClick = {
-                        saveProgress()
-                        onClose()
-                    }) {
-                        Icon(Icons.Default.Close, "Cerrar")
-                    }
-                }
+    if (isFullscreen) {
+        Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
+            PlayerViewport(
+                video = video,
+                controller = controller,
+                playback = playback,
+                showDelayedLoading = showDelayedLoading,
+                qualityLabel = qualityLabel,
+                playbackSpeed = playbackSpeed,
+                modifier = Modifier.fillMaxSize(),
+                onSettings = { showSettings = true },
+                onFullscreen = { isFullscreen = false },
+                fullscreen = true,
+                onRetry = { playerConnection.open(video, autoplay, dataSaver) },
+                onOpenExternal = { openExternalVideo(context, video, preferYouTubeApp = true) }
             )
         }
-    ) { padding ->
-        Column(
-            modifier = Modifier
-                .padding(padding)
-                .fillMaxSize()
-                .verticalScroll(rememberScrollState())
-        ) {
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .aspectRatio(16f / 9f)
-                    .background(Color.Black)
-            ) {
-                if (controller != null && playback.currentVideoId == video.id) {
-                    GeoMediaPlayerView(controller = controller!!)
-                } else {
-                    Thumbnail(video.thumbnailUrl, Modifier.fillMaxSize())
-                }
-
-                if (playback.connecting || playback.resolving) {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .background(Color.Black.copy(alpha = 0.55f)),
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.Center
-                    ) {
-                        CircularProgressIndicator()
-                        Text(
-                            if (playback.resolving) "Preparando transmisión…" else "Iniciando reproductor…",
-                            color = Color.White,
-                            modifier = Modifier.padding(top = 12.dp)
-                        )
-                    }
-                }
-
-                playback.error?.let { message ->
-                    Column(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .background(Color.Black.copy(alpha = 0.9f))
-                            .padding(24.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.Center
-                    ) {
-                        Icon(Icons.Default.ErrorOutline, null, tint = Color.White, modifier = Modifier.size(42.dp))
-                        Text(
-                            message,
-                            color = Color.White,
-                            fontWeight = FontWeight.SemiBold,
-                            modifier = Modifier.padding(top = 12.dp),
-                            textAlign = androidx.compose.ui.text.style.TextAlign.Center
-                        )
-                        Row(
-                            modifier = Modifier.padding(top = 14.dp),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            Button(onClick = {
-                                playerConnection.open(video, autoplay, dataSaver)
-                            }) { Text("Reintentar") }
-                            OutlinedButton(onClick = {
-                                openExternalVideo(context, video, preferYouTubeApp = true)
-                            }) { Text("Abrir externo") }
+    } else {
+        Scaffold(
+            topBar = {
+                TopAppBar(
+                    title = { Text("Reproduciendo", maxLines = 1) },
+                    navigationIcon = {
+                        IconButton(onClick = ::minimize) {
+                            Icon(Icons.Default.KeyboardArrowDown, "Minimizar")
+                        }
+                    },
+                    actions = {
+                        IconButton(onClick = { showSettings = true }) {
+                            Icon(Icons.Default.Settings, "Controles")
+                        }
+                        IconButton(onClick = {
+                            saveProgress()
+                            onClose()
+                        }) {
+                            Icon(Icons.Default.Close, "Cerrar")
                         }
                     }
-                }
-            }
-
-            if (durationMs > 0L) {
-                val progress = (currentPositionMs.toFloat() / durationMs.toFloat()).coerceIn(0f, 1f)
-                LinearProgressIndicator(progress = { progress }, modifier = Modifier.fillMaxWidth())
-                Text(
-                    "${formatDuration(currentPositionMs)} / ${formatDuration(durationMs)}",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 5.dp)
-                )
-            } else if (playback.bufferedPercentage > 0) {
-                LinearProgressIndicator(
-                    progress = { playback.bufferedPercentage / 100f },
-                    modifier = Modifier.fillMaxWidth()
                 )
             }
-
-            Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
-                if (video.isLive) {
-                    Text("EN VIVO", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.ExtraBold)
-                }
-                Text(video.title, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-                Text(
-                    video.channelTitle,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(top = 6.dp)
-                )
-
-                LazyRow(
-                    horizontalArrangement = Arrangement.spacedBy(10.dp),
-                    modifier = Modifier.padding(top = 14.dp)
-                ) {
-                    item {
-                        AssistChip(
-                            onClick = {
-                                if (isPlaying) playerConnection.pause() else playerConnection.play()
-                            },
-                            label = { Text(if (isPlaying) "Pausar" else "Reproducir") },
-                            leadingIcon = {
-                                Icon(if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow, null)
-                            }
-                        )
-                    }
-                    item {
-                        AssistChip(
-                            onClick = onWatchLater,
-                            label = { Text(if (isWatchLater) "Guardado" else "Ver después") },
-                            leadingIcon = { Icon(Icons.Default.WatchLater, null) }
-                        )
-                    }
-                    item {
-                        AssistChip(
-                            onClick = { shareVideo(context, video) },
-                            label = { Text("Compartir") },
-                            leadingIcon = { Icon(Icons.Default.Share, null) }
-                        )
-                    }
-                    item {
-                        AssistChip(
-                            onClick = { showTimer = true },
-                            label = { Text(timerMinutes?.let { "$it min" } ?: "Temporizador") },
-                            leadingIcon = { Icon(Icons.Default.Timer, null) }
-                        )
-                    }
-                    item {
-                        AssistChip(
-                            onClick = { enterPictureInPicture(context, onMessage) },
-                            label = { Text("Flotante") },
-                            leadingIcon = { Icon(Icons.Default.PictureInPictureAlt, null) }
-                        )
-                    }
-                }
-
-                if (video.description.isNotBlank()) {
-                    HorizontalDivider(modifier = Modifier.padding(vertical = 18.dp))
-                    Text("Información", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
-                    Text(
-                        video.description,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(top = 10.dp)
+        ) { padding ->
+            LazyColumn(
+                state = listState,
+                modifier = Modifier.padding(padding).fillMaxSize(),
+                contentPadding = PaddingValues(bottom = 28.dp)
+            ) {
+                item(key = "player-${video.id}", contentType = "player") {
+                    PlayerViewport(
+                        video = video,
+                        controller = controller,
+                        playback = playback,
+                        showDelayedLoading = showDelayedLoading,
+                        qualityLabel = qualityLabel,
+                        playbackSpeed = playbackSpeed,
+                        modifier = Modifier.fillMaxWidth().aspectRatio(playerRatio),
+                        onSettings = { showSettings = true },
+                        onFullscreen = { isFullscreen = true },
+                        fullscreen = false,
+                        onRetry = { playerConnection.open(video, autoplay, dataSaver) },
+                        onOpenExternal = { openExternalVideo(context, video, preferYouTubeApp = true) }
                     )
                 }
 
-                if (video.mediaKind != MediaKind.YOUTUBE) {
-                    OutlinedButton(
-                        onClick = {
-                            val id = enqueueDirectDownload(context, video.title, video.source, false)
-                            if (id >= 0L) {
-                                onRegisterDownload(video.title, video.source, id)
-                                onMessage("Descarga iniciada.")
-                            } else {
-                                onMessage("No se pudo iniciar la descarga.")
+                item(key = "details-${video.id}", contentType = "details") {
+                    Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 16.dp)) {
+                        if (video.isLive) {
+                            Text("EN VIVO", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.ExtraBold)
+                        }
+                        Text(
+                            video.title,
+                            style = MaterialTheme.typography.titleLarge,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = if (descriptionExpanded) 6 else 3,
+                            overflow = TextOverflow.Ellipsis
+                        )
+
+                        val stats = buildList {
+                            details?.viewCount?.takeIf { it > 0L }?.let { add("${formatCompactNumber(it)} visualizaciones") }
+                            formatPublishedAt(publishedAt).takeIf { it.isNotBlank() }?.let(::add)
+                        }.joinToString(" · ")
+                        if (stats.isNotBlank()) {
+                            Text(
+                                stats,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(top = 7.dp)
+                            )
+                        }
+                        if (detailsLoading) {
+                            LinearProgressIndicator(modifier = Modifier.fillMaxWidth().padding(top = 10.dp))
+                        }
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth().padding(top = 16.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            ChannelAvatar(channelAvatar, video.channelTitle, 46.dp)
+                            Column(modifier = Modifier.weight(1f).padding(horizontal = 12.dp)) {
+                                Text(video.channelTitle, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                details?.subscriberCount?.takeIf { it > 0L }?.let {
+                                    Text(
+                                        "${formatCompactNumber(it)} suscriptores",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
                             }
-                        },
-                        modifier = Modifier.fillMaxWidth().padding(top = 18.dp)
-                    ) {
-                        Icon(Icons.Default.Download, null)
-                        Spacer(Modifier.width(8.dp))
-                        Text("Descargar archivo")
+                            if (video.channelId.isNotBlank()) {
+                                OutlinedButton(
+                                    onClick = {
+                                        onOpenChannel(
+                                            ChannelItem(
+                                                id = video.channelId,
+                                                title = video.channelTitle,
+                                                thumbnailUrl = channelAvatar
+                                            )
+                                        )
+                                    }
+                                ) { Text("Canal") }
+                            }
+                        }
+
+                        LazyRow(
+                            horizontalArrangement = Arrangement.spacedBy(9.dp),
+                            modifier = Modifier.padding(top = 16.dp)
+                        ) {
+                            item {
+                                AssistChip(
+                                    onClick = { if (isPlaying) playerConnection.pause() else playerConnection.play() },
+                                    label = { Text(if (isPlaying) "Pausar" else "Reproducir") },
+                                    leadingIcon = { Icon(if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow, null) }
+                                )
+                            }
+                            item {
+                                AssistChip(
+                                    onClick = { onMessage("Se muestra el conteo. Dar Me gusta requerirá permiso de escritura de YouTube.") },
+                                    label = { Text(details?.likeCount?.takeIf { it > 0L }?.let(::formatCompactNumber) ?: "Me gusta") },
+                                    leadingIcon = { Icon(Icons.Default.ThumbUp, null) }
+                                )
+                            }
+                            item {
+                                AssistChip(
+                                    onClick = onWatchLater,
+                                    label = { Text(if (isWatchLater) "Guardado" else "Ver después") },
+                                    leadingIcon = { Icon(Icons.Default.WatchLater, null) }
+                                )
+                            }
+                            item {
+                                AssistChip(
+                                    onClick = ::minimize,
+                                    label = { Text("Segundo plano") },
+                                    leadingIcon = { Icon(Icons.Default.Headphones, null) }
+                                )
+                            }
+                            item {
+                                AssistChip(
+                                    onClick = { shareVideo(context, video) },
+                                    label = { Text("Compartir") },
+                                    leadingIcon = { Icon(Icons.Default.Share, null) }
+                                )
+                            }
+                            item {
+                                AssistChip(
+                                    onClick = { enterPictureInPicture(context, onMessage) },
+                                    label = { Text("Flotante") },
+                                    leadingIcon = { Icon(Icons.Default.PictureInPictureAlt, null) }
+                                )
+                            }
+                            item {
+                                AssistChip(
+                                    onClick = { showTimer = true },
+                                    label = { Text(timerMinutes?.let { "$it min" } ?: "Temporizador") },
+                                    leadingIcon = { Icon(Icons.Default.Timer, null) }
+                                )
+                            }
+                            item {
+                                AssistChip(
+                                    onClick = { openExternalVideo(context, video, preferYouTubeApp = true) },
+                                    label = { Text("Transmitir") },
+                                    leadingIcon = { Icon(Icons.Default.OpenInBrowser, null) }
+                                )
+                            }
+                        }
+
+                        if (description.isNotBlank()) {
+                            OutlinedCard(
+                                onClick = { descriptionExpanded = !descriptionExpanded },
+                                modifier = Modifier.fillMaxWidth().padding(top = 18.dp)
+                            ) {
+                                Column(modifier = Modifier.padding(14.dp)) {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Text("Descripción", fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+                                        Icon(
+                                            if (descriptionExpanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                                            if (descriptionExpanded) "Contraer" else "Expandir"
+                                        )
+                                    }
+                                    Text(
+                                        description,
+                                        maxLines = if (descriptionExpanded) Int.MAX_VALUE else 3,
+                                        overflow = TextOverflow.Ellipsis,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.padding(top = 8.dp)
+                                    )
+                                }
+                            }
+                        }
+
+                        if (video.mediaKind != MediaKind.YOUTUBE) {
+                            OutlinedButton(
+                                onClick = {
+                                    val id = enqueueDirectDownload(context, video.title, video.source, false)
+                                    if (id >= 0L) {
+                                        onRegisterDownload(video.title, video.source, id)
+                                        onMessage("Descarga iniciada.")
+                                    } else {
+                                        onMessage("No se pudo iniciar la descarga.")
+                                    }
+                                },
+                                modifier = Modifier.fillMaxWidth().padding(top = 14.dp)
+                            ) {
+                                Icon(Icons.Default.Download, null)
+                                Spacer(Modifier.width(8.dp))
+                                Text("Descargar archivo")
+                            }
+                        }
                     }
                 }
 
-                OutlinedButton(
-                    onClick = { openExternalVideo(context, video, preferYouTubeApp = true) },
-                    modifier = Modifier.fillMaxWidth().padding(top = 10.dp)
-                ) {
-                    Icon(Icons.Default.OpenInBrowser, null)
-                    Spacer(Modifier.width(8.dp))
-                    Text("Abrir externamente / transmitir")
+                item(key = "related-title-${video.id}", contentType = "related-title") {
+                    HorizontalDivider()
+                    Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 16.dp)) {
+                        Text("Videos relacionados", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                        Text(
+                            "Relacionados con el video actual, sin cambiar tu feed principal.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(top = 3.dp)
+                        )
+                    }
                 }
-                Spacer(Modifier.height(28.dp))
+
+                if (relatedLoading && relatedVideos.isEmpty()) {
+                    item(key = "related-loading", contentType = "loading") { LoadingBlock() }
+                } else if (relatedVideos.isEmpty()) {
+                    item(key = "related-empty", contentType = "empty") {
+                        EmptyBlock("No se encontraron relacionados para este video.")
+                    }
+                } else {
+                    items(relatedVideos, key = { "related-${it.id}" }, contentType = { "related" }) { related ->
+                        Box(modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)) {
+                            CompactVideoRow(
+                                video = related,
+                                onPlay = { onPlayRelated(related) },
+                                onWatchLater = { onWatchLaterRelated(related) }
+                            )
+                        }
+                    }
+                }
+
+                if (relatedLoadingMore) {
+                    item(key = "related-more", contentType = "loading-more") {
+                        Box(
+                            modifier = Modifier.fillMaxWidth().padding(20.dp),
+                            contentAlignment = Alignment.Center
+                        ) { CircularProgressIndicator(modifier = Modifier.size(28.dp), strokeWidth = 3.dp) }
+                    }
+                } else if (!relatedCanLoadMore && relatedVideos.isNotEmpty()) {
+                    item(key = "related-end", contentType = "end") {
+                        Text(
+                            "No hay más relacionados disponibles.",
+                            modifier = Modifier.fillMaxWidth().padding(18.dp),
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                        )
+                    }
+                }
             }
         }
     }
@@ -1488,7 +1683,36 @@ private fun PlayerScreen(
     if (showSettings) {
         ModalBottomSheet(onDismissRequest = { showSettings = false }) {
             Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp)) {
-                Text("Controles", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                Text("Reproducción", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                Text("Calidad: $qualityLabel", fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(top = 14.dp))
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(vertical = 10.dp)) {
+                    items(listOf(0, 360, 480, 720, 1080)) { quality ->
+                        FilterChip(
+                            selected = selectedQuality == quality,
+                            onClick = { selectedQuality = quality },
+                            label = { Text(if (quality == 0) "Auto" else "${quality}p") },
+                            leadingIcon = if (selectedQuality == quality) {
+                                { Icon(Icons.Default.HighQuality, null) }
+                            } else null
+                        )
+                    }
+                }
+                Text("Velocidad: ${playbackSpeed}x", fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(top = 4.dp))
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(vertical = 10.dp)) {
+                    items(listOf(0.5f, 0.75f, 1f, 1.25f, 1.5f, 2f)) { speed ->
+                        FilterChip(
+                            selected = playbackSpeed == speed,
+                            onClick = {
+                                playbackSpeed = speed
+                                playerConnection.setSpeed(speed)
+                            },
+                            label = { Text("${speed}x") },
+                            leadingIcon = if (playbackSpeed == speed) {
+                                { Icon(Icons.Default.Speed, null) }
+                            } else null
+                        )
+                    }
+                }
                 SettingSwitch(
                     title = "Silencio",
                     subtitle = "Desactiva temporalmente el audio",
@@ -1507,27 +1731,12 @@ private fun PlayerScreen(
                         playerConnection.setRepeat(it)
                     }
                 )
-                Text("Velocidad: ${playbackSpeed}x", fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(top = 8.dp))
-                LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(vertical = 12.dp)) {
-                    items(listOf(0.5f, 0.75f, 1f, 1.25f, 1.5f, 2f)) { speed ->
-                        FilterChip(
-                            selected = playbackSpeed == speed,
-                            onClick = {
-                                playbackSpeed = speed
-                                playerConnection.setSpeed(speed)
-                            },
-                            label = { Text("${speed}x") },
-                            leadingIcon = if (playbackSpeed == speed) {
-                                { Icon(Icons.Default.Speed, null) }
-                            } else null
-                        )
-                    }
-                }
                 Text(
-                    if (dataSaver) "Ahorro de datos activo: se prioriza una calidad menor."
-                    else "Calidad automática administrada por Media3.",
+                    if (dataSaver) "Ahorro de datos activo. Puedes elevar la calidad manualmente."
+                    else "Automático permite que Media3 elija según la conexión.",
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    style = MaterialTheme.typography.bodySmall
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.padding(top = 8.dp)
                 )
                 Spacer(Modifier.height(22.dp))
             }
@@ -1564,6 +1773,91 @@ private fun PlayerScreen(
         )
     }
 }
+
+@Composable
+private fun PlayerViewport(
+    video: VideoItem,
+    controller: MediaController?,
+    playback: com.geovideos.app.playback.PlaybackUiState,
+    showDelayedLoading: Boolean,
+    qualityLabel: String,
+    playbackSpeed: Float,
+    modifier: Modifier,
+    onSettings: () -> Unit,
+    onFullscreen: () -> Unit,
+    fullscreen: Boolean,
+    onRetry: () -> Unit,
+    onOpenExternal: () -> Unit
+) {
+    Box(modifier = modifier.background(Color.Black)) {
+        Thumbnail(video.thumbnailUrl, Modifier.fillMaxSize(), contentScale = ContentScale.Fit)
+
+        if (controller != null && controller.currentMediaItem?.mediaId == video.id && !playback.resolving) {
+            GeoMediaPlayerView(controller = controller)
+        }
+
+        if (showDelayedLoading && playback.error == null) {
+            Box(
+                modifier = Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.2f)),
+                contentAlignment = Alignment.Center
+            ) {
+                CircularProgressIndicator(modifier = Modifier.size(38.dp), strokeWidth = 4.dp)
+            }
+        }
+
+        Row(
+            modifier = Modifier.align(Alignment.TopEnd).padding(8.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            Surface(
+                onClick = onSettings,
+                color = Color.Black.copy(alpha = 0.62f),
+                shape = RoundedCornerShape(18.dp)
+            ) {
+                Row(modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.HighQuality, null, tint = Color.White, modifier = Modifier.size(17.dp))
+                    Text(qualityLabel, color = Color.White, style = MaterialTheme.typography.labelMedium, modifier = Modifier.padding(start = 5.dp))
+                }
+            }
+            Surface(
+                onClick = onSettings,
+                color = Color.Black.copy(alpha = 0.62f),
+                shape = RoundedCornerShape(18.dp)
+            ) {
+                Text("${playbackSpeed}x", color = Color.White, style = MaterialTheme.typography.labelMedium, modifier = Modifier.padding(horizontal = 11.dp, vertical = 8.dp))
+            }
+        }
+
+        IconButton(
+            onClick = onFullscreen,
+            modifier = Modifier.align(Alignment.BottomEnd).padding(8.dp).background(Color.Black.copy(alpha = 0.55f), CircleShape)
+        ) {
+            Icon(if (fullscreen) Icons.Default.FullscreenExit else Icons.Default.Fullscreen, "Pantalla completa", tint = Color.White)
+        }
+
+        playback.error?.let { message ->
+            Column(
+                modifier = Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.9f)).padding(24.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Center
+            ) {
+                Icon(Icons.Default.ErrorOutline, null, tint = Color.White, modifier = Modifier.size(42.dp))
+                Text(
+                    message,
+                    color = Color.White,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.padding(top = 12.dp),
+                    textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                )
+                Row(modifier = Modifier.padding(top = 14.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(onClick = onRetry) { Text("Reintentar") }
+                    OutlinedButton(onClick = onOpenExternal) { Text("Abrir externo") }
+                }
+            }
+        }
+    }
+}
+
 
 @Composable
 private fun MiniPlayer(
@@ -1642,9 +1936,15 @@ private fun GeoMediaPlayerView(controller: MediaController) {
                 player = controller
                 useController = true
                 controllerAutoShow = true
+                controllerHideOnTouch = true
+                controllerShowTimeoutMs = 2_500
                 keepScreenOn = true
                 resizeMode = androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_FIT
-                setShowBuffering(PlayerView.SHOW_BUFFERING_WHEN_PLAYING)
+                setShowBuffering(PlayerView.SHOW_BUFFERING_NEVER)
+                setShowRewindButton(true)
+                setShowFastForwardButton(true)
+                setShowPreviousButton(false)
+                setShowNextButton(false)
             }
         },
         update = { view ->
@@ -1661,6 +1961,20 @@ private fun formatDuration(milliseconds: Long): String {
     val seconds = totalSeconds % 60L
     return if (hours > 0L) "%d:%02d:%02d".format(hours, minutes, seconds)
     else "%d:%02d".format(minutes, seconds)
+}
+
+
+private fun formatCompactNumber(value: Long): String = when {
+    value >= 1_000_000_000L -> "%.1f mil M".format(value / 1_000_000_000.0).replace(".0", "")
+    value >= 1_000_000L -> "%.1f M".format(value / 1_000_000.0).replace(".0", "")
+    value >= 1_000L -> "%.1f K".format(value / 1_000.0).replace(".0", "")
+    else -> value.toString()
+}
+
+private fun formatPublishedAt(value: String): String {
+    if (value.isBlank()) return ""
+    val date = value.take(10)
+    return if (date.length == 10) "Publicado $date" else value
 }
 
 
@@ -1903,7 +2217,11 @@ private fun ChannelAvatar(
 }
 
 @Composable
-private fun Thumbnail(url: String, modifier: Modifier) {
+private fun Thumbnail(
+    url: String,
+    modifier: Modifier,
+    contentScale: ContentScale = ContentScale.Crop
+) {
     var imageFailed by remember(url) { mutableStateOf(false) }
     if (url.isBlank() || imageFailed) {
         Box(
@@ -1927,7 +2245,7 @@ private fun Thumbnail(url: String, modifier: Modifier) {
             model = request,
             contentDescription = null,
             modifier = modifier.background(Color.Black),
-            contentScale = ContentScale.Crop,
+            contentScale = contentScale,
             onError = { imageFailed = true }
         )
     }

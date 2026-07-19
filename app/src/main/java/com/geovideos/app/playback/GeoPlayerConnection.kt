@@ -34,6 +34,8 @@ data class PlaybackUiState(
     val positionMs: Long = 0L,
     val durationMs: Long = 0L,
     val bufferedPercentage: Int = 0,
+    val videoWidth: Int = 0,
+    val videoHeight: Int = 0,
     val error: String? = null
 )
 
@@ -170,6 +172,19 @@ class GeoPlayerConnection private constructor(context: Context) {
     fun seekTo(positionMs: Long) = withController { it.seekTo(positionMs.coerceAtLeast(0L)) }
     fun setMuted(muted: Boolean) = withController { it.volume = if (muted) 0f else 1f }
     fun setSpeed(speed: Float) = withController { it.setPlaybackSpeed(speed.coerceIn(0.25f, 2f)) }
+    fun setMaxVideoHeight(height: Int) = withController { controller ->
+        val maxHeight = if (height <= 0) Int.MAX_VALUE else height
+        controller.setTrackSelectionParameters(
+            controller.trackSelectionParameters
+                .buildUpon()
+                .setMaxVideoSize(Int.MAX_VALUE, maxHeight)
+                .build()
+        )
+    }
+    fun preload(videos: List<VideoItem>, dataSaver: Boolean) {
+        if (videos.isEmpty()) return
+        scope.launch { StreamResolver.preload(videos, dataSaver) }
+    }
     fun setRepeat(enabled: Boolean) = withController {
         it.repeatMode = if (enabled) Player.REPEAT_MODE_ONE else Player.REPEAT_MODE_OFF
     }
@@ -203,6 +218,8 @@ class GeoPlayerConnection private constructor(context: Context) {
                 positionMs = player.currentPosition.coerceAtLeast(0L),
                 durationMs = player.duration.takeIf { duration -> duration > 0L } ?: it.durationMs,
                 bufferedPercentage = player.bufferedPercentage.coerceIn(0, 100),
+                videoWidth = player.videoSize.width.coerceAtLeast(0),
+                videoHeight = player.videoSize.height.coerceAtLeast(0),
                 error = player.playerError?.localizedMessage ?: it.error
             )
         }
