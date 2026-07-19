@@ -1,0 +1,230 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:background="@color/bg_main"
+    android:padding="14dp">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="46dp"
+        android:gravity="center_vertical"
+        android:orientation="horizontal">
+
+        <ImageView
+            android:layout_width="34dp"
+            android:layout_height="34dp"
+            android:src="@drawable/ic_logo_small" />
+
+        <TextView
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="10dp"
+            android:layout_weight="1"
+            android:text="Geo Susu JSON"
+            android:textColor="@android:color/white"
+            android:textSize="21sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/tvModeMini"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="TXT"
+            android:textColor="#C7D2FE"
+            android:textSize="14sp"
+            android:textStyle="bold" />
+    </LinearLayout>
+
+    <TextView
+        android:id="@+id/tvStatus"
+        android:layout_width="match_parent"
+        android:layout_height="44dp"
+        android:layout_marginTop="8dp"
+        android:background="@drawable/card_bg"
+        android:gravity="center_vertical"
+        android:paddingStart="14dp"
+        android:paddingEnd="14dp"
+        android:text="Estado: listo"
+        android:textColor="@android:color/white"
+        android:textSize="14sp"
+        android:maxLines="2" />
+
+    <com.google.android.material.button.MaterialButton
+        android:id="@+id/btnStart"
+        style="@style/Widget.MaterialComponents.Button"
+        android:layout_width="match_parent"
+        android:layout_height="56dp"
+        android:layout_marginTop="10dp"
+        android:text="ESCUCHAR"
+        android:textSize="16sp"
+        android:textStyle="bold" />
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="46dp"
+        android:layout_marginTop="8dp"
+        android:orientation="horizontal">
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btnStop"
+            style="@style/Widget.MaterialComponents.Button.OutlinedButton"
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_marginEnd="5dp"
+            android:layout_weight="1"
+            android:text="DETENER"
+            android:textSize="13sp" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btnDownloadModel"
+            style="@style/Widget.MaterialComponents.Button.OutlinedButton"
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_marginStart="5dp"
+            android:layout_weight="1"
+            android:text="JSON"
+            android:textSize="13sp" />
+    </LinearLayout>
+
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="22dp"
+        android:layout_marginTop="10dp"
+        android:text="Modo de respuesta"
+        android:textColor="#A5B4FC"
+        android:textSize="13sp"
+        android:textStyle="bold" />
+
+    <RadioGroup
+        android:id="@+id/rgAnswerMode"
+        android:layout_width="match_parent"
+        android:layout_height="46dp"
+        android:background="@drawable/card_bg"
+        android:orientation="horizontal"
+        android:padding="4dp">
+
+        <RadioButton
+            android:id="@+id/rbJson"
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_weight="1"
+            android:text="JSON"
+            android:textColor="@android:color/white"
+            android:textSize="13sp" />
+
+        <RadioButton
+            android:id="@+id/rbInternet"
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_weight="1"
+            android:text="NET"
+            android:textColor="@android:color/white"
+            android:textSize="13sp" />
+
+        <RadioButton
+            android:id="@+id/rbAuto"
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_weight="1"
+            android:text="AUTO"
+            android:textColor="@android:color/white"
+            android:textSize="13sp" />
+    </RadioGroup>
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="44dp"
+        android:layout_marginTop="8dp"
+        android:orientation="horizontal">
+
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btnImportText"
+            style="@style/Widget.MaterialComponents.Button.OutlinedButton"
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_marginStart="4dp"
+            android:layout_marginEnd="4dp"
+            android:layout_weight="1"
+            android:text="VELOCIDAD"
+            android:textSize="10sp"
+            android:visibility="visible" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btnSettings"
+            style="@style/Widget.MaterialComponents.Button.OutlinedButton"
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_marginStart="4dp"
+            android:layout_weight="1"
+            android:text="API"
+            android:textSize="10sp"
+            android:visibility="visible" />
+    </LinearLayout>
+
+
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="22dp"
+        android:layout_marginTop="8dp"
+        android:text="Nivel de voz"
+        android:textColor="#A5B4FC"
+        android:textSize="13sp"
+        android:textStyle="bold" />
+
+    <ProgressBar
+        android:id="@+id/pbVoiceLevel"
+        style="?android:attr/progressBarStyleHorizontal"
+        android:layout_width="match_parent"
+        android:layout_height="14dp"
+        android:max="100"
+        android:progress="0" />
+
+    <TextView
+        android:id="@+id/tvVoiceLevel"
+        android:layout_width="match_parent"
+        android:layout_height="22dp"
+        android:text="Ideal: 35% a 80%."
+        android:textColor="#CBD5E1"
+        android:textSize="12sp"
+        android:maxLines="1" />
+
+    <TextView
+        android:id="@+id/tvHeard"
+        android:layout_width="match_parent"
+        android:layout_height="92dp"
+        android:layout_marginTop="7dp"
+        android:background="@drawable/card_bg"
+        android:fadeScrollbars="false"
+        android:gravity="top|start"
+        android:overScrollMode="ifContentScrolls"
+        android:padding="12dp"
+        android:scrollbars="vertical"
+        android:text="Pregunta: ---"
+        android:textColor="@android:color/white"
+        android:textIsSelectable="true"
+        android:textSize="15sp" />
+
+    <TextView
+        android:id="@+id/tvAnswer"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:layout_marginTop="8dp"
+        android:background="@drawable/card_bg"
+        android:fadeScrollbars="false"
+        android:gravity="top|start"
+        android:overScrollMode="ifContentScrolls"
+        android:padding="14dp"
+        android:scrollbars="vertical"
+        android:text="Listo."
+        android:textColor="@android:color/white"
+        android:textIsSelectable="true"
+        android:textSize="17sp"
+        android:textStyle="normal" />
+
+
+
+</LinearLayout>

@@ -1,0 +1,53 @@
+[
+  {
+    "id": "topografia_concepto_0001",
+    "tema": "Topografía",
+    "titulo": "Concepto de topografía",
+    "preguntas": [
+      "¿Qué es la topografía?",
+      "Define la topografía.",
+      "¿En qué consiste la topografía?"
+    ],
+    "variantes": [
+      "que es topografia",
+      "definicion de topografia",
+      "concepto de topografia"
+    ],
+    "aliases": [
+      "topografía",
+      "levantamiento topográfico"
+    ],
+    "keywords": [
+      "topografia",
+      "terreno",
+      "medicion"
+    ],
+    "contenido": "La topografía es la ciencia y técnica que mide y representa las características de una porción de terreno."
+  },
+  {
+    "id": "teodolito_funcion_0002",
+    "tema": "Topografía",
+    "titulo": "Función del teodolito",
+    "preguntas": [
+      "¿Para qué sirve el teodolito?",
+      "¿Qué mide un teodolito?",
+      "¿Cuál es la función del teodolito?"
+    ],
+    "variantes": [
+      "para que sirve el teodolito",
+      "funcion del teodolito",
+      "que mide el teodolito"
+    ],
+    "aliases": [
+      "teodolito",
+      "instrumento angular"
+    ],
+    "keywords": [
+      "teodolito",
+      "angulos",
+      "horizontal",
+      "vertical"
+    ],
+    "contenido": "El teodolito sirve para medir ángulos horizontales y verticales con precisión."
+  }
+]
