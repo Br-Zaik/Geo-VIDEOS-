@@ -1,50 +1,29 @@
-# Geo Videos V9
+# Geo Videos V10
 
-Versión reconstruida para corregir los problemas visibles de V6 y ofrecer una navegación más cercana a una aplicación de videos real, conservando una identidad propia.
+Versión centrada en corregir el feed y la fluidez, sin volver a llenar la app de botones sin función.
 
-## Cambios principales
+## Cambios realizados
 
-- Barra inferior: **Principal, Shorts, Buscar, Colección y Cuenta**.
-- Inicio compacto con pestañas **Para ti, En vivo, Juegos y Música**.
-- El apartado **Para ti** se arma con publicaciones recientes de canales suscritos, actividad disponible, videos con Me gusta, historial local y contenido popular de respaldo.
-- Actualización mediante la flecha superior y deslizando hacia abajo.
-- Sesión persistente: al reabrir la app muestra los datos guardados y trata de renovar el acceso silenciosamente; no abre Google de forma automática cuando se necesita una confirmación.
-- Botón **Renovar acceso** en Cuenta para cuando Google solicite autorización nuevamente.
-- Reproductor de YouTube reemplazado por un componente Android mantenido, con video, audio y controles oficiales integrados.
-- Pantalla completa, velocidad, silencio, repetición, temporizador y ventana flotante.
-- Minirreproductor sobre la barra inferior al minimizar un video.
-- Historial y posición de reproducción guardados para continuar donde se dejó.
-- Búsqueda, suscripciones, listas, videos con Me gusta, campana de actividad y perfil de Google.
-- Descargas reales para enlaces directos propios o autorizados, con registro y gestión desde Colección.
+- Fotos reales de los canales en las tarjetas y resultados de búsqueda cuando la API las entrega.
+- Carga automática de más videos al llegar cerca del final del feed.
+- Paginación real en **Principal, En vivo, Juegos, Música** y en los resultados de **Buscar**.
+- Actualización real: vuelve a consultar novedades de canales suscritos, actividad, Me gusta y una búsqueda relacionada distinta; además reordena el primer bloque para que el cambio sea visible.
+- Eliminación de videos duplicados al actualizar o cargar más.
+- Caché persistente: conserva el contenido anterior si la red falla.
+- Miniaturas solicitadas a un tamaño controlado y sin animaciones de transición para reducir trabas al desplazarse.
+- Listas con claves y tipos de contenido estables para reducir recomposiciones innecesarias.
+- Indicador discreto al cargar más contenido y aviso cuando no quedan más páginas disponibles.
+- `versionCode 10` y `versionName 10.0.0`.
 
-## Configuración de Google
+## Cuenta y firma
 
-La aplicación conserva los datos ya registrados:
+Se mantienen:
 
 - Paquete: `com.geovideos.app`
 - SHA-1: `61:39:FF:D0:D5:6B:DC:06:FA:13:AD:3D:7A:88:93:9F:6D:4A:52:7F`
 
-No hace falta repetir la configuración de Google Cloud mientras no cambien el paquete ni la firma.
+No es necesario repetir la configuración de Google Cloud.
 
-## Límites
+## Límite técnico que no se oculta
 
-La API pública de YouTube no entrega el feed privado exacto de Inicio, el historial oficial completo, Ver más tarde ni toda la bandeja privada de notificaciones. Geo Videos crea un feed personalizado aproximado usando los datos que la cuenta sí autoriza y el historial guardado por la propia aplicación.
-
-Geo Videos no extrae archivos ni elimina anuncios de YouTube. Las descargas se limitan a enlaces directos de contenido propio o autorizado.
-
-## Firma
-
-La clave de desarrollo incluida mantiene el SHA-1 actual para las pruebas. No debe utilizarse para una publicación comercial; para distribución pública se debe migrar a una firma privada guardada en GitHub Secrets.
-
-
-## V8
-
-- Corrige el error de compilacion por uso nullable de `selectedVideo` en el reproductor expandido.
-- Conserva el mismo paquete y la misma firma de desarrollo.
-
-
-## V9
-
-- Agrega la extension segura `Context.findActivity()` usada por pantalla completa y ventana flotante.
-- Corrige el error de compilacion `Unresolved reference: findActivity`.
-- Mantiene el mismo paquete y la misma firma de desarrollo para conservar el acceso de Google.
+El contenido conectado a la cuenta sigue obteniéndose mediante la API autorizada y los videos de esa plataforma se reproducen con un reproductor incrustado permitido. Esta versión no intenta extraer ni ocultar la identidad del proveedor del video. El trabajo de V10 se concentra en el feed, los iconos de canal, la carga continua, la actualización y la fluidez.

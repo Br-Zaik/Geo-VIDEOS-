@@ -15,6 +15,11 @@ import java.net.HttpURLConnection
 import java.net.URLEncoder
 import java.net.URL
 
+data class VideoPage(
+    val items: List<VideoItem>,
+    val nextPageToken: String = ""
+)
+
 class YouTubeApi {
     suspend fun getUserInfo(token: String): GoogleProfile = withContext(Dispatchers.IO) {
         val json = requestJson("https://www.googleapis.com/oauth2/v3/userinfo", token)
@@ -47,13 +52,28 @@ class YouTubeApi {
         )
     }
 
-    suspend fun mostPopular(token: String, categoryId: String? = null): List<VideoItem> = withContext(Dispatchers.IO) {
-        val category = categoryId?.let { "&videoCategoryId=${encode(it)}" }.orEmpty()
+    suspend fun mostPopular(
+        token: String,
+        categoryId: String? = null
+    ): List<VideoItem> = mostPopularPage(token, categoryId).items
+
+    suspend fun mostPopularPage(
+        token: String,
+        categoryId: String? = null,
+        pageToken: String = "",
+        maxResults: Int = 24
+    ): VideoPage = withContext(Dispatchers.IO) {
+        val category = categoryId?.takeIf { it.isNotBlank() }
+            ?.let { "&videoCategoryId=${encode(it)}" }
+            .orEmpty()
+        val page = pageToken.takeIf { it.isNotBlank() }
+            ?.let { "&pageToken=${encode(it)}" }
+            .orEmpty()
         val json = requestJson(
-            "https://www.googleapis.com/youtube/v3/videos?part=snippet,liveStreamingDetails&chart=mostPopular&regionCode=PE&maxResults=24$category",
+            "https://www.googleapis.com/youtube/v3/videos?part=snippet,liveStreamingDetails&chart=mostPopular&regionCode=PE&maxResults=${maxResults.coerceIn(1, 50)}$category$page",
             token
         )
-        parseVideoItems(json)
+        VideoPage(parseVideoItems(json), json.optString("nextPageToken"))
     }
 
     suspend fun searchVideos(
@@ -61,24 +81,67 @@ class YouTubeApi {
         query: String,
         liveOnly: Boolean = false,
         shortOnly: Boolean = false
-    ): List<VideoItem> = withContext(Dispatchers.IO) {
+    ): List<VideoItem> = searchVideosPage(token, query, liveOnly, shortOnly).items
+
+    suspend fun searchVideosPage(
+        token: String,
+        query: String,
+        liveOnly: Boolean = false,
+        shortOnly: Boolean = false,
+        pageToken: String = "",
+        maxResults: Int = 25
+    ): VideoPage = withContext(Dispatchers.IO) {
         val live = if (liveOnly) "&eventType=live" else ""
         val duration = if (shortOnly) "&videoDuration=short" else ""
+        val page = pageToken.takeIf { it.isNotBlank() }
+            ?.let { "&pageToken=${encode(it)}" }
+            .orEmpty()
         val json = requestJson(
-            "https://www.googleapis.com/youtube/v3/search?part=snippet&type=video&maxResults=25&regionCode=PE&relevanceLanguage=es&videoEmbeddable=true&safeSearch=moderate&q=${encode(query)}$live$duration",
+            "https://www.googleapis.com/youtube/v3/search?part=snippet&type=video&maxResults=${maxResults.coerceIn(1, 50)}&regionCode=PE&relevanceLanguage=es&videoEmbeddable=true&safeSearch=moderate&q=${encode(query)}$live$duration$page",
             token
         )
-        parseSearchItems(json)
+        VideoPage(parseSearchItems(json), json.optString("nextPageToken"))
     }
 
-    suspend fun liveVideos(token: String): List<VideoItem> = searchVideos(token, "en vivo", liveOnly = true)
+    suspend fun liveVideos(token: String): List<VideoItem> = liveVideosPage(token).items
 
-    suspend fun musicVideos(token: String): List<VideoItem> = mostPopular(token, "10")
+    suspend fun liveVideosPage(
+        token: String,
+        pageToken: String = ""
+    ): VideoPage = searchVideosPage(
+        token = token,
+        query = "en vivo español",
+        liveOnly = true,
+        pageToken = pageToken
+    )
 
-    suspend fun channelActivities(token: String, channelId: String, maxResults: Int = 4): List<VideoItem> = withContext(Dispatchers.IO) {
+    suspend fun musicVideos(token: String): List<VideoItem> = musicVideosPage(token).items
+
+    suspend fun musicVideosPage(
+        token: String,
+        pageToken: String = ""
+    ): VideoPage = mostPopularPage(token, categoryId = "10", pageToken = pageToken)
+
+    suspend fun shorts(token: String): List<VideoItem> = shortsPage(token).items
+
+    suspend fun shortsPage(
+        token: String,
+        pageToken: String = ""
+    ): VideoPage = searchVideosPage(
+        token = token,
+        query = "shorts español",
+        shortOnly = true,
+        pageToken = pageToken
+    )
+
+    suspend fun channelActivities(
+        token: String,
+        channelId: String,
+        maxResults: Int = 4
+    ): List<VideoItem> = withContext(Dispatchers.IO) {
         if (channelId.isBlank()) return@withContext emptyList()
         val json = requestJson(
-            "https://www.googleapis.com/youtube/v3/activities?part=snippet,contentDetails&channelId=${encode(channelId)}&maxResults=$maxResults",
+            "https://www.googleapis.com/youtube/v3/activities?part=snippet,contentDetails&channelId=${encode(channelId)}&maxResults=${maxResults.coerceIn(1, 50)}",
             token
         )
         val items = json.optJSONArray("items") ?: return@withContext emptyList()
@@ -92,8 +155,6 @@ class YouTubeApi {
             }
         }
     }
-
-    suspend fun shorts(token: String): List<VideoItem> = searchVideos(token, "shorts populares español", shortOnly = true)
 
     suspend fun subscriptions(token: String): List<ChannelItem> = withContext(Dispatchers.IO) {
         val json = requestJson(
@@ -109,9 +170,9 @@ class YouTubeApi {
                 add(
                     ChannelItem(
                         id = resource?.optString("channelId").orEmpty(),
-                        title = snippet.optString("title", "Canal"),
+                        title = snippet.optString("title", "Canal").decodeHtml(),
                         thumbnailUrl = bestThumbnail(snippet),
-                        description = snippet.optString("description", "")
+                        description = snippet.optString("description", "").decodeHtml()
                     )
                 )
             }
@@ -131,7 +192,7 @@ class YouTubeApi {
                 add(
                     PlaylistItem(
                         id = item.optString("id"),
-                        title = snippet.optString("title", "Lista"),
+                        title = snippet.optString("title", "Lista").decodeHtml(),
                         thumbnailUrl = bestThumbnail(snippet),
                         itemCount = item.optJSONObject("contentDetails")?.optInt("itemCount") ?: 0
                     )
@@ -140,10 +201,14 @@ class YouTubeApi {
         }
     }
 
-    suspend fun playlistVideos(token: String, playlistId: String, maxResults: Int = 25): List<VideoItem> = withContext(Dispatchers.IO) {
+    suspend fun playlistVideos(
+        token: String,
+        playlistId: String,
+        maxResults: Int = 25
+    ): List<VideoItem> = withContext(Dispatchers.IO) {
         if (playlistId.isBlank()) return@withContext emptyList()
         val json = requestJson(
-            "https://www.googleapis.com/youtube/v3/playlistItems?part=snippet,contentDetails&playlistId=${encode(playlistId)}&maxResults=$maxResults",
+            "https://www.googleapis.com/youtube/v3/playlistItems?part=snippet,contentDetails&playlistId=${encode(playlistId)}&maxResults=${maxResults.coerceIn(1, 50)}",
             token
         )
         val items = json.optJSONArray("items") ?: return@withContext emptyList()
@@ -156,7 +221,18 @@ class YouTubeApi {
                         snippet.optJSONObject("resourceId")?.optString("videoId").orEmpty()
                     }
                 if (videoId.isBlank()) continue
-                add(videoFromSnippet(videoId, snippet))
+                val ownerChannelId = snippet.optString("videoOwnerChannelId")
+                    .ifBlank { snippet.optString("channelId") }
+                val ownerChannelTitle = snippet.optString("videoOwnerChannelTitle")
+                    .ifBlank { snippet.optString("channelTitle", "Canal") }
+                add(
+                    videoFromSnippet(
+                        id = videoId,
+                        snippet = snippet,
+                        channelIdOverride = ownerChannelId,
+                        channelTitleOverride = ownerChannelTitle
+                    )
+                )
             }
         }
     }
@@ -182,8 +258,8 @@ class YouTubeApi {
                 add(
                     NotificationItem(
                         id = item.optString("id", "activity-$index"),
-                        title = snippet.optString("title", "Actividad nueva"),
-                        subtitle = snippet.optString("channelTitle", "YouTube"),
+                        title = snippet.optString("title", "Actividad nueva").decodeHtml(),
+                        subtitle = snippet.optString("channelTitle", "Canal").decodeHtml(),
                         thumbnailUrl = bestThumbnail(snippet),
                         video = video
                     )
@@ -199,6 +275,37 @@ class YouTubeApi {
             token
         )
         parseSearchItems(json)
+    }
+
+    suspend fun enrichVideos(token: String, videos: List<VideoItem>): List<VideoItem> = withContext(Dispatchers.IO) {
+        if (videos.isEmpty()) return@withContext videos
+        val ids = videos.asSequence()
+            .map { it.channelId }
+            .filter { it.isNotBlank() }
+            .distinct()
+            .take(50)
+            .toList()
+        if (ids.isEmpty()) return@withContext videos
+
+        val json = requestJson(
+            "https://www.googleapis.com/youtube/v3/channels?part=snippet&id=${ids.joinToString(",")}&maxResults=50",
+            token
+        )
+        val items = json.optJSONArray("items")
+        val avatars = buildMap<String, String> {
+            if (items != null) {
+                for (index in 0 until items.length()) {
+                    val item = items.optJSONObject(index) ?: continue
+                    val id = item.optString("id")
+                    val image = bestThumbnail(item.optJSONObject("snippet"))
+                    if (id.isNotBlank() && image.isNotBlank()) put(id, image)
+                }
+            }
+        }
+        videos.map { video ->
+            val avatar = avatars[video.channelId].orEmpty()
+            if (avatar.isBlank()) video else video.copy(channelThumbnailUrl = avatar)
+        }
     }
 
     private fun parseVideoItems(json: JSONObject): List<VideoItem> {
@@ -225,11 +332,19 @@ class YouTubeApi {
         }
     }
 
-    private fun videoFromSnippet(id: String, snippet: JSONObject): VideoItem = VideoItem(
+    private fun videoFromSnippet(
+        id: String,
+        snippet: JSONObject,
+        channelIdOverride: String = "",
+        channelTitleOverride: String = ""
+    ): VideoItem = VideoItem(
         id = id,
         title = snippet.optString("title", "Video").decodeHtml(),
-        channelTitle = snippet.optString("channelTitle", "Canal").decodeHtml(),
+        channelTitle = channelTitleOverride.ifBlank {
+            snippet.optString("channelTitle", "Canal").decodeHtml()
+        },
         thumbnailUrl = bestThumbnail(snippet),
+        channelId = channelIdOverride.ifBlank { snippet.optString("channelId") },
         publishedAt = snippet.optString("publishedAt", ""),
         description = snippet.optString("description", "").decodeHtml(),
         isLive = snippet.optString("liveBroadcastContent") == "live",
@@ -238,11 +353,11 @@ class YouTubeApi {
 
     private fun bestThumbnail(snippet: JSONObject?): String {
         val thumbs = snippet?.optJSONObject("thumbnails") ?: return ""
-        return thumbs.optJSONObject("maxres")?.optString("url")
-            ?: thumbs.optJSONObject("high")?.optString("url")
-            ?: thumbs.optJSONObject("medium")?.optString("url")
-            ?: thumbs.optJSONObject("default")?.optString("url")
-            ?: ""
+        return listOf("maxres", "standard", "high", "medium", "default")
+            .asSequence()
+            .mapNotNull { key -> thumbs.optJSONObject(key)?.optString("url") }
+            .firstOrNull { it.isNotBlank() }
+            .orEmpty()
     }
 
     private fun requestJson(url: String, token: String): JSONObject {
@@ -271,7 +386,7 @@ class YouTubeApi {
             }.getOrDefault("")
             throw YouTubeApiException(
                 code,
-                apiMessage.ifBlank { "Error de YouTube ($code)" }
+                apiMessage.ifBlank { "Error del servicio de video ($code)" }
             )
         }
         return JSONObject(body.ifBlank { "{}" })

@@ -46,6 +46,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -121,6 +122,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -151,6 +153,7 @@ import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.PlayerView
 import coil.compose.AsyncImage
+import coil.request.ImageRequest
 import com.geovideos.app.R
 import com.geovideos.app.data.ChannelItem
 import com.geovideos.app.data.GoogleProfile
@@ -214,6 +217,8 @@ fun GeoVideosApp(
                     onWatchLater = viewModel::toggleWatchLater,
                     onSearch = viewModel::search,
                     onRefresh = viewModel::refresh,
+                    onLoadMoreHome = viewModel::loadMoreHome,
+                    onLoadMoreSearch = viewModel::loadMoreSearch,
                     onOpenChannel = viewModel::openChannel,
                     onCloseChannel = viewModel::closeChannel,
                     onDisconnect = viewModel::disconnect,
@@ -327,6 +332,8 @@ private fun MainShell(
     onWatchLater: (VideoItem) -> Unit,
     onSearch: (String) -> Unit,
     onRefresh: () -> Unit,
+    onLoadMoreHome: (HomeCategory) -> Unit,
+    onLoadMoreSearch: () -> Unit,
     onOpenChannel: (ChannelItem) -> Unit,
     onCloseChannel: () -> Unit,
     onDisconnect: () -> Unit,
@@ -434,9 +441,12 @@ private fun MainShell(
                 music = state.music,
                 loading = state.loading,
                 refreshing = state.refreshing,
+                loadingMore = state.loadingMore,
+                canLoadMore = state.canLoadMore,
                 lastSyncMs = state.lastSyncMs,
                 watchLater = state.watchLater,
                 onRefresh = onRefresh,
+                onLoadMore = onLoadMoreHome,
                 onCategory = onCategory,
                 onPlay = onPlay,
                 onWatchLater = onWatchLater
@@ -453,7 +463,9 @@ private fun MainShell(
                 results = state.searchResults,
                 history = state.searchHistory,
                 loading = state.loading,
+                loadingMore = state.searchLoadingMore,
                 onSearch = onSearch,
+                onLoadMore = onLoadMoreSearch,
                 onPlay = onPlay,
                 onWatchLater = onWatchLater
             )
@@ -542,9 +554,12 @@ private fun HomeScreen(
     music: List<VideoItem>,
     loading: Boolean,
     refreshing: Boolean,
+    loadingMore: Boolean,
+    canLoadMore: Boolean,
     lastSyncMs: Long,
     watchLater: List<VideoItem>,
     onRefresh: () -> Unit,
+    onLoadMore: (HomeCategory) -> Unit,
     onCategory: (HomeCategory) -> Unit,
     onPlay: (VideoItem) -> Unit,
     onWatchLater: (VideoItem) -> Unit
@@ -555,6 +570,19 @@ private fun HomeScreen(
         HomeCategory.GAMING -> gaming
         HomeCategory.MUSIC -> music
     }
+    val watchLaterIds = remember(watchLater) { watchLater.mapTo(HashSet<String>()) { it.id } }
+    val listState = rememberLazyListState()
+    val shouldLoadMore by remember(listState, videos.size) {
+        derivedStateOf {
+            val lastVisible = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
+            val total = listState.layoutInfo.totalItemsCount
+            total > 0 && videos.isNotEmpty() && lastVisible >= total - 4
+        }
+    }
+
+    LaunchedEffect(shouldLoadMore, loadingMore, canLoadMore, category) {
+        if (shouldLoadMore && !loadingMore && canLoadMore) onLoadMore(category)
+    }
 
     PullToRefreshBox(
         isRefreshing = refreshing,
@@ -562,79 +590,106 @@ private fun HomeScreen(
         modifier = modifier.fillMaxSize()
     ) {
         LazyColumn(
+            state = listState,
             modifier = Modifier.fillMaxSize(),
             contentPadding = PaddingValues(bottom = 92.dp),
             verticalArrangement = Arrangement.spacedBy(0.dp)
         ) {
-        item {
-            LazyRow(
-                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp),
-                horizontalArrangement = Arrangement.spacedBy(9.dp)
-            ) {
-                item { CategoryChip("Para ti", Icons.Default.Explore, category == HomeCategory.FOR_YOU) { onCategory(HomeCategory.FOR_YOU) } }
-                item { CategoryChip("En vivo", Icons.Default.LiveTv, category == HomeCategory.LIVE) { onCategory(HomeCategory.LIVE) } }
-                item { CategoryChip("Juegos", Icons.Default.Games, category == HomeCategory.GAMING) { onCategory(HomeCategory.GAMING) } }
-                item { CategoryChip("Música", Icons.Default.PlaylistPlay, category == HomeCategory.MUSIC) { onCategory(HomeCategory.MUSIC) } }
-            }
-        }
-        item {
-            Row(
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 4.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        when (category) {
-                            HomeCategory.FOR_YOU -> "Principal"
-                            HomeCategory.LIVE -> "En directo"
-                            HomeCategory.GAMING -> "Videojuegos"
-                            HomeCategory.MUSIC -> "Música"
-                        },
-                        style = MaterialTheme.typography.titleLarge,
-                        fontWeight = FontWeight.ExtraBold
-                    )
-                    Text(
-                        when (category) {
-                            HomeCategory.FOR_YOU -> "Tus suscripciones, Me gusta e historial de Geo Videos"
-                            HomeCategory.LIVE -> "Transmisiones públicas disponibles"
-                            HomeCategory.GAMING -> "Videos populares de juegos"
-                            HomeCategory.MUSIC -> "Videos musicales populares"
-                        },
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-                IconButton(onClick = onRefresh, enabled = !refreshing) {
-                    if (refreshing) CircularProgressIndicator(modifier = Modifier.size(22.dp), strokeWidth = 2.dp)
-                    else Icon(Icons.Default.Refresh, "Actualizar")
+            item(contentType = "categories") {
+                LazyRow(
+                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp),
+                    horizontalArrangement = Arrangement.spacedBy(9.dp)
+                ) {
+                    item { CategoryChip("Para ti", Icons.Default.Explore, category == HomeCategory.FOR_YOU) { onCategory(HomeCategory.FOR_YOU) } }
+                    item { CategoryChip("En vivo", Icons.Default.LiveTv, category == HomeCategory.LIVE) { onCategory(HomeCategory.LIVE) } }
+                    item { CategoryChip("Juegos", Icons.Default.Games, category == HomeCategory.GAMING) { onCategory(HomeCategory.GAMING) } }
+                    item { CategoryChip("Música", Icons.Default.PlaylistPlay, category == HomeCategory.MUSIC) { onCategory(HomeCategory.MUSIC) } }
                 }
             }
-        }
-        if (lastSyncMs > 0L) {
-            item {
-                Text(
-                    "Última actualización: ${formatLastSync(lastSyncMs)}",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp)
-                )
+            item(contentType = "heading") {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            when (category) {
+                                HomeCategory.FOR_YOU -> "Principal"
+                                HomeCategory.LIVE -> "En directo"
+                                HomeCategory.GAMING -> "Videojuegos"
+                                HomeCategory.MUSIC -> "Música"
+                            },
+                            style = MaterialTheme.typography.titleLarge,
+                            fontWeight = FontWeight.ExtraBold
+                        )
+                        Text(
+                            when (category) {
+                                HomeCategory.FOR_YOU -> "Novedades de tus canales, Me gusta e historial"
+                                HomeCategory.LIVE -> "Transmisiones públicas disponibles"
+                                HomeCategory.GAMING -> "Videos populares de juegos"
+                                HomeCategory.MUSIC -> "Videos musicales populares"
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    IconButton(onClick = onRefresh, enabled = !refreshing) {
+                        if (refreshing) {
+                            CircularProgressIndicator(modifier = Modifier.size(22.dp), strokeWidth = 2.dp)
+                        } else {
+                            Icon(Icons.Default.Refresh, "Actualizar")
+                        }
+                    }
+                }
             }
-        }
-        if (loading && videos.isEmpty()) {
-            item { LoadingBlock() }
-        } else if (videos.isEmpty()) {
-            item { EmptyBlock("No se encontraron videos en esta sección. Pulsa actualizar.") }
-        } else {
-            items(videos, key = { "home-${category.name}-${it.id}" }) { video ->
-                VideoCard(
-                    video = video,
-                    isWatchLater = watchLater.any { it.id == video.id },
-                    onPlay = { onPlay(video) },
-                    onWatchLater = { onWatchLater(video) }
-                )
-                HorizontalDivider()
+            if (lastSyncMs > 0L) {
+                item(contentType = "sync") {
+                    Text(
+                        "Última actualización: ${formatLastSync(lastSyncMs)}",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp)
+                    )
+                }
             }
-        }
+            if (loading && videos.isEmpty()) {
+                item(contentType = "loading") { LoadingBlock() }
+            } else if (videos.isEmpty()) {
+                item(contentType = "empty") { EmptyBlock("No se encontraron videos en esta sección. Pulsa actualizar.") }
+            } else {
+                items(
+                    items = videos,
+                    key = { "home-${category.name}-${it.id}" },
+                    contentType = { "video" }
+                ) { video ->
+                    VideoCard(
+                        video = video,
+                        isWatchLater = video.id in watchLaterIds,
+                        onPlay = { onPlay(video) },
+                        onWatchLater = { onWatchLater(video) }
+                    )
+                    HorizontalDivider()
+                }
+            }
+            if (loadingMore) {
+                item(contentType = "more-loading") {
+                    Box(
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 22.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        CircularProgressIndicator(modifier = Modifier.size(28.dp), strokeWidth = 3.dp)
+                    }
+                }
+            } else if (!canLoadMore && videos.isNotEmpty()) {
+                item(contentType = "end") {
+                    Text(
+                        "Ya viste los videos disponibles por ahora.",
+                        modifier = Modifier.fillMaxWidth().padding(20.dp),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                    )
+                }
+            }
         }
     }
 }
@@ -719,17 +774,32 @@ private fun SearchScreen(
     results: List<VideoItem>,
     history: List<String>,
     loading: Boolean,
+    loadingMore: Boolean,
     onSearch: (String) -> Unit,
+    onLoadMore: () -> Unit,
     onPlay: (VideoItem) -> Unit,
     onWatchLater: (VideoItem) -> Unit
 ) {
     var query by rememberSaveable { mutableStateOf("") }
+    val listState = rememberLazyListState()
+    val shouldLoadMore by remember(listState, results.size) {
+        derivedStateOf {
+            val lastVisible = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
+            val total = listState.layoutInfo.totalItemsCount
+            total > 0 && results.isNotEmpty() && lastVisible >= total - 4
+        }
+    }
+    LaunchedEffect(shouldLoadMore, loadingMore) {
+        if (shouldLoadMore && !loadingMore) onLoadMore()
+    }
+
     LazyColumn(
+        state = listState,
         modifier = modifier.fillMaxSize(),
         contentPadding = PaddingValues(horizontal = 14.dp, vertical = 12.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        item {
+        item(contentType = "search-box") {
             OutlinedTextField(
                 value = query,
                 onValueChange = { query = it },
@@ -747,8 +817,8 @@ private fun SearchScreen(
             )
         }
         if (query.isBlank() && results.isEmpty() && history.isNotEmpty()) {
-            item { SectionHeader("Búsquedas recientes", "Toca una para repetirla") }
-            items(history, key = { "history-$it" }) { item ->
+            item(contentType = "history-title") { SectionHeader("Búsquedas recientes", "Toca una para repetirla") }
+            items(history, key = { "history-$it" }, contentType = { "history" }) { item ->
                 Row(
                     modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).clickable {
                         query = item
@@ -763,9 +833,22 @@ private fun SearchScreen(
                 }
             }
         }
-        if (loading) item { LoadingBlock() }
-        else items(results, key = { "search-${it.id}" }) { video ->
-            CompactVideoRow(video, { onPlay(video) }, { onWatchLater(video) })
+        if (loading) {
+            item(contentType = "search-loading") { LoadingBlock() }
+        } else {
+            items(results, key = { "search-${it.id}" }, contentType = { "search-result" }) { video ->
+                CompactVideoRow(video, { onPlay(video) }, { onWatchLater(video) })
+            }
+        }
+        if (loadingMore) {
+            item(contentType = "search-more") {
+                Box(
+                    modifier = Modifier.fillMaxWidth().padding(18.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    CircularProgressIndicator(modifier = Modifier.size(26.dp), strokeWidth = 3.dp)
+                }
+            }
         }
     }
 }
@@ -1786,9 +1869,11 @@ private fun VideoCard(
             ResumeProgress(video, Modifier.align(Alignment.BottomCenter).fillMaxWidth())
         }
         Row(modifier = Modifier.padding(horizontal = 14.dp, vertical = 11.dp), verticalAlignment = Alignment.Top) {
-            Box(modifier = Modifier.size(42.dp).clip(CircleShape).background(MaterialTheme.colorScheme.primaryContainer), contentAlignment = Alignment.Center) {
-                Text(video.channelTitle.take(1).uppercase(), fontWeight = FontWeight.Bold)
-            }
+            ChannelAvatar(
+                url = video.channelThumbnailUrl,
+                channelTitle = video.channelTitle,
+                size = 42.dp
+            )
             Column(modifier = Modifier.weight(1f).padding(horizontal = 12.dp)) {
                 Text(video.title, fontWeight = FontWeight.Bold, maxLines = 2, overflow = TextOverflow.Ellipsis)
                 Text(video.channelTitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 4.dp))
@@ -1823,7 +1908,20 @@ private fun CompactVideoRow(video: VideoItem, onPlay: () -> Unit, onWatchLater: 
             }
             Column(modifier = Modifier.weight(1f).padding(start = 12.dp)) {
                 Text(video.title, fontWeight = FontWeight.SemiBold, maxLines = 3, overflow = TextOverflow.Ellipsis)
-                Text(video.channelTitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 5.dp), maxLines = 1)
+                Row(
+                    modifier = Modifier.padding(top = 5.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    ChannelAvatar(video.channelThumbnailUrl, video.channelTitle, 20.dp)
+                    Spacer(Modifier.width(7.dp))
+                    Text(
+                        video.channelTitle,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
             }
             IconButton(onClick = onWatchLater) { Icon(Icons.Outlined.WatchLater, "Ver después") }
         }
@@ -1894,13 +1992,63 @@ private fun ProfileAvatar(profile: GoogleProfile?, size: androidx.compose.ui.uni
 }
 
 @Composable
+private fun ChannelAvatar(
+    url: String,
+    channelTitle: String,
+    size: androidx.compose.ui.unit.Dp
+) {
+    val context = LocalContext.current
+    val modifier = Modifier.size(size).clip(CircleShape)
+    if (url.isBlank()) {
+        Box(
+            modifier = modifier.background(MaterialTheme.colorScheme.primaryContainer),
+            contentAlignment = Alignment.Center
+        ) {
+            Text(channelTitle.take(1).uppercase().ifBlank { "G" }, fontWeight = FontWeight.Bold)
+        }
+    } else {
+        val request = remember(url) {
+            ImageRequest.Builder(context)
+                .data(url)
+                .size(160)
+                .crossfade(false)
+                .build()
+        }
+        AsyncImage(
+            model = request,
+            contentDescription = channelTitle,
+            modifier = modifier,
+            contentScale = ContentScale.Crop
+        )
+    }
+}
+
+@Composable
 private fun Thumbnail(url: String, modifier: Modifier) {
     if (url.isBlank()) {
-        Box(modifier = modifier.background(Brush.linearGradient(listOf(Color(0xFF301A56), Color(0xFF7C4DFF), Color(0xFF111118)))), contentAlignment = Alignment.Center) {
+        Box(
+            modifier = modifier.background(
+                Brush.linearGradient(listOf(Color(0xFF301A56), Color(0xFF7C4DFF), Color(0xFF111118)))
+            ),
+            contentAlignment = Alignment.Center
+        ) {
             Icon(Icons.Default.PlayArrow, null, modifier = Modifier.size(52.dp), tint = Color.White.copy(0.8f))
         }
     } else {
-        AsyncImage(model = url, contentDescription = null, modifier = modifier.background(Color.Black), contentScale = ContentScale.Crop)
+        val context = LocalContext.current
+        val request = remember(url) {
+            ImageRequest.Builder(context)
+                .data(url)
+                .size(1280, 720)
+                .crossfade(false)
+                .build()
+        }
+        AsyncImage(
+            model = request,
+            contentDescription = null,
+            modifier = modifier.background(Color.Black),
+            contentScale = ContentScale.Crop
+        )
     }
 }
 

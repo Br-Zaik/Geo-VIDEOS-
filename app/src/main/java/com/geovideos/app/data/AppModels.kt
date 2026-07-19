@@ -19,6 +19,8 @@ data class VideoItem(
     val title: String,
     val channelTitle: String,
     val thumbnailUrl: String,
+    val channelId: String = "",
+    val channelThumbnailUrl: String = "",
     val publishedAt: String = "",
     val description: String = "",
     val isLive: Boolean = false,

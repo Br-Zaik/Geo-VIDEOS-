@@ -203,6 +203,8 @@ class GeoVideosRepository(context: Context) {
                     .put("title", video.title)
                     .put("channelTitle", video.channelTitle)
                     .put("thumbnailUrl", video.thumbnailUrl)
+                    .put("channelId", video.channelId)
+                    .put("channelThumbnailUrl", video.channelThumbnailUrl)
                     .put("publishedAt", video.publishedAt)
                     .put("description", video.description)
                     .put("isLive", video.isLive)
@@ -227,6 +229,8 @@ class GeoVideosRepository(context: Context) {
                         title = item.optString("title", "Video"),
                         channelTitle = item.optString("channelTitle", ""),
                         thumbnailUrl = item.optString("thumbnailUrl", ""),
+                        channelId = item.optString("channelId", ""),
+                        channelThumbnailUrl = item.optString("channelThumbnailUrl", ""),
                         publishedAt = item.optString("publishedAt", ""),
                         description = item.optString("description", ""),
                         isLive = item.optBoolean("isLive", false),

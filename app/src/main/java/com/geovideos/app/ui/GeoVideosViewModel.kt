@@ -9,8 +9,10 @@ import com.geovideos.app.data.GoogleProfile
 import com.geovideos.app.data.NotificationItem
 import com.geovideos.app.data.PlaylistItem
 import com.geovideos.app.data.VideoItem
+import com.geovideos.app.network.VideoPage
 import com.geovideos.app.network.YouTubeApi
 import com.geovideos.app.network.YouTubeApiException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -19,7 +21,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.supervisorScope
-
+import kotlinx.coroutines.withContext
 
 enum class AuthStatus {
     DISCONNECTED,
@@ -51,6 +53,9 @@ data class GeoVideosUiState(
     val homeCategory: HomeCategory = HomeCategory.FOR_YOU,
     val loading: Boolean = false,
     val refreshing: Boolean = false,
+    val loadingMore: Boolean = false,
+    val canLoadMore: Boolean = true,
+    val searchLoadingMore: Boolean = false,
     val personalized: List<VideoItem> = emptyList(),
     val popular: List<VideoItem> = emptyList(),
     val live: List<VideoItem> = emptyList(),
@@ -80,8 +85,18 @@ data class GeoVideosUiState(
 class GeoVideosViewModel(application: Application) : AndroidViewModel(application) {
     private val repository = GeoVideosRepository(application)
     private val api = YouTubeApi()
+
     private var accessToken: String? = null
     private var likesPlaylistId: String = ""
+    private var popularNextToken: String = ""
+    private var liveNextToken: String = ""
+    private var gamingNextToken: String = ""
+    private var musicNextToken: String = ""
+    private var shortsNextToken: String = ""
+    private var searchNextToken: String = ""
+    private var lastSearchQuery: String = ""
+    private var subscriptionOffset: Int = 0
+    private var refreshCounter: Int = 0
 
     private val cachedProfile = repository.loadProfile()
     private val _uiState = MutableStateFlow(
@@ -126,13 +141,7 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
         if (_uiState.value.profile == null) {
             _uiState.update { it.copy(authStatus = AuthStatus.DISCONNECTED, loading = false) }
         } else {
-            _uiState.update {
-                it.copy(
-                    authStatus = AuthStatus.CONNECTED,
-                    loading = false,
-                    message = null
-                )
-            }
+            _uiState.update { it.copy(authStatus = AuthStatus.CONNECTED, loading = false, message = null) }
         }
     }
 
@@ -164,6 +173,7 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
                 authError = ""
             )
         }
+        resetPagination()
         loadAll(initialLoad = _uiState.value.lastSyncMs == 0L)
     }
 
@@ -176,6 +186,7 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
                     authError = "",
                     loading = false,
                     refreshing = false,
+                    loadingMore = false,
                     message = if (cloudSetupLikely) {
                         "Google rechazó la firma registrada. Se conservaron los datos guardados."
                     } else {
@@ -189,7 +200,8 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
                     authStatus = AuthStatus.ERROR,
                     authError = message,
                     loading = false,
-                    refreshing = false
+                    refreshing = false,
+                    loadingMore = false
                 )
             }
         }
@@ -198,6 +210,7 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
     fun disconnect() {
         accessToken = null
         likesPlaylistId = ""
+        resetPagination()
         repository.clearAccountCache()
         _uiState.update {
             GeoVideosUiState(
@@ -234,7 +247,9 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
             }
             return
         }
-        _uiState.update { it.copy(refreshing = true) }
+        refreshCounter++
+        resetPagination(keepSearch = true)
+        _uiState.update { it.copy(refreshing = true, canLoadMore = true) }
         loadAll(initialLoad = false)
     }
 
@@ -245,13 +260,32 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
             try {
                 supervisorScope {
                     val userDeferred = async { api.getUserInfo(token) }
-                    val popularDeferred = async { runCatching { api.mostPopular(token) }.getOrDefault(previous.popular) }
-                    val liveDeferred = async { runCatching { api.liveVideos(token) }.getOrDefault(previous.live) }
-                    val gamingDeferred = async { runCatching { api.mostPopular(token, "20") }.getOrDefault(previous.gaming) }
-                    val musicDeferred = async { runCatching { api.musicVideos(token) }.getOrDefault(previous.music) }
-                    val shortsDeferred = async { runCatching { api.shorts(token) }.getOrDefault(previous.shorts) }
-                    val subscriptionsDeferred = async { runCatching { api.subscriptions(token) }.getOrDefault(previous.subscriptions) }
-                    val playlistsDeferred = async { runCatching { api.playlists(token) }.getOrDefault(previous.playlists) }
+                    val popularDeferred = async {
+                        runCatching { api.mostPopularPage(token) }
+                            .getOrDefault(VideoPage(previous.popular))
+                    }
+                    val liveDeferred = async {
+                        runCatching { api.liveVideosPage(token) }
+                            .getOrDefault(VideoPage(previous.live))
+                    }
+                    val gamingDeferred = async {
+                        runCatching { api.mostPopularPage(token, "20") }
+                            .getOrDefault(VideoPage(previous.gaming))
+                    }
+                    val musicDeferred = async {
+                        runCatching { api.musicVideosPage(token) }
+                            .getOrDefault(VideoPage(previous.music))
+                    }
+                    val shortsDeferred = async {
+                        runCatching { api.shortsPage(token) }
+                            .getOrDefault(VideoPage(previous.shorts))
+                    }
+                    val subscriptionsDeferred = async {
+                        runCatching { api.subscriptions(token) }.getOrDefault(previous.subscriptions)
+                    }
+                    val playlistsDeferred = async {
+                        runCatching { api.playlists(token) }.getOrDefault(previous.playlists)
+                    }
                     val activitiesDeferred = async {
                         if (previous.notificationsEnabled) {
                             runCatching { api.homeActivities(token) }.getOrDefault(previous.notifications)
@@ -263,14 +297,17 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
                     val baseProfile = userDeferred.await()
                     val channelDetails = runCatching { api.getMyChannel(token, baseProfile) }.getOrNull()
                     likesPlaylistId = channelDetails?.likesPlaylistId.orEmpty()
-                    val liked = runCatching { api.playlistVideos(token, likesPlaylistId, 30) }
+
+                    val likedRaw = runCatching { api.playlistVideos(token, likesPlaylistId, 40) }
                         .getOrDefault(previous.liked)
                     val subscriptions = subscriptionsDeferred.await()
-                    val subscriptionFeed = subscriptions
-                        .take(14)
+                    subscriptionOffset = minOf(INITIAL_SUBSCRIPTION_BATCH, subscriptions.size)
+
+                    val subscriptionFeedRaw: List<VideoItem> = subscriptions
+                        .take(subscriptionOffset)
                         .map { channel ->
                             async {
-                                runCatching { api.channelActivities(token, channel.id, 4) }
+                                runCatching { api.channelActivities(token, channel.id, 5) }
                                     .getOrDefault(emptyList())
                             }
                         }
@@ -278,45 +315,98 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
                         .flatten()
                         .sortedByDescending { it.publishedAt }
 
-                    val popular = popularDeferred.await()
-                    val notifications = activitiesDeferred.await()
-                    val activityVideos = notifications.mapNotNull { it.video }
-                    val personalized = mergeUniqueVideos(
+                    val recommendationSeed = chooseRecommendationSeed(previous, likedRaw)
+                    val recommendedRaw: List<VideoItem> = if (recommendationSeed.isBlank()) {
+                        emptyList()
+                    } else {
+                        runCatching {
+                            api.searchVideosPage(token, recommendationSeed, maxResults = 15).items
+                        }.getOrDefault(emptyList())
+                    }
+
+                    val popularPage = popularDeferred.await()
+                    val livePage = liveDeferred.await()
+                    val gamingPage = gamingDeferred.await()
+                    val musicPage = musicDeferred.await()
+                    val shortsPage = shortsDeferred.await()
+                    val notificationsRaw = activitiesDeferred.await()
+                    val activityVideosRaw = notificationsRaw.mapNotNull { it.video }
+
+                    val allRaw = mergeUniqueVideos(
+                        subscriptionFeedRaw,
+                        recommendedRaw,
+                        activityVideosRaw,
+                        likedRaw,
+                        previous.history.take(20),
+                        popularPage.items,
+                        livePage.items,
+                        gamingPage.items,
+                        musicPage.items,
+                        shortsPage.items
+                    )
+                    val enrichedById = runCatching { api.enrichVideos(token, allRaw) }
+                        .getOrDefault(allRaw)
+                        .associateBy { it.id }
+                    fun enriched(items: List<VideoItem>): List<VideoItem> =
+                        items.map { enrichedById[it.id] ?: it }
+
+                    val popular = enriched(popularPage.items)
+                    val live = enriched(livePage.items)
+                    val gaming = enriched(gamingPage.items)
+                    val music = enriched(musicPage.items)
+                    val shorts = enriched(shortsPage.items)
+                    val liked = enriched(likedRaw)
+                    val subscriptionFeed = enriched(subscriptionFeedRaw)
+                    val recommendations = enriched(recommendedRaw)
+                    val activityVideos = enriched(activityVideosRaw)
+                    val notifications = notificationsRaw.map { item ->
+                        item.copy(video = item.video?.let { enrichedById[it.id] ?: it })
+                    }
+
+                    val personalizedBase = mergeUniqueVideos(
                         subscriptionFeed,
+                        recommendations,
                         activityVideos,
-                        previous.history.take(10),
-                        liked.take(12),
+                        liked.take(16),
+                        previous.history.take(12),
                         popular
-                    ).take(50)
+                    ).take(MAX_HOME_ITEMS)
+                    val personalized = rotateForRefresh(personalizedBase)
+
+                    popularNextToken = popularPage.nextPageToken
+                    liveNextToken = livePage.nextPageToken
+                    gamingNextToken = gamingPage.nextPageToken
+                    musicNextToken = musicPage.nextPageToken
+                    shortsNextToken = shortsPage.nextPageToken
 
                     val profile = channelDetails?.profile ?: baseProfile
-                    val syncTime = System.currentTimeMillis()
-                    val live = liveDeferred.await()
-                    val gaming = gamingDeferred.await()
-                    val music = musicDeferred.await()
-                    val shorts = shortsDeferred.await()
                     val playlists = playlistsDeferred.await()
+                    val syncTime = System.currentTimeMillis()
 
-                    repository.saveRemoteSnapshot(
-                        profile = profile,
-                        personalized = personalized,
-                        popular = popular,
-                        live = live,
-                        gaming = gaming,
-                        music = music,
-                        shorts = shorts,
-                        liked = liked,
-                        subscriptions = subscriptions,
-                        playlists = playlists,
-                        notifications = notifications,
-                        syncTimeMs = syncTime
-                    )
+                    withContext(Dispatchers.IO) {
+                        repository.saveRemoteSnapshot(
+                            profile = profile,
+                            personalized = personalized,
+                            popular = popular,
+                            live = live,
+                            gaming = gaming,
+                            music = music,
+                            shorts = shorts,
+                            liked = liked,
+                            subscriptions = subscriptions,
+                            playlists = playlists,
+                            notifications = notifications,
+                            syncTimeMs = syncTime
+                        )
+                    }
 
                     _uiState.update {
                         it.copy(
                             authStatus = AuthStatus.CONNECTED,
                             loading = false,
                             refreshing = false,
+                            loadingMore = false,
+                            canLoadMore = true,
                             profile = profile,
                             personalized = personalized,
                             popular = popular,
@@ -330,7 +420,7 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
                             notifications = notifications,
                             lastSyncMs = syncTime,
                             authError = "",
-                            message = if (!initialLoad) "Contenido actualizado." else null
+                            message = if (!initialLoad) "Contenido sincronizado y renovado." else null
                         )
                     }
                 }
@@ -341,17 +431,150 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
                     it.copy(
                         loading = false,
                         refreshing = false,
+                        loadingMore = false,
                         authStatus = if (it.profile != null) AuthStatus.CONNECTED else AuthStatus.ERROR,
-                        authError = if (it.profile == null) error.message ?: "No se pudo cargar YouTube." else "",
+                        authError = if (it.profile == null) error.message ?: "No se pudo cargar el servicio de video." else "",
                         message = if (it.profile != null) {
                             "No se pudo actualizar. Se conservaron los datos anteriores."
                         } else {
-                            error.message ?: "No se pudo cargar YouTube."
+                            error.message ?: "No se pudo cargar el servicio de video."
                         }
                     )
                 }
             }
         }
+    }
+
+    fun loadMoreHome(category: HomeCategory) {
+        val token = accessToken ?: return
+        val state = _uiState.value
+        if (state.loadingMore || state.refreshing || !state.canLoadMore) return
+        _uiState.update { it.copy(loadingMore = true) }
+
+        viewModelScope.launch {
+            try {
+                when (category) {
+                    HomeCategory.FOR_YOU -> loadMorePersonalized(token)
+                    HomeCategory.LIVE -> loadMorePagedCategory(
+                        current = _uiState.value.live,
+                        loader = { api.liveVideosPage(token, liveNextToken) },
+                        tokenSetter = { liveNextToken = it },
+                        updater = { stateNow, items -> stateNow.copy(live = items) }
+                    )
+                    HomeCategory.GAMING -> loadMorePagedCategory(
+                        current = _uiState.value.gaming,
+                        loader = { api.mostPopularPage(token, "20", gamingNextToken) },
+                        tokenSetter = { gamingNextToken = it },
+                        updater = { stateNow, items -> stateNow.copy(gaming = items) }
+                    )
+                    HomeCategory.MUSIC -> loadMorePagedCategory(
+                        current = _uiState.value.music,
+                        loader = { api.musicVideosPage(token, musicNextToken) },
+                        tokenSetter = { musicNextToken = it },
+                        updater = { stateNow, items -> stateNow.copy(music = items) }
+                    )
+                }
+                persistCurrentSnapshot()
+            } catch (error: Exception) {
+                _uiState.update {
+                    it.copy(
+                        loadingMore = false,
+                        message = "No se pudieron cargar más videos."
+                    )
+                }
+            }
+        }
+    }
+
+    private suspend fun loadMorePersonalized(token: String) {
+        val current = _uiState.value
+        val subscriptions = current.subscriptions
+        val nextChannels = subscriptions.drop(subscriptionOffset).take(SUBSCRIPTION_PAGE_SIZE)
+        subscriptionOffset += nextChannels.size
+
+        val subscriptionMore: List<VideoItem> = if (nextChannels.isEmpty()) {
+            emptyList()
+        } else {
+            supervisorScope {
+                nextChannels.map { channel ->
+                    async {
+                        runCatching { api.channelActivities(token, channel.id, 5) }
+                            .getOrDefault(emptyList())
+                    }
+                }.awaitAll().flatten()
+            }
+        }
+
+        val popularMorePage = if (subscriptionMore.size < 8 && popularNextToken.isNotBlank()) {
+            runCatching { api.mostPopularPage(token, pageToken = popularNextToken) }
+                .getOrDefault(VideoPage(emptyList()))
+        } else {
+            VideoPage(emptyList(), popularNextToken)
+        }
+        if (popularMorePage.items.isNotEmpty() || popularMorePage.nextPageToken.isNotBlank()) {
+            popularNextToken = popularMorePage.nextPageToken
+        }
+
+        val raw = mergeUniqueVideos(subscriptionMore, popularMorePage.items)
+        val enriched = runCatching { api.enrichVideos(token, raw) }.getOrDefault(raw)
+        val appended = mergeUniqueVideos(current.personalized, enriched).take(MAX_HOME_ITEMS)
+        val canContinue = subscriptionOffset < subscriptions.size || popularNextToken.isNotBlank()
+
+        _uiState.update {
+            it.copy(
+                personalized = appended,
+                popular = mergeUniqueVideos(it.popular, enriched.filter { video ->
+                    popularMorePage.items.any { pageItem -> pageItem.id == video.id }
+                }).take(MAX_HOME_ITEMS),
+                loadingMore = false,
+                canLoadMore = canContinue
+            )
+        }
+    }
+
+    private suspend fun loadMorePagedCategory(
+        current: List<VideoItem>,
+        loader: suspend () -> VideoPage,
+        tokenSetter: (String) -> Unit,
+        updater: (GeoVideosUiState, List<VideoItem>) -> GeoVideosUiState
+    ) {
+        val token = accessToken ?: return
+        val page = loader()
+        tokenSetter(page.nextPageToken)
+        val enriched = runCatching { api.enrichVideos(token, page.items) }.getOrDefault(page.items)
+        val appended = mergeUniqueVideos(current, enriched).take(MAX_HOME_ITEMS)
+        _uiState.update { state ->
+            updater(state, appended).copy(
+                loadingMore = false,
+                canLoadMore = page.nextPageToken.isNotBlank()
+            )
+        }
+    }
+
+    private fun chooseRecommendationSeed(
+        previous: GeoVideosUiState,
+        liked: List<VideoItem>
+    ): String {
+        val candidates = mergeUniqueVideos(liked, previous.history, previous.personalized)
+        if (candidates.isEmpty()) return ""
+        val seed = candidates[(refreshCounter % candidates.size)]
+        val compactTitle = seed.title
+            .replace(Regex("[#|/\\[\\](){}]"), " ")
+            .split(Regex("\\s+"))
+            .filter { it.length > 2 }
+            .take(5)
+            .joinToString(" ")
+        return listOf(seed.channelTitle, compactTitle)
+            .filter { it.isNotBlank() }
+            .joinToString(" ")
+            .take(90)
+    }
+
+    private fun rotateForRefresh(videos: List<VideoItem>): List<VideoItem> {
+        if (videos.size < 3 || refreshCounter == 0) return videos
+        val offset = (refreshCounter % minOf(videos.size, 7))
+        if (offset == 0) return videos
+        return videos.drop(offset) + videos.take(offset)
     }
 
     private fun mergeUniqueVideos(vararg groups: List<VideoItem>): List<VideoItem> {
@@ -365,12 +588,52 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
         return result
     }
 
+    private fun resetPagination(keepSearch: Boolean = false) {
+        popularNextToken = ""
+        liveNextToken = ""
+        gamingNextToken = ""
+        musicNextToken = ""
+        shortsNextToken = ""
+        subscriptionOffset = 0
+        if (!keepSearch) {
+            searchNextToken = ""
+            lastSearchQuery = ""
+        }
+    }
+
+    private suspend fun persistCurrentSnapshot() {
+        val state = _uiState.value
+        val profile = state.profile ?: return
+        withContext(Dispatchers.IO) {
+            repository.saveRemoteSnapshot(
+                profile = profile,
+                personalized = state.personalized,
+                popular = state.popular,
+                live = state.live,
+                gaming = state.gaming,
+                music = state.music,
+                shorts = state.shorts,
+                liked = state.liked,
+                subscriptions = state.subscriptions,
+                playlists = state.playlists,
+                notifications = state.notifications,
+                syncTimeMs = state.lastSyncMs.takeIf { it > 0L } ?: System.currentTimeMillis()
+            )
+        }
+    }
+
     fun selectSection(section: MainSection) {
         _uiState.update { it.copy(section = section, selectedChannelTitle = "", channelVideos = emptyList()) }
     }
 
     fun selectHomeCategory(category: HomeCategory) {
-        _uiState.update { it.copy(homeCategory = category) }
+        val canLoad = when (category) {
+            HomeCategory.FOR_YOU -> subscriptionOffset < _uiState.value.subscriptions.size || popularNextToken.isNotBlank()
+            HomeCategory.LIVE -> liveNextToken.isNotBlank() || _uiState.value.live.isNotEmpty()
+            HomeCategory.GAMING -> gamingNextToken.isNotBlank() || _uiState.value.gaming.isNotEmpty()
+            HomeCategory.MUSIC -> musicNextToken.isNotBlank() || _uiState.value.music.isNotEmpty()
+        }
+        _uiState.update { it.copy(homeCategory = category, canLoadMore = canLoad) }
     }
 
     fun play(video: VideoItem) {
@@ -439,15 +702,48 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
             return
         }
         val history = repository.addSearch(clean)
-        _uiState.update { it.copy(loading = true, searchHistory = history) }
+        lastSearchQuery = clean
+        searchNextToken = ""
+        _uiState.update { it.copy(loading = true, searchHistory = history, searchResults = emptyList()) }
         viewModelScope.launch {
             try {
-                val results = api.searchVideos(token, clean)
-                _uiState.update { it.copy(loading = false, searchResults = results, section = MainSection.SEARCH) }
+                val page = api.searchVideosPage(token, clean)
+                searchNextToken = page.nextPageToken
+                val results = api.enrichVideos(token, page.items)
+                _uiState.update {
+                    it.copy(
+                        loading = false,
+                        searchResults = results,
+                        searchLoadingMore = false,
+                        section = MainSection.SEARCH
+                    )
+                }
             } catch (error: YouTubeApiException) {
                 handleApiError(error)
             } catch (error: Exception) {
                 _uiState.update { it.copy(loading = false, message = error.message ?: "Error al buscar.") }
+            }
+        }
+    }
+
+    fun loadMoreSearch() {
+        val token = accessToken ?: return
+        val state = _uiState.value
+        if (state.searchLoadingMore || lastSearchQuery.isBlank() || searchNextToken.isBlank()) return
+        _uiState.update { it.copy(searchLoadingMore = true) }
+        viewModelScope.launch {
+            try {
+                val page = api.searchVideosPage(token, lastSearchQuery, pageToken = searchNextToken)
+                searchNextToken = page.nextPageToken
+                val enriched = api.enrichVideos(token, page.items)
+                _uiState.update {
+                    it.copy(
+                        searchResults = mergeUniqueVideos(it.searchResults, enriched),
+                        searchLoadingMore = false
+                    )
+                }
+            } catch (error: Exception) {
+                _uiState.update { it.copy(searchLoadingMore = false, message = "No se cargaron más resultados.") }
             }
         }
     }
@@ -461,7 +757,8 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
         _uiState.update { it.copy(loading = true, selectedChannelTitle = channel.title, channelVideos = emptyList()) }
         viewModelScope.launch {
             try {
-                val videos = api.channelVideos(token, channel.id)
+                val raw = api.channelVideos(token, channel.id)
+                val videos = api.enrichVideos(token, raw)
                 _uiState.update { it.copy(loading = false, channelVideos = videos) }
             } catch (error: Exception) {
                 _uiState.update { it.copy(loading = false, message = error.message ?: "No se pudo abrir el canal.") }
@@ -518,6 +815,8 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
             it.copy(
                 loading = false,
                 refreshing = false,
+                loadingMore = false,
+                searchLoadingMore = false,
                 authStatus = if (it.profile != null) AuthStatus.CONNECTED else AuthStatus.ERROR,
                 authError = if (it.profile == null) error.message else "",
                 message = if (error.statusCode == 401 && it.profile != null) {
@@ -527,5 +826,11 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
                 }
             )
         }
+    }
+
+    private companion object {
+        const val INITIAL_SUBSCRIPTION_BATCH = 14
+        const val SUBSCRIPTION_PAGE_SIZE = 10
+        const val MAX_HOME_ITEMS = 180
     }
 }
