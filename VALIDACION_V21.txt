@@ -1,0 +1,35 @@
+GEO VIDEOS V21 - VALIDACION DE RECONSTRUCCION LIGERA
+Fecha: 2026-07-19
+
+VERSION
+- versionName: 21.0.0
+- versionCode: 23
+- applicationId: com.geovideos.app
+
+CAMBIOS ESTRUCTURALES
+- Nuevas pantallas de ejecución: LiteHomeScreen, LiteShortsScreen y LitePlayerScreen.
+- Se retiraron de GeoVideosApp.kt las implementaciones antiguas de Home, Shorts y Player.
+- GeoVideosApp.kt se redujo de 3188 a 1954 lineas.
+- Solo el Short visible adjunta PlayerView; paginas vecinas usan miniatura.
+- Se retiro la barra Compose de progreso de Shorts.
+- Reproductor expandido usa controles nativos de Media3 y una interfaz inferior reducida.
+- Gesto vertical dentro del video minimiza al superar el umbral.
+- Relacionados visibles limitados a 12 y carga adicional manual.
+- Principal visible limitado a 24 elementos remotos; lote inicial de suscripciones reducido.
+- Solicitudes de miniaturas usan dimensiones concretas y precision inexacta.
+- Sondeo de progreso del reproductor reducido de 1.5 s a 2.5 s.
+- Workflow compila APK release.
+
+ARCHIVOS PROTEGIDOS (SHA-256 SIN CAMBIOS)
+- MainActivity.kt: 6e7dec6198e5a39cef00ecea729da49d3876b8721d87e61648363ac85c415c7f
+- AndroidManifest.xml: cc23515ce99095fb2fba9bec3d48a6900de6128df3fbb5e91fac86d24d5d06a5
+- geovideos-dev.jks: 6ea4c0bbb2141367772ea6ed632738097c886752314500b5cc8e4fab306792ab
+
+COMPROBACIONES
+- 16 archivos Kotlin incluidos.
+- 13 archivos XML parseados correctamente.
+- Balance de llaves y parentesis comprobado en las pantallas nuevas.
+- ZIP se comprobara mediante unzip -t.
+
+LIMITACION REAL
+No se pudo compilar Android localmente porque el entorno no puede descargar Gradle ni las dependencias externas. No se afirma que la fluidez este confirmada hasta instalar la APK release y probarla en el telefono.
