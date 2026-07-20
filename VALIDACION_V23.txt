@@ -1,0 +1,50 @@
+GEO VIDEOS V23 - CAMBIO DEL MOTOR DE DESPLAZAMIENTO
+Fecha: 2026-07-20
+
+VERSION
+- versionName: 23.0.0
+- versionCode: 25
+- applicationId: com.geovideos.app
+
+DIAGNOSTICO DE MUKA
+- La APK visible de Muka no incluye artefactos de Jetpack Compose.
+- Incluye AppCompat, Fragment, ViewPager, Room y un Baseline Profile.
+- El nucleo principal esta empaquetado/oculto dentro de un recurso interno, por lo que no se puede afirmar honestamente la clase exacta usada por su feed ni copiar su codigo.
+- La estrategia reproducible para Geo Videos es una lista View tradicional con reciclaje real.
+
+CAMBIO PRINCIPAL
+- Se reemplazo el LazyColumn de Compose del feed Principal por RecyclerView.
+- Se usa ListAdapter + DiffUtil para actualizar solo las filas que cambian.
+- Se desactivaron animaciones de RecyclerView para evitar saltos al actualizar.
+- Se limitaron la cache de vistas y los elementos preprocesados.
+- Se agrego un RecyclerView horizontal interno para Shorts con su propio adaptador y reciclaje.
+- El feed ya no recompone todas las tarjetas al comenzar o terminar un gesto.
+
+IMAGENES
+- Miniaturas normales: solicitud 480 x 270, proporcion 16:9.
+- Miniaturas de Shorts: solicitud 320 x 568, proporcion aproximada 9:16.
+- Avatares: solicitud 72 x 72 y recorte circular.
+- Glide sin animaciones y con reciclaje/cancelacion al salir una vista de pantalla.
+- Se prioriza mqdefault para el feed y hqdefault para Shorts.
+
+RENDIMIENTO
+- RecyclerView reutiliza las vistas en lugar de reconstruir composables durante cada desplazamiento.
+- DiffUtil calcula cambios de contenido fuera del flujo de renderizado de las filas.
+- Carga adicional automatica al acercarse al final.
+- Los callbacks de reproduccion y Ver despues permanecen fuera del estado visual de cada fila.
+
+ARCHIVOS PROTEGIDOS SIN CAMBIOS
+- MainActivity.kt SHA-256: 6e7dec6198e5a39cef00ecea729da49d3876b8721d87e61648363ac85c415c7f
+- AndroidManifest.xml SHA-256: cc23515ce99095fb2fba9bec3d48a6900de6128df3fbb5e91fac86d24d5d06a5
+- geovideos-dev.jks SHA-256: 6ea4c0bbb2141367772ea6ed632738097c886752314500b5cc8e4fab306792ab
+
+DEPENDENCIAS AGREGADAS
+- androidx.recyclerview:recyclerview:1.4.0
+- com.github.bumptech.glide:glide:4.16.0
+
+VALIDACION
+- 17 archivos Kotlin.
+- 13 archivos XML.
+- Sin errores de sintaxis del tipo "expecting" detectados por el analizador local.
+- No se pudo ejecutar assembleRelease localmente porque el entorno no puede resolver services.gradle.org.
+- La compilacion definitiva corresponde a GitHub Actions mediante el workflow V23.
