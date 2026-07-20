@@ -7,7 +7,6 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -18,6 +17,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -29,22 +29,28 @@ import androidx.compose.material.icons.filled.PlaylistPlay
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilterChip
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import coil.imageLoader
+import coil.request.CachePolicy
+import coil.request.ImageRequest
+import coil.size.Precision
 import com.geovideos.app.data.VideoItem
 
 @Composable
@@ -75,10 +81,59 @@ internal fun LiteHomeScreen(
         HomeCategory.GAMING -> gaming
         HomeCategory.MUSIC -> music
     }
-    val visibleVideos = remember(videos) { videos.take(24) }
-    val watchLaterIds = remember(watchLater) { watchLater.asSequence().map { it.id }.toHashSet() }
+    val watchLaterIds = remember(watchLater) {
+        watchLater.asSequence().map { it.id }.toHashSet()
+    }
+    val listState = rememberLazyListState()
+    val isScrolling by remember(listState) {
+        derivedStateOf { listState.isScrollInProgress }
+    }
+    val lastVisibleIndex by remember(listState) {
+        derivedStateOf { listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0 }
+    }
+    val shouldLoadMore by remember(listState, videos.size, canLoadMore, loadingMore) {
+        derivedStateOf {
+            val total = listState.layoutInfo.totalItemsCount
+            !listState.isScrollInProgress &&
+                canLoadMore &&
+                !loadingMore &&
+                videos.isNotEmpty() &&
+                total > 0 &&
+                (listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0) >= total - 4
+        }
+    }
+
+    LaunchedEffect(shouldLoadMore, category) {
+        if (shouldLoadMore) onLoadMore(category)
+    }
+
+    // Warm only the next two feed thumbnails after the finger stops. This avoids
+    // decoding/network work during the fling while keeping the next cards ready.
+    val context = LocalContext.current
+    LaunchedEffect(isScrolling, lastVisibleIndex, videos) {
+        if (!isScrolling && videos.isNotEmpty()) {
+            val firstVideoIndex = (lastVisibleIndex - 2).coerceAtLeast(0)
+            videos.drop(firstVideoIndex).take(2).forEach { video ->
+                val url = feedThumbnailUrl(video.thumbnailUrl)
+                if (url.isNotBlank()) {
+                    context.imageLoader.enqueue(
+                        ImageRequest.Builder(context)
+                            .data(url)
+                            .size(480, 270)
+                            .precision(Precision.INEXACT)
+                            .memoryCachePolicy(CachePolicy.ENABLED)
+                            .diskCachePolicy(CachePolicy.ENABLED)
+                            .networkCachePolicy(CachePolicy.ENABLED)
+                            .allowHardware(true)
+                            .build()
+                    )
+                }
+            }
+        }
+    }
 
     LazyColumn(
+        state = listState,
         modifier = modifier.fillMaxSize(),
         contentPadding = PaddingValues(bottom = 94.dp)
     ) {
@@ -125,14 +180,14 @@ internal fun LiteHomeScreen(
             }
         }
 
-        if (loading && visibleVideos.isEmpty()) {
+        if (loading && videos.isEmpty()) {
             item(key = "lite-home-loading", contentType = "loading") {
                 Box(
                     modifier = Modifier.fillMaxWidth().height(180.dp),
                     contentAlignment = Alignment.Center
                 ) { CircularProgressIndicator() }
             }
-        } else if (visibleVideos.isEmpty()) {
+        } else if (videos.isEmpty()) {
             item(key = "lite-home-empty", contentType = "empty") {
                 Text(
                     "No hay videos disponibles. Pulsa actualizar.",
@@ -142,33 +197,27 @@ internal fun LiteHomeScreen(
             }
         } else {
             items(
-                items = visibleVideos,
+                items = videos,
                 key = { "lite-home-${category.name}-${it.id}" },
                 contentType = { "video" }
             ) { video ->
                 LiteHomeVideoRow(
                     video = video,
                     saved = video.id in watchLaterIds,
+                    isScrolling = isScrolling,
                     onPlay = { onPlay(video) },
                     onWatchLater = { onWatchLater(video) }
                 )
-                HorizontalDivider()
             }
         }
 
-        if (canLoadMore) {
+        if (loadingMore) {
             item(key = "lite-home-more", contentType = "load-more") {
                 Box(
-                    modifier = Modifier.fillMaxWidth().padding(16.dp),
+                    modifier = Modifier.fillMaxWidth().padding(18.dp),
                     contentAlignment = Alignment.Center
                 ) {
-                    OutlinedButton(onClick = { onLoadMore(category) }, enabled = !loadingMore) {
-                        if (loadingMore) {
-                            CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
-                            Spacer(Modifier.width(8.dp))
-                        }
-                        Text(if (loadingMore) "Cargando…" else "Cargar más")
-                    }
+                    CircularProgressIndicator(modifier = Modifier.size(24.dp), strokeWidth = 2.dp)
                 }
             }
         }
@@ -203,27 +252,28 @@ private fun LiteHomeShorts(videos: List<VideoItem>, onOpenShort: (VideoItem) -> 
             contentPadding = PaddingValues(horizontal = 12.dp),
             horizontalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            items(videos, key = { "lite-short-shelf-${it.id}" }) { video ->
+            items(videos, key = { "lite-short-shelf-${it.id}" }, contentType = { "short" }) { video ->
                 Box(
                     modifier = Modifier
                         .width(148.dp)
                         .height(264.dp)
-                        .background(Color.Black, RoundedCornerShape(12.dp))
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(Color.Black)
                         .clickable { onOpenShort(video) }
                 ) {
                     LiteThumbnail(
-                        url = video.thumbnailUrl,
+                        url = shortThumbnailUrl(video.thumbnailUrl),
                         description = video.title,
                         modifier = Modifier.fillMaxSize(),
-                        widthPx = 360,
-                        heightPx = 640,
+                        widthPx = 320,
+                        heightPx = 568,
                         contentScale = ContentScale.Crop
                     )
                     Box(
                         modifier = Modifier
                             .align(Alignment.BottomCenter)
                             .fillMaxWidth()
-                            .background(Color.Black.copy(alpha = 0.62f))
+                            .background(Color.Black.copy(alpha = 0.58f))
                             .padding(10.dp)
                     ) {
                         Text(
@@ -244,36 +294,40 @@ private fun LiteHomeShorts(videos: List<VideoItem>, onOpenShort: (VideoItem) -> 
 private fun LiteHomeVideoRow(
     video: VideoItem,
     saved: Boolean,
+    isScrolling: Boolean,
     onPlay: () -> Unit,
     onWatchLater: () -> Unit
 ) {
     Column(modifier = Modifier.fillMaxWidth().clickable(onClick = onPlay)) {
         Box(modifier = Modifier.fillMaxWidth().aspectRatio(16f / 9f).background(Color.Black)) {
             LiteThumbnail(
-                url = video.thumbnailUrl,
+                url = feedThumbnailUrl(video.thumbnailUrl),
                 description = video.title,
                 modifier = Modifier.fillMaxSize(),
-                widthPx = 640,
-                heightPx = 360,
-                contentScale = ContentScale.Crop
+                widthPx = 480,
+                heightPx = 270,
+                contentScale = ContentScale.Crop,
+                deferWhileScrolling = isScrolling
             )
         }
         Row(
             modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp),
             verticalAlignment = Alignment.Top
         ) {
-            Surface(
-                shape = CircleShape,
-                color = MaterialTheme.colorScheme.surfaceVariant,
-                modifier = Modifier.size(40.dp)
+            Box(
+                modifier = Modifier
+                    .size(38.dp)
+                    .clip(CircleShape)
+                    .background(MaterialTheme.colorScheme.surfaceVariant)
             ) {
                 LiteThumbnail(
                     url = video.channelThumbnailUrl,
                     description = video.channelTitle,
                     modifier = Modifier.fillMaxSize(),
-                    widthPx = 96,
-                    heightPx = 96,
-                    contentScale = ContentScale.Crop
+                    widthPx = 72,
+                    heightPx = 72,
+                    contentScale = ContentScale.Crop,
+                    deferWhileScrolling = isScrolling
                 )
             }
             Column(modifier = Modifier.weight(1f).padding(horizontal = 12.dp)) {
@@ -301,3 +355,12 @@ private fun LiteHomeVideoRow(
         }
     }
 }
+
+private fun feedThumbnailUrl(url: String): String = url
+    .replace("maxresdefault.jpg", "mqdefault.jpg")
+    .replace("sddefault.jpg", "mqdefault.jpg")
+    .replace("hqdefault.jpg", "mqdefault.jpg")
+
+private fun shortThumbnailUrl(url: String): String = url
+    .replace("maxresdefault.jpg", "hqdefault.jpg")
+    .replace("sddefault.jpg", "hqdefault.jpg")

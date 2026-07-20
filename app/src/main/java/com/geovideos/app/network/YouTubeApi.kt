@@ -438,7 +438,9 @@ class YouTubeApi {
 
     private fun bestThumbnail(snippet: JSONObject?): String {
         val thumbs = snippet?.optJSONObject("thumbnails") ?: return ""
-        return listOf("maxres", "standard", "high", "medium", "default")
+        // Medium thumbnails are sufficient for scrolling lists and avoid decoding
+        // multi-megapixel maxres images for every visible card.
+        return listOf("medium", "high", "standard", "maxres", "default")
             .asSequence()
             .mapNotNull { key -> thumbs.optJSONObject(key)?.optString("url") }
             .firstOrNull { it.isNotBlank() }

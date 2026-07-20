@@ -15,7 +15,10 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
@@ -28,6 +31,7 @@ import androidx.media3.common.util.UnstableApi
 import androidx.media3.session.MediaController
 import androidx.media3.ui.PlayerView
 import coil.compose.AsyncImage
+import coil.request.CachePolicy
 import coil.request.ImageRequest
 import coil.size.Precision
 import com.geovideos.app.R
@@ -79,12 +83,23 @@ internal fun LiteThumbnail(
     modifier: Modifier,
     widthPx: Int,
     heightPx: Int,
-    contentScale: ContentScale = ContentScale.Crop
+    contentScale: ContentScale = ContentScale.Crop,
+    deferWhileScrolling: Boolean = false
 ) {
+    var loadedSuccessfully by remember(url) { mutableStateOf(false) }
+
     if (url.isBlank()) {
         LiteThumbnailFallback(modifier)
         return
     }
+
+    // During a fast fling, newly appearing cells show a cheap solid placeholder.
+    // Already-decoded images remain visible. Once scrolling stops, Coil starts the request.
+    if (deferWhileScrolling && !loadedSuccessfully) {
+        Box(modifier = modifier.background(Color(0xFF202024)))
+        return
+    }
+
     val context = LocalContext.current
     val request = remember(url, widthPx, heightPx) {
         ImageRequest.Builder(context)
@@ -92,6 +107,9 @@ internal fun LiteThumbnail(
             .size(widthPx, heightPx)
             .precision(Precision.INEXACT)
             .allowHardware(true)
+            .memoryCachePolicy(CachePolicy.ENABLED)
+            .diskCachePolicy(CachePolicy.ENABLED)
+            .networkCachePolicy(CachePolicy.ENABLED)
             .crossfade(false)
             .build()
     }
@@ -100,7 +118,8 @@ internal fun LiteThumbnail(
         contentDescription = description,
         modifier = modifier.background(Color.Black),
         contentScale = contentScale,
-        onError = { }
+        onSuccess = { loadedSuccessfully = true },
+        onError = { loadedSuccessfully = false }
     )
 }
 

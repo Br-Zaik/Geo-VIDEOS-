@@ -1,0 +1,35 @@
+GEO VIDEOS V22 - DESPLAZAMIENTO DEL FEED
+Fecha: 2026-07-20
+
+VERSION
+- versionName: 22.0.0
+- versionCode: 24
+- applicationId: com.geovideos.app
+
+CAMBIOS ENFOCADOS SOLO EN EL LAG AL SUBIR Y BAJAR
+- El feed usa LazyColumn con claves y contentType estables.
+- Se elimino el limite visual de 24 tarjetas; LazyColumn conserva solo las tarjetas visibles y permite carga progresiva hasta 60 elementos de datos.
+- La carga adicional ahora es automatica al acercarse al final; se elimino el boton manual Cargar mas.
+- Mientras el dedo esta desplazando, las miniaturas nuevas no se decodifican: muestran un marcador simple y cargan cuando el movimiento termina.
+- Las miniaturas que ya estaban decodificadas permanecen visibles durante el desplazamiento.
+- Solo se precargan las dos miniaturas siguientes y unicamente cuando el scroll se detiene.
+- Las miniaturas del feed se solicitan a 480x270 y las de avatar a 72x72.
+- La API deja de priorizar maxres y prefiere miniaturas medianas para no descargar imagenes multipixel por cada tarjeta.
+- Coil usa cache de memoria, disco y red de forma explicita, sin crossfade.
+- Se quitaron divisores y superficies innecesarias de cada tarjeta.
+- La fila de Shorts conserva 8 elementos y usa imagenes limitadas.
+- El workflow compila la variante release V22.
+
+ARCHIVOS PROTEGIDOS (SHA-256 SIN CAMBIOS)
+- MainActivity.kt: 6e7dec6198e5a39cef00ecea729da49d3876b8721d87e61648363ac85c415c7f
+- AndroidManifest.xml: cc23515ce99095fb2fba9bec3d48a6900de6128df3fbb5e91fac86d24d5d06a5
+- geovideos-dev.jks: 6ea4c0bbb2141367772ea6ed632738097c886752314500b5cc8e4fab306792ab
+
+COMPROBACIONES
+- 16 archivos Kotlin incluidos.
+- 13 archivos XML parseados correctamente.
+- El analizador Kotlin no mostro errores de sintaxis tipo expecting, redeclaration, argumentos faltantes o argumentos extra en los archivos modificados.
+- ZIP comprobado mediante unzip -t.
+
+LIMITACION HONESTA
+No fue posible ejecutar assembleRelease en este entorno porque no pudo resolver services.gradle.org para descargar Gradle 8.13. La compilacion definitiva y la prueba de fluidez deben realizarse en GitHub Actions y en el telefono.
