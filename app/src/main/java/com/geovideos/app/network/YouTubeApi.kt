@@ -438,9 +438,9 @@ class YouTubeApi {
 
     private fun bestThumbnail(snippet: JSONObject?): String {
         val thumbs = snippet?.optJSONObject("thumbnails") ?: return ""
-        // Medium thumbnails are sufficient for scrolling lists and avoid decoding
-        // multi-megapixel maxres images for every visible card.
-        return listOf("medium", "high", "standard", "maxres", "default")
+        // Prefer a clear standard/high thumbnail for phone-sized cards. Glide/Coil
+        // still decode it to the exact view size, so the feed stays lightweight.
+        return listOf("standard", "high", "medium", "maxres", "default")
             .asSequence()
             .mapNotNull { key -> thumbs.optJSONObject(key)?.optString("url") }
             .firstOrNull { it.isNotBlank() }

@@ -1,0 +1,30 @@
+GEO VIDEOS V25 - GESTO Y PORTADAS
+Fecha: 2026-07-21
+
+VERSION
+- versionName: 25.0.0
+- versionCode: 28
+- applicationId: com.geovideos.app
+
+CAMBIOS APLICADOS
+- El reproductor grande ahora sigue el dedo al deslizar hacia abajo.
+- Umbral de minimizacion reducido a 64 dp para que el gesto sea facil.
+- Si el gesto no alcanza el umbral, regresa con animacion de resorte.
+- Si alcanza el umbral, anima hacia abajo y luego abre el minirreproductor sin detener ExoPlayer.
+- La pantalla completa conserva su comportamiento; el gesto vertical solo actua en modo normal.
+- La portada y la informacion se transforman juntas durante el gesto para evitar superposiciones.
+- Portadas del feed elevadas de mqdefault a sddefault con hqdefault/mqdefault como respaldo.
+- Glide muestra primero una miniatura ligera y sustituye por la clara desde cache.
+- La mejora se aplica a Principal, Buscar, Coleccion, listas, relacionados y Shorts RecyclerView.
+- La API prioriza miniaturas standard/high antes que medium.
+
+ARCHIVOS PROTEGIDOS SIN CAMBIOS
+- MainActivity.kt SHA-256: 6e7dec6198e5a39cef00ecea729da49d3876b8721d87e61648363ac85c415c7f
+- AndroidManifest.xml SHA-256: cc23515ce99095fb2fba9bec3d48a6900de6128df3fbb5e91fac86d24d5d06a5
+- geovideos-dev.jks SHA-256: 6ea4c0bbb2141367772ea6ed632738097c886752314500b5cc8e4fab306792ab
+
+VALIDACION LOCAL
+- Delimitadores balanceados en los cinco archivos Kotlin modificados.
+- ZIP validado con unzip -t.
+- No fue posible ejecutar compileDebugKotlin localmente porque el entorno no puede resolver services.gradle.org para descargar Gradle 8.13.
+- La comprobacion de compilacion definitiva debe hacerse en GitHub Actions.

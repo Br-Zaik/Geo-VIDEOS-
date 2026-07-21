@@ -784,12 +784,34 @@ private class NativeSixteenNineFrame(context: Context) : FrameLayout(context) {
 }
 
 private fun loadThumbnail(view: ImageView, url: String, width: Int, height: Int) {
-    Glide.with(view)
-        .load(normalizedThumbnail(url))
+    val manager = Glide.with(view)
+    val placeholder = ColorDrawable(0xFF202024.toInt())
+    if (!isYoutubeThumbnailList(url)) {
+        manager.load(url)
+            .override(width, height)
+            .dontAnimate()
+            .placeholder(placeholder)
+            .error(ColorDrawable(0xFF2B1B45.toInt()))
+            .centerCrop()
+            .into(view)
+        return
+    }
+
+    val low = manager.load(youtubeThumbnailList(url, "mqdefault.jpg"))
+        .override(320, 180)
+        .dontAnimate()
+        .centerCrop()
+    val highFallback = manager.load(youtubeThumbnailList(url, "hqdefault.jpg"))
         .override(width, height)
         .dontAnimate()
-        .placeholder(ColorDrawable(0xFF202024.toInt()))
-        .error(ColorDrawable(0xFF2B1B45.toInt()))
+        .centerCrop()
+        .error(low)
+    manager.load(youtubeThumbnailList(url, "sddefault.jpg"))
+        .override(width, height)
+        .dontAnimate()
+        .placeholder(placeholder)
+        .thumbnail(low)
+        .error(highFallback)
         .centerCrop()
         .into(view)
 }
@@ -810,9 +832,12 @@ private fun loadAvatar(view: ImageView, url: String, size: Int = 96) {
         .into(view)
 }
 
-private fun normalizedThumbnail(url: String): String = url
-    .replace("maxresdefault.jpg", "hqdefault.jpg")
-    .replace("sddefault.jpg", "hqdefault.jpg")
+private fun isYoutubeThumbnailList(url: String): Boolean =
+    url.contains("ytimg.com", ignoreCase = true) ||
+        url.contains("youtube.com", ignoreCase = true)
+
+private fun youtubeThumbnailList(url: String, fileName: String): String =
+    url.replace(Regex("(maxresdefault|sddefault|hqdefault|mqdefault|default)\\.jpg"), fileName)
 
 private fun durationText(ms: Long): String {
     if (ms <= 0L) return ""

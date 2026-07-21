@@ -387,7 +387,7 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
                     val subscriptionFeedRaw: List<VideoItem> = subscriptionWindow
                         .map { channel ->
                             async {
-                                runCatching { api.channelActivities(token, channel.id, 5) }
+                                runCatching { api.channelActivities(token, channel.id, 3) }
                                     .getOrDefault(emptyList())
                             }
                         }
@@ -409,7 +409,7 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
                             token = token,
                             query = shortsQuery,
                             shortOnly = true,
-                            maxResults = 30
+                            maxResults = 18
                         )
                     }.getOrDefault(shortsDeferred.await())
                     val subscriptionShorts = subscriptionFeedRaw.filter(::looksLikeShort)
@@ -646,7 +646,7 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
                     query = shortsQuery,
                     shortOnly = true,
                     pageToken = shortsNextToken,
-                    maxResults = 30
+                    maxResults = 18
                 )
                 shortsNextToken = page.nextPageToken
                 val tagged = page.items.filter(::looksLikeShort)
@@ -749,7 +749,7 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
             supervisorScope {
                 nextChannels.map { channel ->
                     async {
-                        runCatching { api.channelActivities(token, channel.id, 5) }
+                        runCatching { api.channelActivities(token, channel.id, 3) }
                             .getOrDefault(emptyList())
                     }
                 }.awaitAll().flatten()
@@ -1056,7 +1056,7 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
                         relatedPage?.items.orEmpty().filterNot { it.id == video.id },
                         fallback
                     )
-                ).take(40)
+                ).take(16)
                 _uiState.update {
                     if (it.selectedVideo?.id != video.id) it else it.copy(
                         playerDetails = details ?: VideoDetails(
@@ -1104,7 +1104,7 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
                         candidates = (it.relatedVideos + page.items)
                             .filterNot { candidate -> candidate.id == video.id }
                             .distinctBy { candidate -> candidate.id }
-                    ).take(50),
+                    ).take(20),
                     relatedLoadingMore = false,
                     relatedCanLoadMore = relatedNextToken.isNotBlank()
                 )
@@ -1142,7 +1142,7 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
                     .toSet()
                 score + titleWords.count { it in candidateWords }
             }
-            .take(24)
+            .take(16)
             .toList()
     }
 
@@ -1401,8 +1401,8 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
 
     private companion object {
         const val FIRST_RELATED_PAGE = "__first__"
-        const val INITIAL_SUBSCRIPTION_BATCH = 8
-        const val SUBSCRIPTION_PAGE_SIZE = 6
-        const val MAX_HOME_ITEMS = 50
+        const val INITIAL_SUBSCRIPTION_BATCH = 4
+        const val SUBSCRIPTION_PAGE_SIZE = 4
+        const val MAX_HOME_ITEMS = 60
     }
 }

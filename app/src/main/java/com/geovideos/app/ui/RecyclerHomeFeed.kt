@@ -238,14 +238,7 @@ private class VideoHolder(
         card.durationBadge.text = formatRecyclerDuration(video.durationMs)
         card.durationBadge.visibility = if (video.durationMs > 0L && !video.isLive) View.VISIBLE else View.GONE
 
-        Glide.with(card.thumbnail)
-            .load(feedImageUrl(video.thumbnailUrl))
-            .override(480, 270)
-            .dontAnimate()
-            .placeholder(ColorDrawable(0xFF202024.toInt()))
-            .error(ColorDrawable(0xFF2B1B45.toInt()))
-            .centerCrop()
-            .into(card.thumbnail)
+        loadClearThumbnail(card.thumbnail, video.thumbnailUrl, 640, 360)
 
         if (video.channelThumbnailUrl.isBlank()) {
             Glide.with(card.avatar).clear(card.avatar)
@@ -379,14 +372,7 @@ private class ShortHolder(context: Context) : RecyclerView.ViewHolder(ShortCardV
     fun bind(video: VideoItem, onOpenShort: (VideoItem) -> Unit) {
         card.setOnClickListener { onOpenShort(video) }
         card.title.text = video.title
-        Glide.with(card.image)
-            .load(shortImageUrl(video.thumbnailUrl))
-            .override(320, 568)
-            .dontAnimate()
-            .placeholder(ColorDrawable(0xFF202024.toInt()))
-            .error(ColorDrawable(0xFF2B1B45.toInt()))
-            .centerCrop()
-            .into(card.image)
+        loadClearThumbnail(card.image, video.thumbnailUrl, 360, 640, fitCenter = false)
     }
 
     fun recycle() {
@@ -516,14 +502,51 @@ private class SixteenNineFrame(context: Context) : FrameLayout(context) {
     }
 }
 
-private fun feedImageUrl(url: String): String = url
-    .replace("maxresdefault.jpg", "mqdefault.jpg")
-    .replace("sddefault.jpg", "mqdefault.jpg")
-    .replace("hqdefault.jpg", "mqdefault.jpg")
+private fun loadClearThumbnail(
+    view: ImageView,
+    url: String,
+    width: Int,
+    height: Int,
+    fitCenter: Boolean = false
+) {
+    val manager = Glide.with(view)
+    val placeholder = ColorDrawable(0xFF202024.toInt())
+    if (!isYoutubeThumbnail(url)) {
+        val request = manager.load(url)
+            .override(width, height)
+            .dontAnimate()
+            .placeholder(placeholder)
+            .error(ColorDrawable(0xFF2B1B45.toInt()))
+        if (fitCenter) request.fitCenter() else request.centerCrop()
+        request.into(view)
+        return
+    }
 
-private fun shortImageUrl(url: String): String = url
-    .replace("maxresdefault.jpg", "hqdefault.jpg")
-    .replace("sddefault.jpg", "hqdefault.jpg")
+    val low = manager.load(youtubeThumb(url, "mqdefault.jpg"))
+        .override(320, 180)
+        .dontAnimate()
+        .centerCrop()
+    val highFallback = manager.load(youtubeThumb(url, "hqdefault.jpg"))
+        .override(width, height)
+        .dontAnimate()
+        .apply { if (fitCenter) fitCenter() else centerCrop() }
+        .error(low)
+    val clear = manager.load(youtubeThumb(url, "sddefault.jpg"))
+        .override(width, height)
+        .dontAnimate()
+        .placeholder(placeholder)
+        .thumbnail(low)
+        .error(highFallback)
+    if (fitCenter) clear.fitCenter() else clear.centerCrop()
+    clear.into(view)
+}
+
+private fun isYoutubeThumbnail(url: String): Boolean =
+    url.contains("ytimg.com", ignoreCase = true) ||
+        url.contains("youtube.com", ignoreCase = true)
+
+private fun youtubeThumb(url: String, fileName: String): String =
+    url.replace(Regex("(maxresdefault|sddefault|hqdefault|mqdefault|default)\\.jpg"), fileName)
 
 private fun formatRecyclerDuration(ms: Long): String {
     if (ms <= 0L) return ""

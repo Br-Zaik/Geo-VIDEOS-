@@ -347,12 +347,36 @@ private class ShortPageView(context: Context) : FrameLayout(context) {
 }
 
 private fun loadShortImage(view: ImageView, url: String) {
-    Glide.with(view)
-        .load(url.replace("maxresdefault.jpg", "hqdefault.jpg").replace("sddefault.jpg", "hqdefault.jpg"))
+    val manager = Glide.with(view)
+    if (!url.contains("ytimg.com", true) && !url.contains("youtube.com", true)) {
+        manager.load(url)
+            .override(540, 960)
+            .dontAnimate()
+            .placeholder(ColorDrawable(0xFF202024.toInt()))
+            .error(ColorDrawable(0xFF2B1B45.toInt()))
+            .fitCenter()
+            .into(view)
+        return
+    }
+    fun candidate(name: String) = url.replace(
+        Regex("(maxresdefault|sddefault|hqdefault|mqdefault|default)\\.jpg"),
+        name
+    )
+    val low = manager.load(candidate("mqdefault.jpg"))
+        .override(320, 568)
+        .dontAnimate()
+        .fitCenter()
+    val fallback = manager.load(candidate("hqdefault.jpg"))
+        .override(540, 960)
+        .dontAnimate()
+        .fitCenter()
+        .error(low)
+    manager.load(candidate("sddefault.jpg"))
         .override(540, 960)
         .dontAnimate()
         .placeholder(ColorDrawable(0xFF202024.toInt()))
-        .error(ColorDrawable(0xFF2B1B45.toInt()))
+        .thumbnail(low)
+        .error(fallback)
         .fitCenter()
         .into(view)
 }

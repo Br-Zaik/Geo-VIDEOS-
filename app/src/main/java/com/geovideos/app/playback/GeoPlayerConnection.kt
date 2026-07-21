@@ -172,7 +172,7 @@ class GeoPlayerConnection private constructor(context: Context) {
         scope.launch {
             while (isActive) {
                 _controller.value?.let(::updateFrom)
-                delay(1_500L)
+                delay(2_500L)
             }
         }
     }
