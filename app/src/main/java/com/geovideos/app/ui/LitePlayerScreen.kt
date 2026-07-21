@@ -198,18 +198,19 @@ internal fun LitePlayerScreen(
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(if (fullscreen) Color.Black else MaterialTheme.colorScheme.background)
+            .background(if (fullscreen) Color.Black else Color.Transparent)
     ) {
         Column(
             modifier = Modifier
                 .fillMaxSize()
+                .background(if (fullscreen) Color.Black else MaterialTheme.colorScheme.background)
                 .graphicsLayer {
                     if (!fullscreen) {
                         translationY = dragOffset
-                        val scale = 1f - (0.035f * dragProgress)
+                        val scale = 1f - (0.018f * dragProgress)
                         scaleX = scale
                         scaleY = scale
-                        alpha = 1f - (0.10f * dragProgress)
+                        alpha = 1f - (0.04f * dragProgress)
                     }
                 }
         ) {
@@ -253,7 +254,8 @@ internal fun LitePlayerScreen(
                     controller = controller!!,
                     modifier = Modifier.fillMaxSize(),
                     useController = true,
-                    resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
+                    resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT,
+                    useTextureView = true
                 )
             }
 

@@ -1,0 +1,27 @@
+GEO VIDEOS V26 - TRANSICION DE REPRODUCTOR CORREGIDA
+Fecha: 2026-07-21
+
+VERSION
+- versionName: 26.0.0
+- versionCode: 29
+- applicationId: com.geovideos.app
+
+CAMBIOS APLICADOS
+- El feed principal permanece montado detrás del reproductor expandido para que al arrastrar hacia abajo se vea la pantalla anterior y no un fondo negro vacío.
+- El reproductor expandido usa TextureView solo durante esta pantalla animada. Esto permite que el video acompañe la traslación y el escalado sin quedar cortado ni desfasado respecto a Compose.
+- Shorts y otras reproducciones siguen usando SurfaceView para conservar su eficiencia.
+- La capa del reproductor expandido ahora es transparente fuera del panel que se arrastra.
+- La reducción de escala y opacidad durante el gesto se hizo más suave para evitar saltos visuales.
+- Se mantiene el mismo MediaController y la misma posición de reproducción al minimizar.
+- No se modificaron OAuth, paquete, manifiesto, firma ni MainActivity.
+
+VALIDACIONES LOCALES
+- Todos los XML de recursos fueron parseados correctamente.
+- Se verificó la existencia del layout geo_player_texture.xml con surface_type=texture_view.
+- Se verificó que LitePlayerScreen solicite TextureView solo en el reproductor expandido.
+- El ZIP final debe compilarse y probarse mediante GitHub Actions/Android Studio, ya que este entorno no dispone del wrapper/SDK Android completo.
+
+ARCHIVOS PROTEGIDOS SHA-256
+- MainActivity.kt: 6e7dec6198e5a39cef00ecea729da49d3876b8721d87e61648363ac85c415c7f
+- AndroidManifest.xml: cc23515ce99095fb2fba9bec3d48a6900de6128df3fbb5e91fac86d24d5d06a5
+- geovideos-dev.jks: 6ea4c0bbb2141367772ea6ed632738097c886752314500b5cc8e4fab306792ab

@@ -44,13 +44,15 @@ internal fun LitePlayerView(
     controller: MediaController,
     modifier: Modifier = Modifier,
     useController: Boolean,
-    resizeMode: Int = androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_FIT
+    resizeMode: Int = androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_FIT,
+    useTextureView: Boolean = false
 ) {
     AndroidView(
         modifier = modifier.background(Color.Black),
         factory = { context ->
+            val layout = if (useTextureView) R.layout.geo_player_texture else R.layout.geo_player_surface
             (LayoutInflater.from(context)
-                .inflate(R.layout.geo_player_surface, null, false) as PlayerView).apply {
+                .inflate(layout, null, false) as PlayerView).apply {
                 player = controller
                 this.useController = useController
                 controllerAutoShow = useController

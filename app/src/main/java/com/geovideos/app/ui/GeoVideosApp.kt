@@ -250,47 +250,45 @@ fun GeoVideosApp(
             )
         } else {
             Box(modifier = Modifier.fillMaxSize()) {
-                if (!state.playerExpanded) {
-                    mainStateHolder.SaveableStateProvider("main-shell") {
-                        MainShell(
-                    state = state,
-                    snackbar = snackbar,
-                    playerConnection = playerConnection,
-                    onConnectGoogle = onConnectGoogle,
-                    onSwitchGoogleAccount = onSwitchGoogleAccount,
-                    onSection = viewModel::selectSection,
-                    onCategory = viewModel::selectHomeCategory,
-                    onPlay = viewModel::play,
-                    onOpenVideo = viewModel::openPlayer,
-                    onPreviewShort = viewModel::previewShort,
-                    onWatchLater = viewModel::toggleWatchLater,
-                    onLike = viewModel::toggleLocalLike,
-                    onDislike = viewModel::toggleLocalDislike,
-                    onSearch = viewModel::search,
-                    onRefresh = viewModel::refresh,
-                    onLoadMoreHome = viewModel::loadMoreHome,
-                    onLoadMoreShorts = viewModel::loadMoreShorts,
-                    onLoadMoreUploads = viewModel::loadMoreUploads,
-                    onLoadMoreLiked = viewModel::loadMoreLiked,
-                    onLoadMoreSearch = viewModel::loadMoreSearch,
-                    onOpenChannel = viewModel::openChannel,
-                    onCloseChannel = viewModel::closeChannel,
-                    onDisconnect = { playerConnection.stop(); viewModel.disconnect() },
-                    onClearData = viewModel::clearLocalData,
-                    onRegisterDownload = viewModel::registerDownload,
-                    onRemoveDownload = viewModel::removeDownload,
-                    onAutoplayChange = viewModel::setAutoplay,
-                    onDataSaverChange = viewModel::setDataSaver,
-                    onNotificationsChange = viewModel::setNotificationsEnabled,
-                    onMessage = viewModel::showMessage
-                )
-                    }
+                mainStateHolder.SaveableStateProvider("main-shell") {
+                    MainShell(
+                        state = state,
+                        snackbar = snackbar,
+                        playerConnection = playerConnection,
+                        onConnectGoogle = onConnectGoogle,
+                        onSwitchGoogleAccount = onSwitchGoogleAccount,
+                        onSection = viewModel::selectSection,
+                        onCategory = viewModel::selectHomeCategory,
+                        onPlay = viewModel::play,
+                        onOpenVideo = viewModel::openPlayer,
+                        onPreviewShort = viewModel::previewShort,
+                        onWatchLater = viewModel::toggleWatchLater,
+                        onLike = viewModel::toggleLocalLike,
+                        onDislike = viewModel::toggleLocalDislike,
+                        onSearch = viewModel::search,
+                        onRefresh = viewModel::refresh,
+                        onLoadMoreHome = viewModel::loadMoreHome,
+                        onLoadMoreShorts = viewModel::loadMoreShorts,
+                        onLoadMoreUploads = viewModel::loadMoreUploads,
+                        onLoadMoreLiked = viewModel::loadMoreLiked,
+                        onLoadMoreSearch = viewModel::loadMoreSearch,
+                        onOpenChannel = viewModel::openChannel,
+                        onCloseChannel = viewModel::closeChannel,
+                        onDisconnect = { playerConnection.stop(); viewModel.disconnect() },
+                        onClearData = viewModel::clearLocalData,
+                        onRegisterDownload = viewModel::registerDownload,
+                        onRemoveDownload = viewModel::removeDownload,
+                        onAutoplayChange = viewModel::setAutoplay,
+                        onDataSaverChange = viewModel::setDataSaver,
+                        onNotificationsChange = viewModel::setNotificationsEnabled,
+                        onMessage = viewModel::showMessage
+                    )
                 }
 
                 if (state.playerExpanded && selectedVideo != null) {
                     Surface(
                         modifier = Modifier.fillMaxSize(),
-                        color = MaterialTheme.colorScheme.background
+                        color = Color.Transparent
                     ) {
                         LitePlayerScreen(
                             video = selectedVideo,
