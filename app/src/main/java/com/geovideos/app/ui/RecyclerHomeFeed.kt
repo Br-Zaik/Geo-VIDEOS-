@@ -264,8 +264,15 @@ private class VideoHolder(
 
     fun recycle() {
         current = null
+        card.titleView.text = ""
+        card.channelView.text = ""
+        card.moreButton.text = "⋮"
+        card.liveBadge.visibility = View.GONE
+        card.durationBadge.visibility = View.GONE
         Glide.with(card.thumbnail).clear(card.thumbnail)
         Glide.with(card.avatar).clear(card.avatar)
+        card.setOnClickListener(null)
+        card.moreButton.setOnClickListener(null)
     }
 }
 
@@ -300,7 +307,7 @@ private class EmptyHolder(context: Context) : RecyclerView.ViewHolder(
         layoutParams = RecyclerView.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(context, 120))
         text = "No hay videos disponibles. Pulsa actualizar."
         gravity = Gravity.CENTER
-        setTextColor(resolveColor(context, android.R.attr.textColorSecondary, Color.GRAY))
+        setTextColor(0xFFB6B3BE.toInt())
         setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
         setPadding(dp(context, 20), dp(context, 20), dp(context, 20), dp(context, 20))
     }
@@ -319,7 +326,7 @@ private class ShortsShelfView(
 
         addView(TextView(context).apply {
             text = "Shorts"
-            setTextColor(resolveColor(context, android.R.attr.textColorPrimary, Color.WHITE))
+            setTextColor(Color.WHITE)
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 21f)
             setTypeface(typeface, android.graphics.Typeface.BOLD)
             setPadding(dp(context, 14), dp(context, 6), dp(context, 14), dp(context, 10))
@@ -440,26 +447,26 @@ private class VideoCardView(context: Context) : LinearLayout(context) {
         info.addView(LinearLayout(context).apply {
             orientation = VERTICAL
             addView(titleView.apply {
-                setTextColor(resolveColor(context, android.R.attr.textColorPrimary, Color.WHITE))
+                setTextColor(Color.WHITE)
                 setTextSize(TypedValue.COMPLEX_UNIT_SP, 15.5f)
                 setTypeface(typeface, android.graphics.Typeface.BOLD)
                 maxLines = 2
                 ellipsize = android.text.TextUtils.TruncateAt.END
-            })
+            }, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
             addView(channelView.apply {
-                setTextColor(resolveColor(context, android.R.attr.textColorSecondary, Color.LTGRAY))
+                setTextColor(0xFFB6B3BE.toInt())
                 setTextSize(TypedValue.COMPLEX_UNIT_SP, 12.5f)
                 maxLines = 1
                 ellipsize = android.text.TextUtils.TruncateAt.END
                 setPadding(0, dp(context, 4), 0, 0)
-            })
+            }, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         }, LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
             marginStart = dp(context, 11)
         })
 
         info.addView(moreButton.apply {
             gravity = Gravity.CENTER
-            setTextColor(resolveColor(context, android.R.attr.textColorPrimary, Color.WHITE))
+            setTextColor(Color.WHITE)
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 23f)
             isClickable = true
             isFocusable = true
@@ -531,7 +538,18 @@ private fun formatRecyclerDuration(ms: Long): String {
 private fun formatRecyclerPublished(value: String): String {
     if (value.isBlank()) return ""
     if (value.contains("hace", ignoreCase = true)) return value
-    return value.take(10)
+    return runCatching {
+        val instant = java.time.Instant.parse(value)
+        val elapsed = (java.time.Instant.now().epochSecond - instant.epochSecond).coerceAtLeast(0L)
+        when {
+            elapsed < 3_600L -> "hace ${maxOf(1L, elapsed / 60L)} min"
+            elapsed < 86_400L -> "hace ${elapsed / 3_600L} h"
+            elapsed < 604_800L -> "hace ${elapsed / 86_400L} días"
+            elapsed < 2_592_000L -> "hace ${elapsed / 604_800L} semanas"
+            elapsed < 31_536_000L -> "hace ${elapsed / 2_592_000L} meses"
+            else -> "hace ${elapsed / 31_536_000L} años"
+        }
+    }.getOrElse { value.take(10) }
 }
 
 private fun dp(context: Context, value: Int): Int =

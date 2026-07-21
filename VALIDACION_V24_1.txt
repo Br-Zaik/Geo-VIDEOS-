@@ -1,0 +1,17 @@
+GEO VIDEOS V24.1 - CORRECCION DE COMPILACION
+
+Errores corregidos segun GitHub Actions:
+1. RecyclerShortsScreen.kt:297:27 Unresolved reference 'VERTICAL'
+   - Corregido a LinearLayout.VERTICAL.
+
+2. RecyclerVideoLists.kt:71:17 'val' cannot be reassigned
+3. RecyclerVideoLists.kt:117:17 'val' cannot be reassigned
+4. RecyclerVideoLists.kt:178:17 'val' cannot be reassigned
+   - Las asignaciones recycledViewPool = ... fueron reemplazadas por setRecycledViewPool(...).
+
+Version:
+- versionName: 24.1.0
+- versionCode: 27
+
+No se modificaron OAuth, MainActivity, AndroidManifest, applicationId ni la llave de firma.
+La compilacion completa debe confirmarse en GitHub Actions porque este entorno no tiene Gradle/Android SDK disponible sin descarga externa.

@@ -1,0 +1,40 @@
+GEO VIDEOS V24 - VALIDACION
+Fecha: 2026-07-20
+
+VERSION
+- versionName: 24.0.0
+- versionCode: 26
+- applicationId: com.geovideos.app
+
+OBJETIVO
+Aplicar el mismo motor de desplazamiento fluido a todas las pantallas que muestran listas largas de videos y corregir los errores visuales introducidos en V23.
+
+CAMBIOS PRINCIPALES
+- Principal conserva RecyclerView y corrige los textos invisibles: titulo y canal ahora usan colores explicitos sobre fondo negro.
+- Se elimina el encabezado fijo "Principal" que aparecia mientras se desplazaba el feed.
+- Los filtros superiores ahora se desplazan horizontalmente y dejan de recortarse o mostrar controles verticales extraños.
+- Buscar usa RecyclerView + ListAdapter + DiffUtil para los resultados.
+- Historial, Ver despues, Me gusta y Mis videos usan el mismo RecyclerView compartido.
+- Suscripciones usa RecyclerView nativo para la lista de canales.
+- Pantallas de canal usan RecyclerView nativo.
+- Videos similares usa RecyclerView nativo y deja de depender de LazyColumn.
+- Shorts cambia de VerticalPager Compose a RecyclerView vertical con PagerSnapHelper.
+- Solo el Short activo conecta el PlayerView; los demas conservan miniaturas estaticas.
+- Se comparte RecycledViewPool entre listas compatibles.
+- Todas las tarjetas limpian imagenes, textos y listeners al reciclarse.
+- Biblioteca principal se simplifica a un panel ligero; las listas largas se abren en pantallas RecyclerView.
+- Fechas de videos se muestran en formato relativo cuando es posible.
+
+ARCHIVOS PROTEGIDOS SIN CAMBIOS
+- MainActivity.kt: 6e7dec6198e5a39cef00ecea729da49d3876b8721d87e61648363ac85c415c7f
+- AndroidManifest.xml: cc23515ce99095fb2fba9bec3d48a6900de6128df3fbb5e91fac86d24d5d06a5
+- geovideos-dev.jks: 6ea4c0bbb2141367772ea6ed632738097c886752314500b5cc8e4fab306792ab
+
+COMPROBACIONES
+- 19 archivos Kotlin incluidos.
+- 13 archivos XML parseados correctamente.
+- Llaves, parentesis y corchetes balanceados en todos los archivos Kotlin.
+- ZIP verificado con unzip -t.
+
+LIMITACION
+No se pudo ejecutar assembleDebug porque el entorno no pudo resolver services.gradle.org para descargar Gradle 8.13. La compilacion definitiva debe ejecutarse en GitHub Actions o Android Studio con acceso a internet.

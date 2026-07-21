@@ -275,208 +275,31 @@ internal fun LitePlayerScreen(
         }
 
         if (!fullscreen) {
-            LazyColumn(
-                modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(bottom = 28.dp)
-            ) {
-                item(key = "lite-player-info-${video.id}", contentType = "info") {
-                    Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp)) {
-                        Text(
-                            video.title,
-                            style = MaterialTheme.typography.headlineSmall,
-                            fontWeight = FontWeight.Bold,
-                            maxLines = 3,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                        val metaParts = mutableListOf<String>()
-                        details?.viewCount?.takeIf { it > 0L }?.let {
-                            metaParts.add("${formatCompactLite(it)} visualizaciones")
-                        }
-                        formatPublishedLite(published).takeIf { it.isNotBlank() }?.let {
-                            metaParts.add(it)
-                        }
-                        val meta = metaParts.joinToString(" · ")
-                        if (meta.isNotBlank()) {
-                            Text(
-                                meta,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.padding(top = 7.dp)
-                            )
-                        }
-
-                        Row(
-                            modifier = Modifier.fillMaxWidth().padding(top = 16.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Surface(
-                                modifier = Modifier.size(46.dp),
-                                shape = CircleShape,
-                                color = MaterialTheme.colorScheme.surfaceVariant
-                            ) {
-                                LiteThumbnail(
-                                    url = channelAvatar,
-                                    description = video.channelTitle,
-                                    modifier = Modifier.fillMaxSize(),
-                                    widthPx = 112,
-                                    heightPx = 112,
-                                    contentScale = ContentScale.Crop
-                                )
-                            }
-                            Column(modifier = Modifier.weight(1f).padding(horizontal = 12.dp)) {
-                                Text(video.channelTitle, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                details?.subscriberCount?.takeIf { it > 0L }?.let {
-                                    Text(
-                                        "${formatCompactLite(it)} suscriptores",
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
-                                }
-                            }
-                            if (video.channelId.isNotBlank()) {
-                                OutlinedButton(
-                                    onClick = {
-                                        onOpenChannel(ChannelItem(video.channelId, video.channelTitle, channelAvatar))
-                                    }
-                                ) { Text("Canal") }
-                            }
-                        }
-
-                        Row(
-                            modifier = Modifier.fillMaxWidth().padding(top = 14.dp),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            FilterChip(
-                                selected = isLiked,
-                                onClick = onLike,
-                                label = { Text(details?.likeCount?.takeIf { it > 0L }?.let(::formatCompactLite) ?: "Me gusta") },
-                                leadingIcon = { Icon(Icons.Default.ThumbUp, null) }
-                            )
-                            FilterChip(
-                                selected = isDisliked,
-                                onClick = onDislike,
-                                label = { Text("No me gusta") },
-                                leadingIcon = { Icon(Icons.Default.ThumbDown, null) }
-                            )
-                            AssistChip(
-                                onClick = onWatchLater,
-                                label = { Text(if (isWatchLater) "Guardado" else "Ver después") },
-                                leadingIcon = { Icon(Icons.Default.WatchLater, null) }
-                            )
-                        }
-                        AssistChip(
-                            onClick = { shareVideoLite(context, video) },
-                            label = { Text("Compartir") },
-                            leadingIcon = { Icon(Icons.Default.Share, null) },
-                            modifier = Modifier.padding(top = 8.dp)
-                        )
-
-                        if (description.isNotBlank()) {
-                            Surface(
-                                shape = RoundedCornerShape(14.dp),
-                                color = MaterialTheme.colorScheme.surfaceVariant,
-                                modifier = Modifier.fillMaxWidth().padding(top = 14.dp)
-                            ) {
-                                Column(modifier = Modifier.padding(14.dp)) {
-                                    Text("Descripción", fontWeight = FontWeight.Bold)
-                                    Text(
-                                        description,
-                                        maxLines = 4,
-                                        overflow = TextOverflow.Ellipsis,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        modifier = Modifier.padding(top = 6.dp)
-                                    )
-                                }
-                            }
-                        }
-                    }
-                }
-
-                item(key = "lite-related-title-${video.id}", contentType = "title") {
-                    HorizontalDivider()
-                    Text(
-                        "Videos similares",
-                        style = MaterialTheme.typography.titleLarge,
-                        fontWeight = FontWeight.Bold,
-                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp)
-                    )
-                }
-
-                if (relatedLoading && related.isEmpty()) {
-                    item(key = "lite-related-loading", contentType = "loading") {
-                        Box(modifier = Modifier.fillMaxWidth().height(120.dp), contentAlignment = Alignment.Center) {
-                            CircularProgressIndicator(modifier = Modifier.size(28.dp), strokeWidth = 2.dp)
-                        }
-                    }
-                } else {
-                    items(related, key = { "lite-related-${it.id}" }, contentType = { "related" }) { item ->
-                        LiteRelatedRow(
-                            video = item,
-                            onPlay = { onPlayRelated(item) },
-                            onSave = { onWatchLaterRelated(item) }
-                        )
-                        HorizontalDivider()
-                    }
-                }
-
-                if (relatedCanLoadMore) {
-                    item(key = "lite-related-more", contentType = "more") {
-                        Box(modifier = Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) {
-                            OutlinedButton(onClick = onLoadMoreRelated, enabled = !relatedLoadingMore) {
-                                if (relatedLoadingMore) {
-                                    CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
-                                    Spacer(Modifier.width(8.dp))
-                                }
-                                Text(if (relatedLoadingMore) "Cargando…" else "Cargar más")
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun LiteRelatedRow(video: VideoItem, onPlay: () -> Unit, onSave: () -> Unit) {
-    Row(
-        modifier = Modifier.fillMaxWidth().clickable(onClick = onPlay).padding(horizontal = 12.dp, vertical = 10.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        LiteThumbnail(
-            url = video.thumbnailUrl,
-            description = video.title,
-            modifier = Modifier.width(160.dp).aspectRatio(16f / 9f).background(Color.Black),
-            widthPx = 480,
-            heightPx = 270,
-            contentScale = ContentScale.Crop
-        )
-        Column(modifier = Modifier.weight(1f).padding(start = 12.dp)) {
-            Text(video.title, fontWeight = FontWeight.SemiBold, maxLines = 2, overflow = TextOverflow.Ellipsis)
-            Text(
-                video.channelTitle,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.padding(top = 4.dp)
+            NativePlayerDetailsList(
+                modifier = Modifier.weight(1f).fillMaxWidth(),
+                header = PlayerHeaderData(
+                    video = video,
+                    details = details,
+                    isLiked = isLiked,
+                    isDisliked = isDisliked,
+                    isWatchLater = isWatchLater,
+                    description = description,
+                    channelAvatar = channelAvatar,
+                    publishedAt = published
+                ),
+                related = related,
+                relatedLoading = relatedLoading,
+                relatedLoadingMore = relatedLoadingMore,
+                relatedCanLoadMore = relatedCanLoadMore,
+                onLike = onLike,
+                onDislike = onDislike,
+                onWatchLater = onWatchLater,
+                onShare = { shareVideoLite(context, video) },
+                onOpenChannel = onOpenChannel,
+                onPlayRelated = onPlayRelated,
+                onSaveRelated = onWatchLaterRelated,
+                onLoadMore = onLoadMoreRelated
             )
-            formatPublishedLite(video.publishedAt).takeIf { it.isNotBlank() }?.let {
-                Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
         }
-        IconButton(onClick = onSave) { Icon(Icons.Default.WatchLater, "Guardar") }
     }
-}
-
-private fun formatCompactLite(value: Long): String = when {
-    value >= 1_000_000_000L -> "%.1f mil M".format(value / 1_000_000_000.0).replace(".0", "")
-    value >= 1_000_000L -> "%.1f M".format(value / 1_000_000.0).replace(".0", "")
-    value >= 1_000L -> "%.1f K".format(value / 1_000.0).replace(".0", "")
-    else -> value.toString()
-}
-
-private fun formatPublishedLite(value: String): String {
-    if (value.isBlank()) return ""
-    if (value.contains("hace", ignoreCase = true)) return value
-    return value.take(10)
 }

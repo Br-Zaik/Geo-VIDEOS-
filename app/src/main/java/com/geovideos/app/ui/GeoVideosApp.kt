@@ -598,7 +598,7 @@ private fun MainShell(
                 onOpenShort = onPreviewShort,
                 onWatchLater = onWatchLater
             )
-            MainSection.SHORTS -> LiteShortsScreen(
+            MainSection.SHORTS -> RecyclerShortsScreen(
                 modifier = Modifier.padding(padding),
                 videos = state.shorts,
                 selectedVideoId = state.selectedVideo?.id.orEmpty(),
@@ -754,75 +754,48 @@ private fun SearchScreen(
     onWatchLater: (VideoItem) -> Unit
 ) {
     var query by rememberSaveable { mutableStateOf("") }
-    val listState = rememberLazyListState()
-    val shouldLoadMore by remember(listState, results.size) {
-        derivedStateOf {
-            val lastVisible = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
-            val total = listState.layoutInfo.totalItemsCount
-            total > 0 && results.isNotEmpty() && lastVisible >= total - 4
-        }
-    }
-    LaunchedEffect(shouldLoadMore, loadingMore) {
-        if (shouldLoadMore && !loadingMore) onLoadMore()
-    }
-
-    LazyColumn(
-        state = listState,
-        modifier = modifier.fillMaxSize(),
-        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 12.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
-    ) {
-        item(contentType = "search-box") {
-            OutlinedTextField(
-                value = query,
-                onValueChange = { query = it },
-                modifier = Modifier.fillMaxWidth(),
-                singleLine = true,
-                leadingIcon = { Icon(Icons.Default.Search, null) },
-                trailingIcon = {
-                    FilledIconButton(onClick = { onSearch(query) }, enabled = query.isNotBlank()) {
-                        Icon(Icons.Default.Search, "Buscar")
-                    }
-                },
-                label = { Text("Buscar videos, música, juegos…") },
-                keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(imeAction = ImeAction.Search),
-                keyboardActions = androidx.compose.foundation.text.KeyboardActions(onSearch = { onSearch(query) })
-            )
-        }
+    Column(modifier = modifier.fillMaxSize().background(Color.Black)) {
+        OutlinedTextField(
+            value = query,
+            onValueChange = { query = it },
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
+            singleLine = true,
+            leadingIcon = { Icon(Icons.Default.Search, null) },
+            trailingIcon = {
+                FilledIconButton(onClick = { onSearch(query) }, enabled = query.isNotBlank()) {
+                    Icon(Icons.Default.Search, "Buscar")
+                }
+            },
+            label = { Text("Buscar videos, música, juegos…") },
+            keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(imeAction = ImeAction.Search),
+            keyboardActions = androidx.compose.foundation.text.KeyboardActions(onSearch = { onSearch(query) })
+        )
         if (query.isBlank() && results.isEmpty() && history.isNotEmpty()) {
-            item(contentType = "history-title") { SectionHeader("Búsquedas recientes", "Toca una para repetirla") }
-            items(history, key = { "history-$it" }, contentType = { "history" }) { item ->
-                Row(
-                    modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).clickable {
-                        query = item
-                        onSearch(item)
-                    }.padding(14.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Icon(Icons.Default.History, null)
-                    Spacer(Modifier.width(14.dp))
-                    Text(item, modifier = Modifier.weight(1f))
-                    Icon(Icons.Default.Search, null)
+            LazyRow(
+                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                items(history.take(10), key = { "search-history-$it" }) { item ->
+                    AssistChip(
+                        onClick = { query = item; onSearch(item) },
+                        label = { Text(item, maxLines = 1) },
+                        leadingIcon = { Icon(Icons.Default.History, null) }
+                    )
                 }
             }
         }
-        if (loading) {
-            item(contentType = "search-loading") { LoadingBlock() }
-        } else {
-            items(results, key = { "search-${it.id}" }, contentType = { "search-result" }) { video ->
-                CompactVideoRow(video, { onPlay(video) }, { onWatchLater(video) })
-            }
-        }
-        if (loadingMore) {
-            item(contentType = "search-more") {
-                Box(
-                    modifier = Modifier.fillMaxWidth().padding(18.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    CircularProgressIndicator(modifier = Modifier.size(26.dp), strokeWidth = 3.dp)
-                }
-            }
-        }
+        NativeVideoList(
+            modifier = Modifier.weight(1f).fillMaxWidth(),
+            videos = results,
+            loading = loading,
+            loadingMore = loadingMore,
+            canLoadMore = results.isNotEmpty(),
+            mode = NativeVideoListMode.COMPACT,
+            emptyMessage = if (query.isBlank()) "Escribe algo para buscar." else "No se encontraron resultados.",
+            onLoadMore = onLoadMore,
+            onPlay = onPlay,
+            onSave = onWatchLater
+        )
     }
 }
 
@@ -852,126 +825,70 @@ private fun LibraryScreen(
     onRemoveDownload: (Long) -> Unit
 ) {
     val context = LocalContext.current
-    LazyColumn(
-        modifier = modifier.fillMaxSize(),
-        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 12.dp),
+    Column(
+        modifier = modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 14.dp, vertical = 12.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
-        item {
-            LibraryShortcutRow(
-                history = history.size,
-                later = watchLater.size,
-                liked = liked.size,
-                onHistory = onOpenHistory,
-                onWatchLater = onOpenWatchLater,
-                onLiked = onOpenLiked,
-                onDownload = onAddDownload
-            )
-        }
-        if (subscriptions.isNotEmpty()) {
-            item {
-                SubscriptionShelf(
-                    subscriptions = subscriptions,
-                    recentVideos = subscriptionVideos,
-                    onOpenChannel = onOpenChannel,
-                    onOpenSubscriptions = onOpenSubscriptions,
-                    onPlay = onPlay
-                )
+        LibraryShortcutRow(
+            history = history.size,
+            later = watchLater.size,
+            liked = liked.size,
+            onHistory = onOpenHistory,
+            onWatchLater = onOpenWatchLater,
+            onLiked = onOpenLiked,
+            onDownload = onAddDownload
+        )
+
+        Card(onClick = onOpenSubscriptions, modifier = Modifier.fillMaxWidth()) {
+            Row(modifier = Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Default.Subscriptions, null, tint = MaterialTheme.colorScheme.primary)
+                Column(modifier = Modifier.weight(1f).padding(start = 12.dp)) {
+                    Text("Suscripciones", fontWeight = FontWeight.Bold)
+                    Text("${subscriptions.size} canales", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                Icon(Icons.Default.KeyboardArrowDown, contentDescription = "Abrir suscripciones")
             }
         }
-        item {
-            Row(
-                modifier = Modifier.fillMaxWidth().clickable(onClick = onOpenUploads).padding(vertical = 4.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    SectionHeader("Mis videos", "Videos subidos a tu canal de YouTube")
+
+        Card(onClick = onOpenUploads, modifier = Modifier.fillMaxWidth()) {
+            Row(modifier = Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Default.VideoLibrary, null, tint = MaterialTheme.colorScheme.primary)
+                Column(modifier = Modifier.weight(1f).padding(start = 12.dp)) {
+                    Text("Mis videos", fontWeight = FontWeight.Bold)
+                    Text("${uploads.size} videos", color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
                 Icon(Icons.Default.KeyboardArrowDown, contentDescription = "Abrir Mis videos")
             }
         }
-        if (uploads.isEmpty()) {
-            item { EmptyBlock("Tu canal no tiene videos subidos o YouTube no devolvió esa lista.") }
-        } else {
-            items(uploads, key = { "upload-${it.id}" }) { video ->
-                CompactVideoRow(video, { onPlay(video) }, { onWatchLater(video) })
-            }
-            if (uploadsLoadingMore) {
-                item {
-                    Box(
-                        modifier = Modifier.fillMaxWidth().padding(vertical = 16.dp),
-                        contentAlignment = Alignment.Center
-                    ) { CircularProgressIndicator(modifier = Modifier.size(28.dp), strokeWidth = 3.dp) }
-                }
-            } else if (uploadsCanLoadMore) {
-                item {
-                    OutlinedButton(onClick = onLoadMoreUploads, modifier = Modifier.fillMaxWidth()) {
-                        Icon(Icons.Default.Refresh, null)
-                        Spacer(Modifier.width(8.dp))
-                        Text("Cargar más de Mis videos")
-                    }
-                }
-            }
-        }
-        if (history.isNotEmpty()) {
-            item { SectionHeader("Continuar viendo", "Retoma cada video desde el punto donde lo dejaste") }
-            item { HorizontalVideos(history.take(12), onPlay) }
-        }
-        if (watchLater.isNotEmpty()) {
-            item { SectionHeader("Ver después", "Lista local disponible en esta app") }
-            items(watchLater.take(12), key = { "later-${it.id}" }) { video ->
-                CompactVideoRow(video, { onPlay(video) }, { onWatchLater(video) })
-            }
-        }
-        if (liked.isNotEmpty()) {
-            item {
-                Row(
-                    modifier = Modifier.fillMaxWidth().clickable(onClick = onOpenLiked),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        SectionHeader("Videos que te gustan", "Sincronizados con tu cuenta de YouTube")
-                    }
-                    Icon(Icons.Default.KeyboardArrowDown, contentDescription = "Abrir videos que me gustan")
-                }
-            }
-            item { HorizontalVideos(liked.take(12), onPlay) }
-        }
+
         if (playlists.isNotEmpty()) {
-            item { SectionHeader("Tus playlists", "Listas visibles para la cuenta autorizada") }
-            item {
-                LazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    items(playlists, key = { "playlist-${it.id}" }) { playlist -> PlaylistCard(playlist) }
-                }
+            SectionHeader("Tus playlists", "${playlists.size} listas")
+            LazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                items(playlists.take(10), key = { "playlist-root-${it.id}" }) { playlist -> PlaylistCard(playlist) }
             }
         }
-        item { SectionHeader("Descargas directas", "Archivos propios o autorizados. YouTube no entrega el archivo para descargar.") }
-        item {
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                Button(onClick = onAddDownload, modifier = Modifier.weight(1f)) {
-                    Icon(Icons.Default.Download, null)
-                    Spacer(Modifier.width(8.dp))
-                    Text("Nueva descarga")
-                }
-                OutlinedButton(onClick = { openSystemDownloads(context) }, modifier = Modifier.weight(1f)) {
-                    Icon(Icons.Default.DownloadDone, null)
-                    Spacer(Modifier.width(8.dp))
-                    Text("Ver archivos")
-                }
+
+        SectionHeader("Descargas directas", "Archivos propios o autorizados")
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            Button(onClick = onAddDownload, modifier = Modifier.weight(1f)) {
+                Icon(Icons.Default.Download, null)
+                Spacer(Modifier.width(8.dp))
+                Text("Nueva")
+            }
+            OutlinedButton(onClick = { openSystemDownloads(context) }, modifier = Modifier.weight(1f)) {
+                Icon(Icons.Default.DownloadDone, null)
+                Spacer(Modifier.width(8.dp))
+                Text("Ver archivos")
             }
         }
-        if (downloads.isEmpty()) {
-            item { EmptyBlock("Todavía no registraste descargas directas.") }
-        } else {
-            items(downloads, key = { "download-${it.id}" }) { video ->
-                DownloadStatusCard(
-                    video = video,
-                    onOpen = { openSystemDownloads(context) },
-                    onRemove = { onRemoveDownload(video.downloadId) }
-                )
-            }
+        downloads.take(4).forEach { video ->
+            DownloadStatusCard(
+                video = video,
+                onOpen = { openSystemDownloads(context) },
+                onRemove = { onRemoveDownload(video.downloadId) }
+            )
         }
-        item { Spacer(Modifier.height(12.dp)) }
+        Spacer(Modifier.height(16.dp))
     }
 }
 
@@ -1218,13 +1135,15 @@ private fun ChannelScreen(
             )
         }
     ) { padding ->
-        LazyColumn(modifier = Modifier.padding(padding).fillMaxSize(), contentPadding = PaddingValues(14.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            if (loading) item { LoadingBlock() }
-            else if (videos.isEmpty()) item { EmptyBlock("No se encontraron publicaciones reproducibles de este canal.") }
-            else items(videos, key = { "channel-${it.id}" }) { video ->
-                CompactVideoRow(video, { onPlay(video) }, { onWatchLater(video) })
-            }
-        }
+        NativeVideoList(
+            modifier = Modifier.padding(padding).fillMaxSize().background(Color.Black),
+            videos = videos,
+            loading = loading,
+            mode = NativeVideoListMode.COMPACT,
+            emptyMessage = "No se encontraron publicaciones reproducibles de este canal.",
+            onPlay = onPlay,
+            onSave = onWatchLater
+        )
     }
 }
 

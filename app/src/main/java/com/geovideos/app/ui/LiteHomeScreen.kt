@@ -3,7 +3,9 @@ package com.geovideos.app.ui
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -62,7 +64,7 @@ internal fun LiteHomeScreen(
 
     Column(modifier = modifier.fillMaxSize()) {
         Row(
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 6.dp),
+            modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 10.dp, vertical = 6.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(7.dp)
         ) {
@@ -86,18 +88,6 @@ internal fun LiteHomeScreen(
                 }
             }
         }
-
-        Text(
-            when (category) {
-                HomeCategory.FOR_YOU -> "Principal"
-                HomeCategory.LIVE -> "En directo"
-                HomeCategory.GAMING -> "Videojuegos"
-                HomeCategory.MUSIC -> "Música"
-            },
-            style = MaterialTheme.typography.titleLarge,
-            fontWeight = FontWeight.Bold,
-            modifier = Modifier.padding(horizontal = 14.dp, vertical = 4.dp)
-        )
 
         Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
             RecyclerHomeFeed(
