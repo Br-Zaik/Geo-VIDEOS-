@@ -896,7 +896,35 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     fun selectSection(section: MainSection) {
-        _uiState.update { it.copy(section = section, selectedChannelTitle = "", channelVideos = emptyList()) }
+        val current = _uiState.value
+        if (section == MainSection.SHORTS) {
+            val firstShort = current.shorts.firstOrNull()
+            if (firstShort != null) {
+                previewShort(firstShort)
+            } else {
+                _uiState.update {
+                    it.copy(
+                        section = MainSection.SHORTS,
+                        selectedVideo = null,
+                        playerExpanded = false,
+                        selectedChannelTitle = "",
+                        channelVideos = emptyList()
+                    )
+                }
+            }
+            return
+        }
+
+        val leavingShorts = current.section == MainSection.SHORTS
+        _uiState.update {
+            it.copy(
+                section = section,
+                selectedVideo = if (leavingShorts) null else it.selectedVideo,
+                playerExpanded = if (leavingShorts) false else it.playerExpanded,
+                selectedChannelTitle = "",
+                channelVideos = emptyList()
+            )
+        }
     }
 
     fun selectHomeCategory(category: HomeCategory) {

@@ -257,10 +257,15 @@ fun GeoVideosApp(
                         playerConnection = playerConnection,
                         onConnectGoogle = onConnectGoogle,
                         onSwitchGoogleAccount = onSwitchGoogleAccount,
-                        onSection = viewModel::selectSection,
+                        onSection = { target ->
+                            if (state.section == MainSection.SHORTS && target != MainSection.SHORTS) {
+                                playerConnection.stop()
+                            }
+                            viewModel.selectSection(target)
+                        },
                         onCategory = viewModel::selectHomeCategory,
                         onPlay = viewModel::play,
-                        onOpenVideo = viewModel::openPlayer,
+                        onOpenVideo = viewModel::previewShort,
                         onPreviewShort = viewModel::previewShort,
                         onWatchLater = viewModel::toggleWatchLater,
                         onLike = viewModel::toggleLocalLike,
@@ -286,63 +291,40 @@ fun GeoVideosApp(
                     )
                 }
 
-                if (state.playerExpanded && selectedVideo != null) {
-                    Surface(
-                        modifier = Modifier.fillMaxSize(),
-                        color = Color.Transparent
-                    ) {
-                        LitePlayerScreen(
-                            video = selectedVideo,
-                            playerConnection = playerConnection,
-                            isWatchLater = state.watchLater.any { it.id == selectedVideo.id },
-                            isLiked = selectedVideo.id in state.localLikedIds,
-                            isDisliked = selectedVideo.id in state.localDislikedIds,
-                            autoplay = state.autoplay,
-                            dataSaver = state.dataSaver,
-                            details = state.playerDetails,
-                            detailsLoading = state.playerDetailsLoading,
-                            relatedVideos = state.relatedVideos,
-                            relatedLoading = state.relatedLoading,
-                            relatedLoadingMore = state.relatedLoadingMore,
-                            relatedCanLoadMore = state.relatedCanLoadMore,
-                            onBack = viewModel::minimizePlayer,
-                            onClose = {
-                                playerConnection.stop()
-                                viewModel.closePlayer()
-                            },
-                            onWatchLater = { viewModel.toggleWatchLater(selectedVideo) },
-                            onLike = { viewModel.toggleLocalLike(selectedVideo) },
-                            onDislike = { viewModel.toggleLocalDislike(selectedVideo) },
-                            onPlayRelated = viewModel::play,
-                            onPlayNext = viewModel::playNext,
-                            onAutoplayChange = viewModel::setAutoplay,
-                            onWatchLaterRelated = viewModel::toggleWatchLater,
-                            onLoadMoreRelated = viewModel::loadMoreRelated,
-                            onOpenChannel = { channel ->
-                                viewModel.openChannel(channel)
-                                viewModel.minimizePlayer()
-                            },
-                            onSavePlayback = viewModel::savePlayback,
-                            onRegisterDownload = viewModel::registerDownload,
-                            onMessage = viewModel::showMessage
-                        )
-                    }
-                } else if (state.section != MainSection.SHORTS) {
-                    selectedVideo?.let { video ->
-                        MiniPlayer(
-                            video = video,
-                            playerConnection = playerConnection,
-                            onExpand = viewModel::expandPlayer,
-                            onClose = {
-                                playerConnection.stop()
-                                viewModel.closePlayer()
-                            },
-                            onSavePlayback = viewModel::savePlayback,
-                            modifier = Modifier
-                                .align(Alignment.BottomCenter)
-                                .padding(bottom = 80.dp)
-                        )
-                    }
+                if (selectedVideo != null && state.section != MainSection.SHORTS) {
+                    UnifiedPlayerOverlay(
+                        video = selectedVideo,
+                        expanded = state.playerExpanded,
+                        playerConnection = playerConnection,
+                        isWatchLater = state.watchLater.any { it.id == selectedVideo.id },
+                        isLiked = selectedVideo.id in state.localLikedIds,
+                        isDisliked = selectedVideo.id in state.localDislikedIds,
+                        autoplay = state.autoplay,
+                        dataSaver = state.dataSaver,
+                        details = state.playerDetails,
+                        detailsLoading = state.playerDetailsLoading,
+                        relatedVideos = state.relatedVideos,
+                        relatedLoading = state.relatedLoading,
+                        relatedLoadingMore = state.relatedLoadingMore,
+                        relatedCanLoadMore = state.relatedCanLoadMore,
+                        onExpand = viewModel::expandPlayer,
+                        onMinimize = viewModel::minimizePlayer,
+                        onClose = {
+                            playerConnection.stop()
+                            viewModel.closePlayer()
+                        },
+                        onWatchLater = { viewModel.toggleWatchLater(selectedVideo) },
+                        onLike = { viewModel.toggleLocalLike(selectedVideo) },
+                        onDislike = { viewModel.toggleLocalDislike(selectedVideo) },
+                        onPlayRelated = viewModel::play,
+                        onWatchLaterRelated = viewModel::toggleWatchLater,
+                        onLoadMoreRelated = viewModel::loadMoreRelated,
+                        onOpenChannel = { channel ->
+                            viewModel.openChannel(channel)
+                            viewModel.minimizePlayer()
+                        },
+                        onSavePlayback = viewModel::savePlayback
+                    )
                 }
             }
         }
@@ -1156,109 +1138,6 @@ private fun ChannelScreen(
             emptyMessage = "No se encontraron publicaciones reproducibles de este canal.",
             onPlay = onPlay,
             onSave = onWatchLater
-        )
-    }
-}
-
-@Composable
-private fun MiniPlayer(
-    video: VideoItem,
-    playerConnection: GeoPlayerConnection,
-    onExpand: () -> Unit,
-    onClose: () -> Unit,
-    onSavePlayback: (VideoItem, Long, Long) -> Unit,
-    modifier: Modifier = Modifier
-) {
-    val playback by playerConnection.coreState.collectAsStateWithLifecycle()
-    val controller by playerConnection.controller.collectAsStateWithLifecycle()
-    val isPlaying = playback.isPlaying
-
-    fun saveCurrentProgress() {
-        val active = controller
-        onSavePlayback(
-            video,
-            active?.currentPosition?.coerceAtLeast(0L) ?: video.resumePositionMs,
-            active?.duration?.takeIf { it > 0L } ?: video.durationMs
-        )
-    }
-
-    Surface(
-        modifier = modifier
-            .fillMaxWidth()
-            .height(74.dp),
-        tonalElevation = 8.dp,
-        shadowElevation = 8.dp
-    ) {
-        Box(modifier = Modifier.fillMaxSize()) {
-            Row(modifier = Modifier.fillMaxSize(), verticalAlignment = Alignment.CenterVertically) {
-                Box(modifier = Modifier.width(132.dp).height(74.dp).background(Color.Black)) {
-                    Thumbnail(video.thumbnailUrl, Modifier.fillMaxSize())
-                    if (
-                        controller != null &&
-                        controller?.currentMediaItem?.mediaId == video.id &&
-                        !playback.resolving &&
-                        !playback.connecting
-                    ) {
-                        LitePlayerView(
-                            controller = controller!!,
-                            modifier = Modifier.fillMaxSize(),
-                            useController = false,
-                            resizeMode = androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_ZOOM,
-                            useTextureView = true
-                        )
-                    }
-                    if (playback.resolving || playback.connecting) {
-                        CircularProgressIndicator(
-                            modifier = Modifier.align(Alignment.Center).size(24.dp),
-                            strokeWidth = 3.dp
-                        )
-                    }
-                }
-                Column(
-                    modifier = Modifier.weight(1f).clickable(onClick = onExpand).padding(horizontal = 12.dp),
-                    verticalArrangement = Arrangement.Center
-                ) {
-                    Text(video.title, maxLines = 1, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.SemiBold)
-                    Text(
-                        video.channelTitle,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-                IconButton(onClick = {
-                    if (isPlaying) playerConnection.pause() else playerConnection.play()
-                }) {
-                    Icon(
-                        if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
-                        if (isPlaying) "Pausar" else "Reproducir"
-                    )
-                }
-                IconButton(onClick = {
-                    saveCurrentProgress()
-                    onClose()
-                }) { Icon(Icons.Default.Close, "Cerrar") }
-            }
-            MiniPlayerProgress(
-                playerConnection = playerConnection,
-                modifier = Modifier.align(Alignment.BottomCenter).fillMaxWidth()
-            )
-        }
-    }
-
-}
-
-@Composable
-private fun MiniPlayerProgress(
-    playerConnection: GeoPlayerConnection,
-    modifier: Modifier = Modifier
-) {
-    val progress by playerConnection.progressState.collectAsStateWithLifecycle()
-    if (progress.durationMs > 0L) {
-        LinearProgressIndicator(
-            progress = { (progress.positionMs.toFloat() / progress.durationMs.toFloat()).coerceIn(0f, 1f) },
-            modifier = modifier
         )
     }
 }

@@ -1,0 +1,23 @@
+Geo Videos V29 - Reproductor unificado
+
+Cambios principales:
+- Un solo PlayerView/MediaController permanece vivo al expandir y minimizar.
+- El gesto vertical mueve y escala el mismo video siguiendo el dedo.
+- Se eliminó el cambio en tiempo de ejecución entre LitePlayerScreen y MiniPlayer.
+- El feed permanece montado detrás del reproductor.
+- El minirreproductor queda anclado encima de la navegación inferior.
+- Se mantienen Me gusta, No me gusta, Ver después, canal y relacionados.
+- Pantalla completa usa la misma vista de reproducción.
+- OAuth, paquete, manifiesto, SHA-1 y configuración de Google no fueron modificados.
+
+Archivos funcionales modificados:
+- app/src/main/java/com/geovideos/app/ui/GeoVideosApp.kt
+- app/src/main/java/com/geovideos/app/ui/UnifiedPlayerOverlay.kt
+- app/src/main/java/com/geovideos/app/ui/GeoVideosViewModel.kt
+- Se retiró el antiguo LitePlayerScreen.kt para evitar dos rutas de reproductor.
+- app/build.gradle.kts
+- .github/workflows/build-apk.yml
+
+Versión:
+- versionCode 290
+- versionName 29.0.0
