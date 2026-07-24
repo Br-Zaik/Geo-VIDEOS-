@@ -2,11 +2,14 @@ package com.geovideos.app.ui
 
 import android.content.pm.ActivityInfo
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.animate
-import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.detectVerticalDragGestures
+import androidx.compose.foundation.gestures.Orientation
+import androidx.compose.foundation.gestures.draggable
+import androidx.compose.foundation.gestures.rememberDraggableState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -51,10 +54,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.input.pointer.PointerInputChange
-import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
@@ -76,11 +78,12 @@ import kotlin.math.abs
 import kotlin.math.roundToInt
 
 /**
- * Reproductor único para los estados expandido y minimizado.
+ * Reproductor unificado con gesto directo, inspirado en el comportamiento de YouTube/DayliTube.
  *
- * La misma instancia de PlayerView permanece montada durante todo el gesto. Solo se transforma
- * su posición y escala. Esto evita el parpadeo, el cuadro negro y el salto que ocurrían al cambiar
- * entre dos PlayerView distintos.
+ * - El mismo PlayerView permanece montado al expandir y minimizar.
+ * - El desplazamiento vertical sigue exactamente el dedo.
+ * - La velocidad del gesto decide el destino, evitando esperas y rebotes artificiales.
+ * - Durante el arrastre no se recalculan sombras ni esquinas en cada fotograma.
  */
 @Composable
 internal fun UnifiedPlayerOverlay(
@@ -121,7 +124,6 @@ internal fun UnifiedPlayerOverlay(
     var fullscreen by rememberSaveable(video.id) { mutableStateOf(false) }
     var transition by remember(video.id) { mutableFloatStateOf(if (expanded) 0f else 1f) }
     var dragging by remember(video.id) { mutableStateOf(false) }
-    var dragDistancePx by remember(video.id) { mutableFloatStateOf(0f) }
     var settling by remember(video.id) { mutableStateOf(false) }
 
     val description = details?.description.orEmpty().ifBlank { video.description }
@@ -146,20 +148,25 @@ internal fun UnifiedPlayerOverlay(
             .show(WindowInsetsCompat.Type.systemBars())
     }
 
-    fun settle(target: Float, thresholdCrossed: Boolean = false) {
+    fun settle(target: Float, fast: Boolean = false) {
         if (settling) return
         settling = true
         scope.launch {
+            val distance = abs(target - transition).coerceIn(0f, 1f)
+            val duration = if (fast) {
+                (105 + 75 * distance).roundToInt()
+            } else {
+                (145 + 105 * distance).roundToInt()
+            }
             animate(
                 initialValue = transition,
                 targetValue = target,
-                animationSpec = spring(
-                    dampingRatio = 0.88f,
-                    stiffness = if (thresholdCrossed) 640f else 760f
+                animationSpec = tween(
+                    durationMillis = duration.coerceIn(105, 250),
+                    easing = FastOutSlowInEasing
                 )
             ) { value: Float, _: Float -> transition = value.coerceIn(0f, 1f) }
             dragging = false
-            dragDistancePx = 0f
             settling = false
             if (target >= 0.999f) {
                 saveProgress()
@@ -177,7 +184,7 @@ internal fun UnifiedPlayerOverlay(
                 animate(
                     initialValue = transition,
                     targetValue = target,
-                    animationSpec = spring(dampingRatio = 0.9f, stiffness = 700f)
+                    animationSpec = tween(180, easing = FastOutSlowInEasing)
                 ) { value: Float, _: Float -> transition = value.coerceIn(0f, 1f) }
             }
         }
@@ -201,103 +208,98 @@ internal fun UnifiedPlayerOverlay(
     }
 
     BackHandler(enabled = fullscreen || expanded || dragging || settling) {
-        when {
-            fullscreen -> fullscreen = false
-            else -> settle(1f, thresholdCrossed = true)
-        }
+        if (fullscreen) fullscreen = false else settle(1f, fast = true)
     }
 
     BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
         val screenWidthPx = with(density) { maxWidth.toPx() }
         val screenHeightPx = with(density) { maxHeight.toPx() }
         val fullPlayerHeightPx = screenWidthPx * 9f / 16f
-        val miniWidthPx = with(density) { 132.dp.toPx() }
+        val miniWidthPx = with(density) { 128.dp.toPx() }
         val miniHeightPx = miniWidthPx * 9f / 16f
-        val miniBottomClearancePx = with(density) { 80.dp.toPx() }
-        val miniTopPx = (screenHeightPx - miniBottomClearancePx - miniHeightPx).coerceAtLeast(0f)
+        val miniBottomClearancePx = with(density) { 78.dp.toPx() }
+        val miniTopPx = (screenHeightPx - miniBottomClearancePx - miniHeightPx).coerceAtLeast(1f)
         val miniScale = (miniWidthPx / screenWidthPx).coerceIn(0.18f, 1f)
-        val dragThresholdPx = with(density) { 72.dp.toPx() }
+        val velocityThresholdPx = with(density) { 920.dp.toPx() }
+        val p = transition.coerceIn(0f, 1f)
 
-        if (!fullscreen && (expanded || dragging || settling)) {
+        val dragState = rememberDraggableState { delta: Float ->
+            val canMove = (delta > 0f && transition < 1f) || (delta < 0f && transition > 0f)
+            if (canMove && !settling && !fullscreen) {
+                transition = (transition + delta / miniTopPx).coerceIn(0f, 1f)
+            }
+        }
+
+        val dragModifier = Modifier.draggable(
+            state = dragState,
+            orientation = Orientation.Vertical,
+            enabled = !fullscreen && !settling,
+            onDragStarted = { _: Offset -> dragging = true },
+            onDragStopped = { velocity: Float ->
+                val target = when {
+                    velocity >= velocityThresholdPx -> 1f
+                    velocity <= -velocityThresholdPx -> 0f
+                    transition >= 0.42f -> 1f
+                    else -> 0f
+                }
+                settle(target, fast = abs(velocity) >= velocityThresholdPx)
+            }
+        )
+
+        if (!fullscreen && p < 0.999f) {
             Surface(
                 modifier = Modifier
                     .fillMaxSize()
                     .graphicsLayer {
-                        val p = transition.coerceIn(0f, 1f)
-                        alpha = (1f - p * 1.8f).coerceIn(0f, 1f)
+                        alpha = (1f - p * 1.08f).coerceIn(0f, 1f)
+                        translationY = with(density) { 22.dp.toPx() } * p
                     },
                 color = MaterialTheme.colorScheme.background
             ) {
-                Box(modifier = Modifier.fillMaxSize()) {
-                    NativePlayerDetailsList(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .padding(top = with(density) { fullPlayerHeightPx.toDp() }),
-                        header = PlayerHeaderData(
-                            video = video,
-                            details = details,
-                            isLiked = isLiked,
-                            isDisliked = isDisliked,
-                            isWatchLater = isWatchLater,
-                            description = description,
-                            channelAvatar = channelAvatar,
-                            publishedAt = published
-                        ),
-                        related = related,
-                        relatedLoading = relatedLoading || detailsLoading,
-                        relatedLoadingMore = relatedLoadingMore,
-                        relatedCanLoadMore = relatedCanLoadMore,
-                        onLike = onLike,
-                        onDislike = onDislike,
-                        onWatchLater = onWatchLater,
-                        onShare = { shareVideoLite(context, video) },
-                        onOpenChannel = onOpenChannel,
-                        onPlayRelated = onPlayRelated,
-                        onSaveRelated = onWatchLaterRelated,
-                        onLoadMore = onLoadMoreRelated
-                    )
-                }
+                NativePlayerDetailsList(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(top = with(density) { fullPlayerHeightPx.toDp() }),
+                    header = PlayerHeaderData(
+                        video = video,
+                        details = details,
+                        isLiked = isLiked,
+                        isDisliked = isDisliked,
+                        isWatchLater = isWatchLater,
+                        description = description,
+                        channelAvatar = channelAvatar,
+                        publishedAt = published
+                    ),
+                    related = related,
+                    relatedLoading = relatedLoading || detailsLoading,
+                    relatedLoadingMore = relatedLoadingMore,
+                    relatedCanLoadMore = relatedCanLoadMore,
+                    onLike = onLike,
+                    onDislike = onDislike,
+                    onWatchLater = onWatchLater,
+                    onShare = { shareVideoLite(context, video) },
+                    onOpenChannel = onOpenChannel,
+                    onPlayRelated = onPlayRelated,
+                    onSaveRelated = onWatchLaterRelated,
+                    onLoadMore = onLoadMoreRelated
+                )
             }
         }
 
-        if (!fullscreen && (!expanded || dragging || settling)) {
+        val miniVisible = !fullscreen && (p > 0.82f || (!expanded && !dragging))
+        if (miniVisible) {
             Surface(
                 modifier = Modifier
                     .offset { IntOffset(0, miniTopPx.roundToInt()) }
                     .fillMaxWidth()
                     .height(with(density) { miniHeightPx.toDp() })
                     .graphicsLayer {
-                        val p = transition.coerceIn(0f, 1f)
-                        alpha = ((p - 0.35f) / 0.65f).coerceIn(0f, 1f)
+                        alpha = ((p - 0.82f) / 0.18f).coerceIn(0f, 1f)
                     }
-                    .pointerInput(video.id, miniTopPx, settling) {
-                        if (!settling && miniTopPx > 1f) {
-                            detectVerticalDragGestures(
-                                onDragStart = {
-                                    dragging = true
-                                    dragDistancePx = 0f
-                                },
-                                onVerticalDrag = { change: PointerInputChange, dragAmount: Float ->
-                                    if (dragAmount < 0f || transition < 1f) {
-                                        change.consume()
-                                        dragDistancePx += dragAmount
-                                        transition = (transition + dragAmount / miniTopPx)
-                                            .coerceIn(0f, 1f)
-                                    }
-                                },
-                                onDragEnd = {
-                                    val target = if (
-                                        dragDistancePx <= -dragThresholdPx || transition < 0.48f
-                                    ) 0f else 1f
-                                    settle(target, thresholdCrossed = abs(dragDistancePx) >= dragThresholdPx)
-                                },
-                                onDragCancel = { settle(1f) }
-                            )
-                        }
-                    },
+                    .then(dragModifier),
                 color = MaterialTheme.colorScheme.surface,
-                tonalElevation = 8.dp,
-                shadowElevation = 8.dp
+                tonalElevation = 6.dp,
+                shadowElevation = 6.dp
             ) {
                 Row(
                     modifier = Modifier.fillMaxSize(),
@@ -307,8 +309,8 @@ internal fun UnifiedPlayerOverlay(
                     Column(
                         modifier = Modifier
                             .weight(1f)
-                            .clickable { settle(0f, thresholdCrossed = true) }
-                            .padding(horizontal = 12.dp),
+                            .clickable { settle(0f, fast = true) }
+                            .padding(horizontal = 10.dp),
                         verticalArrangement = Arrangement.Center
                     ) {
                         Text(
@@ -358,8 +360,7 @@ internal fun UnifiedPlayerOverlay(
                         .fillMaxWidth()
                         .height(3.dp)
                         .graphicsLayer {
-                            val p = transition.coerceIn(0f, 1f)
-                            alpha = ((p - 0.35f) / 0.65f).coerceIn(0f, 1f)
+                            alpha = ((p - 0.82f) / 0.18f).coerceIn(0f, 1f)
                         }
                 )
             }
@@ -372,56 +373,27 @@ internal fun UnifiedPlayerOverlay(
                 .width(maxWidth)
                 .height(with(density) { fullPlayerHeightPx.toDp() })
                 .graphicsLayer {
-                    val p = transition.coerceIn(0f, 1f)
                     translationY = miniTopPx * p
                     scaleX = 1f - ((1f - miniScale) * p)
                     scaleY = 1f - ((1f - miniScale) * p)
                     transformOrigin = TransformOrigin(0f, 0f)
-                    clip = p > 0.001f
-                    shape = RoundedCornerShape((8f * p).dp)
-                    shadowElevation = with(density) { (8f * p).dp.toPx() }
+                    if (p >= 0.97f) {
+                        clip = true
+                        shape = RoundedCornerShape(8.dp)
+                        shadowElevation = with(density) { 6.dp.toPx() }
+                    } else {
+                        clip = false
+                        shadowElevation = 0f
+                    }
                 }
         }
 
         Box(
             modifier = playerLayerModifier
                 .background(Color.Black)
-                .clickable(enabled = !fullscreen && !expanded && !dragging && !settling) {
-                    settle(0f, thresholdCrossed = true)
-                }
-                .pointerInput(video.id, fullscreen, miniTopPx, settling) {
-                    if (!fullscreen && !settling && miniTopPx > 1f) {
-                        detectVerticalDragGestures(
-                            onDragStart = {
-                                dragging = true
-                                dragDistancePx = 0f
-                            },
-                            onVerticalDrag = { change: PointerInputChange, dragAmount: Float ->
-                                val movingTowardValidAnchor =
-                                    (dragAmount > 0f && transition < 1f) ||
-                                        (dragAmount < 0f && transition > 0f)
-                                if (movingTowardValidAnchor) {
-                                    change.consume()
-                                    dragDistancePx += dragAmount
-                                    transition = (transition + dragAmount / miniTopPx)
-                                        .coerceIn(0f, 1f)
-                                }
-                            },
-                            onDragEnd = {
-                                val startedExpanded = expanded
-                                val target = when {
-                                    startedExpanded && dragDistancePx >= dragThresholdPx -> 1f
-                                    !startedExpanded && dragDistancePx <= -dragThresholdPx -> 0f
-                                    transition >= 0.52f -> 1f
-                                    else -> 0f
-                                }
-                                settle(target, thresholdCrossed = abs(dragDistancePx) >= dragThresholdPx)
-                            },
-                            onDragCancel = {
-                                settle(if (expanded) 0f else 1f)
-                            }
-                        )
-                    }
+                .then(dragModifier)
+                .clickable(enabled = !fullscreen && p >= 0.98f && !dragging && !settling) {
+                    settle(0f, fast = true)
                 }
         ) {
             LiteThumbnail(
@@ -442,7 +414,7 @@ internal fun UnifiedPlayerOverlay(
                 LitePlayerView(
                     controller = controller!!,
                     modifier = Modifier.fillMaxSize(),
-                    useController = fullscreen || (expanded && !dragging && !settling),
+                    useController = fullscreen || (p <= 0.01f && !dragging && !settling),
                     resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT,
                     useTextureView = true
                 )
@@ -456,7 +428,7 @@ internal fun UnifiedPlayerOverlay(
             }
 
             playback.error?.let { message: String ->
-                if (fullscreen || (expanded && !dragging && !settling)) {
+                if (fullscreen || (p <= 0.01f && !dragging && !settling)) {
                     Column(
                         modifier = Modifier
                             .fillMaxSize()
@@ -483,14 +455,14 @@ internal fun UnifiedPlayerOverlay(
                 }
             }
 
-            if (fullscreen || (expanded && !dragging && !settling)) {
+            if (fullscreen || (p <= 0.01f && !dragging && !settling)) {
                 Row(
                     modifier = Modifier.fillMaxWidth().padding(4.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     IconButton(
                         onClick = {
-                            if (fullscreen) fullscreen = false else settle(1f, thresholdCrossed = true)
+                            if (fullscreen) fullscreen = false else settle(1f, fast = true)
                         },
                         modifier = Modifier.background(Color.Black.copy(alpha = 0.42f), CircleShape)
                     ) {
@@ -520,8 +492,6 @@ internal fun UnifiedPlayerOverlay(
                     }
                 }
             }
-
         }
-
     }
 }

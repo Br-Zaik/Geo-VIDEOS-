@@ -1,0 +1,39 @@
+Geo Videos V30 - gesto DayliTube y Colección mejorada
+
+Cambios del reproductor:
+- El gesto vertical usa Modifier.draggable con velocidad real del dedo.
+- El desplazamiento del video es 1:1 durante el arrastre.
+- Se reemplazó el resorte largo por una transición corta de 105 a 250 ms.
+- La velocidad del gesto decide si el reproductor se minimiza o se expande.
+- La barra minimizada aparece solo cerca del final para evitar duplicados visuales.
+- Sombras y esquinas se aplican únicamente al llegar al estado minimizado.
+- Se mantiene una sola instancia de PlayerView/MediaController.
+
+Cambios de Colección:
+- Nueva pantalla tipo biblioteca con Continuar viendo.
+- Tarjetas visibles para Videos que me gustan y Ver después.
+- Accesos grandes para Suscripciones e Historial.
+- Accesos directos a Ver después, Me gusta y Mis videos.
+- Vista previa de canales y publicaciones recientes de suscripciones.
+- Las listas de Me gusta y Mis videos admiten carga adicional.
+
+Cambios de Suscripciones:
+- Carrusel de canales en la parte superior.
+- Filtros Todo, Videos y Shorts.
+- Filtro por canal y botón Ver canal.
+- Feed compacto de publicaciones recientes con Ver después funcional.
+
+Sin cambios:
+- applicationId com.geovideos.app
+- OAuth / inicio de sesión con Google
+- AndroidManifest.xml
+- firma geovideos-dev.jks
+- SHA-1 de desarrollo
+
+Versión:
+- versionCode 300
+- versionName 30.0.0
+
+Validación local:
+- Archivos Kotlin revisados sin errores de sintaxis detectados.
+- La compilación Gradle no pudo ejecutarse en el entorno local porque no tiene acceso DNS a services.gradle.org.

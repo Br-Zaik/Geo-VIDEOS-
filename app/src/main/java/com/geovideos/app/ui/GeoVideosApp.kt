@@ -653,8 +653,13 @@ private fun MainShell(
                     SubscriptionCollectionScreen(
                         modifier = contentModifier,
                         channels = state.subscriptions,
+                        videos = state.personalized.filter { video ->
+                            state.subscriptions.any { channel -> channel.id == video.channelId }
+                        },
                         onBack = { libraryDestination = LibraryDestination.ROOT },
-                        onOpenChannel = onOpenChannel
+                        onOpenChannel = onOpenChannel,
+                        onPlay = onPlay,
+                        onWatchLater = onWatchLater
                     )
                 } else {
                     val collectionVideos = when (libraryDestination) {
@@ -668,9 +673,21 @@ private fun MainShell(
                         modifier = contentModifier,
                         destination = libraryDestination,
                         videos = collectionVideos,
-                        loadingMore = libraryDestination == LibraryDestination.LIKED && state.likedLoadingMore,
-                        canLoadMore = libraryDestination == LibraryDestination.LIKED && state.likedCanLoadMore,
-                        onLoadMore = if (libraryDestination == LibraryDestination.LIKED) onLoadMoreLiked else null,
+                        loadingMore = when (libraryDestination) {
+                            LibraryDestination.LIKED -> state.likedLoadingMore
+                            LibraryDestination.UPLOADS -> state.uploadsLoadingMore
+                            else -> false
+                        },
+                        canLoadMore = when (libraryDestination) {
+                            LibraryDestination.LIKED -> state.likedCanLoadMore
+                            LibraryDestination.UPLOADS -> state.uploadsCanLoadMore
+                            else -> false
+                        },
+                        onLoadMore = when (libraryDestination) {
+                            LibraryDestination.LIKED -> onLoadMoreLiked
+                            LibraryDestination.UPLOADS -> onLoadMoreUploads
+                            else -> null
+                        },
                         onBack = { libraryDestination = LibraryDestination.ROOT },
                         onPlay = onPlay,
                         onWatchLater = onWatchLater
@@ -820,70 +837,263 @@ private fun LibraryScreen(
     onRemoveDownload: (Long) -> Unit
 ) {
     val context = LocalContext.current
-    Column(
-        modifier = modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 14.dp, vertical = 12.dp),
+    val uniqueLiked = remember(liked) { liked.distinctBy { it.id } }
+    val continueWatching = remember(history) {
+        history.filter { it.resumePositionMs > 0L && it.durationMs > 0L }
+            .ifEmpty { history }
+            .distinctBy { it.id }
+            .take(10)
+    }
+
+    LazyColumn(
+        modifier = modifier.fillMaxSize().background(Color.Black),
+        contentPadding = PaddingValues(vertical = 12.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
-        LibraryShortcutRow(
-            history = history.size,
-            later = watchLater.size,
-            liked = liked.size,
-            onHistory = onOpenHistory,
-            onWatchLater = onOpenWatchLater,
-            onLiked = onOpenLiked,
-            onDownload = onAddDownload
-        )
+        if (continueWatching.isNotEmpty()) {
+            item(key = "library-continue-title") {
+                SectionHeader("Continuar viendo", "Retoma cada video desde donde lo dejaste")
+            }
+            item(key = "library-continue-row") {
+                HorizontalVideos(continueWatching, onPlay)
+            }
+        }
 
-        Card(onClick = onOpenSubscriptions, modifier = Modifier.fillMaxWidth()) {
-            Row(modifier = Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-                Icon(Icons.Default.Subscriptions, null, tint = MaterialTheme.colorScheme.primary)
-                Column(modifier = Modifier.weight(1f).padding(start = 12.dp)) {
-                    Text("Suscripciones", fontWeight = FontWeight.Bold)
-                    Text("${subscriptions.size} canales", color = MaterialTheme.colorScheme.onSurfaceVariant)
+        item(key = "library-lists-title") {
+            SectionHeader("Listas", "Tus videos guardados y colecciones")
+        }
+        item(key = "library-lists-row") {
+            LazyRow(
+                contentPadding = PaddingValues(horizontal = 14.dp),
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                item {
+                    LibraryCoverCard(
+                        title = "Videos que me gustan",
+                        count = uniqueLiked.size,
+                        icon = Icons.Default.Favorite,
+                        thumbnailUrl = uniqueLiked.firstOrNull()?.thumbnailUrl.orEmpty(),
+                        onClick = onOpenLiked
+                    )
                 }
-                Icon(Icons.Default.KeyboardArrowDown, contentDescription = "Abrir suscripciones")
-            }
-        }
-
-        Card(onClick = onOpenUploads, modifier = Modifier.fillMaxWidth()) {
-            Row(modifier = Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-                Icon(Icons.Default.VideoLibrary, null, tint = MaterialTheme.colorScheme.primary)
-                Column(modifier = Modifier.weight(1f).padding(start = 12.dp)) {
-                    Text("Mis videos", fontWeight = FontWeight.Bold)
-                    Text("${uploads.size} videos", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                item {
+                    LibraryCoverCard(
+                        title = "Ver después",
+                        count = watchLater.size,
+                        icon = Icons.Default.WatchLater,
+                        thumbnailUrl = watchLater.firstOrNull()?.thumbnailUrl.orEmpty(),
+                        onClick = onOpenWatchLater
+                    )
                 }
-                Icon(Icons.Default.KeyboardArrowDown, contentDescription = "Abrir Mis videos")
+                items(playlists.take(8), key = { "library-playlist-${it.id}" }) { playlist ->
+                    PlaylistCard(playlist)
+                }
             }
         }
 
-        if (playlists.isNotEmpty()) {
-            SectionHeader("Tus playlists", "${playlists.size} listas")
-            LazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                items(playlists.take(10), key = { "playlist-root-${it.id}" }) { playlist -> PlaylistCard(playlist) }
+        item(key = "library-main-actions") {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp),
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                LibraryWideTile(
+                    modifier = Modifier.weight(1f),
+                    icon = Icons.Default.Subscriptions,
+                    title = "Suscripciones",
+                    subtitle = "${subscriptions.size} canales",
+                    onClick = onOpenSubscriptions
+                )
+                LibraryWideTile(
+                    modifier = Modifier.weight(1f),
+                    icon = Icons.Default.History,
+                    title = "Historial",
+                    subtitle = "${history.size} videos",
+                    onClick = onOpenHistory
+                )
             }
         }
 
-        SectionHeader("Descargas directas", "Archivos propios o autorizados")
-        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            Button(onClick = onAddDownload, modifier = Modifier.weight(1f)) {
-                Icon(Icons.Default.Download, null)
-                Spacer(Modifier.width(8.dp))
-                Text("Nueva")
-            }
-            OutlinedButton(onClick = { openSystemDownloads(context) }, modifier = Modifier.weight(1f)) {
-                Icon(Icons.Default.DownloadDone, null)
-                Spacer(Modifier.width(8.dp))
-                Text("Ver archivos")
-            }
-        }
-        downloads.take(4).forEach { video ->
-            DownloadStatusCard(
-                video = video,
-                onOpen = { openSystemDownloads(context) },
-                onRemove = { onRemoveDownload(video.downloadId) }
+        item(key = "library-watch-later-row") {
+            LibraryNavigationRow(
+                icon = Icons.Default.WatchLater,
+                title = "Ver después",
+                subtitle = "${watchLater.size} videos guardados",
+                onClick = onOpenWatchLater
             )
         }
-        Spacer(Modifier.height(16.dp))
+        item(key = "library-liked-row") {
+            LibraryNavigationRow(
+                icon = Icons.Default.Favorite,
+                title = "Videos que me gustan",
+                subtitle = "${uniqueLiked.size} videos",
+                onClick = onOpenLiked
+            )
+        }
+        item(key = "library-uploads-row") {
+            LibraryNavigationRow(
+                icon = Icons.Default.VideoLibrary,
+                title = "Mis videos",
+                subtitle = when {
+                    uploadsLoadingMore -> "Cargando más videos…"
+                    uploadsCanLoadMore -> "${uploads.size} videos · hay más disponibles"
+                    else -> "${uploads.size} videos"
+                },
+                onClick = {
+                    if (uploadsCanLoadMore && !uploadsLoadingMore) onLoadMoreUploads()
+                    onOpenUploads()
+                }
+            )
+        }
+
+        if (subscriptions.isNotEmpty()) {
+            item(key = "library-subscriptions-preview") {
+                Box(modifier = Modifier.padding(horizontal = 14.dp)) {
+                    SubscriptionShelf(
+                        subscriptions = subscriptions,
+                        recentVideos = subscriptionVideos,
+                        onOpenChannel = onOpenChannel,
+                        onOpenSubscriptions = onOpenSubscriptions,
+                        onPlay = onPlay
+                    )
+                }
+            }
+        }
+
+        item(key = "library-downloads-title") {
+            SectionHeader("Descargas directas", "Archivos propios o autorizados")
+        }
+        item(key = "library-download-buttons") {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp),
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Button(onClick = onAddDownload, modifier = Modifier.weight(1f)) {
+                    Icon(Icons.Default.Download, null)
+                    Spacer(Modifier.width(8.dp))
+                    Text("Nueva")
+                }
+                OutlinedButton(onClick = { openSystemDownloads(context) }, modifier = Modifier.weight(1f)) {
+                    Icon(Icons.Default.DownloadDone, null)
+                    Spacer(Modifier.width(8.dp))
+                    Text("Ver archivos")
+                }
+            }
+        }
+        items(downloads.take(6), key = { "download-${it.downloadId}-${it.id}" }) { video ->
+            Box(modifier = Modifier.padding(horizontal = 14.dp)) {
+                DownloadStatusCard(
+                    video = video,
+                    onOpen = { openSystemDownloads(context) },
+                    onRemove = { onRemoveDownload(video.downloadId) }
+                )
+            }
+        }
+        item { Spacer(Modifier.height(16.dp)) }
+    }
+}
+
+@Composable
+private fun LibraryCoverCard(
+    title: String,
+    count: Int,
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    thumbnailUrl: String,
+    onClick: () -> Unit
+) {
+    Card(
+        onClick = onClick,
+        modifier = Modifier.width(220.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+    ) {
+        Box(modifier = Modifier.fillMaxWidth().aspectRatio(16f / 9f)) {
+            Thumbnail(thumbnailUrl, Modifier.fillMaxSize())
+            Box(
+                modifier = Modifier.fillMaxSize().background(
+                    Brush.verticalGradient(
+                        listOf(Color.Transparent, Color.Black.copy(alpha = 0.82f))
+                    )
+                )
+            )
+            Row(
+                modifier = Modifier.align(Alignment.BottomStart).padding(10.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(icon, null, tint = Color.White)
+                Text(
+                    count.toString(),
+                    color = Color.White,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.padding(start = 6.dp)
+                )
+            }
+        }
+        Text(
+            title,
+            fontWeight = FontWeight.SemiBold,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 11.dp)
+        )
+    }
+}
+
+@Composable
+private fun LibraryWideTile(
+    modifier: Modifier,
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    title: String,
+    subtitle: String,
+    onClick: () -> Unit
+) {
+    Card(
+        onClick = onClick,
+        modifier = modifier,
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 18.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(icon, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(30.dp))
+            Column(modifier = Modifier.weight(1f).padding(start = 10.dp)) {
+                Text(title, fontWeight = FontWeight.Bold, maxLines = 1)
+                Text(
+                    subtitle,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun LibraryNavigationRow(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    title: String,
+    subtitle: String,
+    onClick: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(horizontal = 20.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(icon, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(30.dp))
+        Column(modifier = Modifier.weight(1f).padding(start = 16.dp)) {
+            Text(title, fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.titleMedium)
+            Text(
+                subtitle,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.padding(top = 2.dp)
+            )
+        }
+        Icon(Icons.Default.KeyboardArrowDown, contentDescription = "Abrir")
     }
 }
 
@@ -922,7 +1132,7 @@ private fun SubscriptionShelf(
                 horizontalArrangement = Arrangement.spacedBy(4.dp),
                 modifier = Modifier.padding(top = 10.dp)
             ) {
-                items(subscriptions, key = { "subscription-shelf-${it.id}" }) { channel ->
+                items(subscriptions.take(18), key = { "subscription-shelf-${it.id}" }) { channel ->
                     ChannelCard(channel) { onOpenChannel(channel) }
                 }
             }

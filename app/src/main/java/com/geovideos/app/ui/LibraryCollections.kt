@@ -1,30 +1,57 @@
 package com.geovideos.app.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Shuffle
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledIconButton
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import coil.compose.AsyncImage
+import coil.request.ImageRequest
 import com.geovideos.app.data.ChannelItem
 import com.geovideos.app.data.VideoItem
 
@@ -59,6 +86,7 @@ internal fun LibraryCollectionScreen(
     onPlay: (VideoItem) -> Unit,
     onWatchLater: (VideoItem) -> Unit
 ) {
+    val firstVideo = videos.firstOrNull()
     Column(modifier = modifier.fillMaxSize().background(Color.Black)) {
         TopAppBar(
             title = { Text(destination.title(), fontWeight = FontWeight.Bold) },
@@ -68,22 +96,69 @@ internal fun LibraryCollectionScreen(
                 }
             }
         )
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 8.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Text(
-                "${videos.size} videos",
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.weight(1f)
-            )
-            IconButton(onClick = { videos.randomOrNull()?.let(onPlay) }, enabled = videos.isNotEmpty()) {
-                Icon(Icons.Default.Shuffle, contentDescription = "Reproducir aleatoriamente")
+
+        Box(modifier = Modifier.fillMaxWidth().height(174.dp)) {
+            if (firstVideo != null) {
+                LiteThumbnail(
+                    url = firstVideo.thumbnailUrl,
+                    description = firstVideo.title,
+                    modifier = Modifier.fillMaxSize(),
+                    widthPx = 960,
+                    heightPx = 540,
+                    contentScale = ContentScale.Crop
+                )
+            } else {
+                Box(
+                    modifier = Modifier.fillMaxSize().background(
+                        Brush.linearGradient(
+                            listOf(Color(0xFF25143D), Color(0xFF5D3494), Color.Black)
+                        )
+                    )
+                )
             }
-            FilledIconButton(onClick = { videos.firstOrNull()?.let(onPlay) }, enabled = videos.isNotEmpty()) {
-                Icon(Icons.Default.PlayArrow, contentDescription = "Reproducir")
+            Box(
+                modifier = Modifier.fillMaxSize().background(
+                    Brush.verticalGradient(
+                        listOf(Color.Black.copy(alpha = 0.15f), Color.Black.copy(alpha = 0.94f))
+                    )
+                )
+            )
+            Column(
+                modifier = Modifier.align(Alignment.BottomStart).padding(horizontal = 16.dp, vertical = 14.dp)
+            ) {
+                Text(
+                    destination.title(),
+                    style = MaterialTheme.typography.headlineSmall,
+                    fontWeight = FontWeight.ExtraBold,
+                    color = Color.White
+                )
+                Text(
+                    "${videos.size} videos",
+                    color = Color.White.copy(alpha = 0.78f),
+                    modifier = Modifier.padding(top = 3.dp)
+                )
+            }
+            Row(
+                modifier = Modifier.align(Alignment.BottomEnd).padding(14.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                IconButton(
+                    onClick = { videos.randomOrNull()?.let(onPlay) },
+                    enabled = videos.isNotEmpty(),
+                    modifier = Modifier.background(Color.Black.copy(alpha = 0.55f), CircleShape)
+                ) {
+                    Icon(Icons.Default.Shuffle, contentDescription = "Reproducir aleatoriamente", tint = Color.White)
+                }
+                FilledIconButton(
+                    onClick = { videos.firstOrNull()?.let(onPlay) },
+                    enabled = videos.isNotEmpty()
+                ) {
+                    Icon(Icons.Default.PlayArrow, contentDescription = "Reproducir")
+                }
             }
         }
+
         HorizontalDivider()
         NativeVideoList(
             modifier = Modifier.weight(1f).fillMaxWidth(),
@@ -92,7 +167,12 @@ internal fun LibraryCollectionScreen(
             loadingMore = loadingMore,
             canLoadMore = canLoadMore,
             mode = NativeVideoListMode.COMPACT,
-            emptyMessage = "No hay videos disponibles en esta sección.",
+            emptyMessage = when (destination) {
+                LibraryDestination.WATCH_LATER -> "Guarda videos y aparecerán aquí para verlos después."
+                LibraryDestination.LIKED -> "Los videos que marques con Me gusta aparecerán aquí."
+                LibraryDestination.HISTORY -> "Todavía no hay videos en tu historial."
+                else -> "No hay videos disponibles en esta sección."
+            },
             onLoadMore = onLoadMore,
             onPlay = onPlay,
             onSave = onWatchLater
@@ -100,14 +180,39 @@ internal fun LibraryCollectionScreen(
     }
 }
 
+private enum class SubscriptionMediaFilter { ALL, VIDEOS, SHORTS }
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun SubscriptionCollectionScreen(
     modifier: Modifier,
     channels: List<ChannelItem>,
+    videos: List<VideoItem>,
     onBack: () -> Unit,
-    onOpenChannel: (ChannelItem) -> Unit
+    onOpenChannel: (ChannelItem) -> Unit,
+    onPlay: (VideoItem) -> Unit,
+    onWatchLater: (VideoItem) -> Unit
 ) {
+    var selectedChannelId by rememberSaveable { mutableStateOf("") }
+    var mediaFilter by rememberSaveable { mutableStateOf(SubscriptionMediaFilter.ALL) }
+
+    val selectedChannel = remember(channels, selectedChannelId) {
+        channels.firstOrNull { it.id == selectedChannelId }
+    }
+    val filteredVideos = remember(videos, selectedChannelId, mediaFilter) {
+        videos.asSequence()
+            .filter { selectedChannelId.isBlank() || it.channelId == selectedChannelId }
+            .filter {
+                when (mediaFilter) {
+                    SubscriptionMediaFilter.ALL -> true
+                    SubscriptionMediaFilter.VIDEOS -> !it.looksLikeShortForLibrary()
+                    SubscriptionMediaFilter.SHORTS -> it.looksLikeShortForLibrary()
+                }
+            }
+            .distinctBy { it.id }
+            .toList()
+    }
+
     Column(modifier = modifier.fillMaxSize().background(Color.Black)) {
         TopAppBar(
             title = { Text("Suscripciones", fontWeight = FontWeight.Bold) },
@@ -117,15 +222,144 @@ internal fun SubscriptionCollectionScreen(
                 }
             }
         )
+
+        LazyRow(
+            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp),
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            item {
+                SubscriptionChannelButton(
+                    title = "Todos",
+                    thumbnailUrl = "",
+                    selected = selectedChannelId.isBlank(),
+                    onClick = { selectedChannelId = "" }
+                )
+            }
+            items(channels, key = { channel: ChannelItem -> "subscription-channel-${channel.id}" }) { channel: ChannelItem ->
+                SubscriptionChannelButton(
+                    title = channel.title,
+                    thumbnailUrl = channel.thumbnailUrl,
+                    selected = selectedChannelId == channel.id,
+                    onClick = { selectedChannelId = channel.id }
+                )
+            }
+        }
+
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            FilterChip(
+                selected = mediaFilter == SubscriptionMediaFilter.ALL,
+                onClick = { mediaFilter = SubscriptionMediaFilter.ALL },
+                label = { Text("Todo") }
+            )
+            FilterChip(
+                selected = mediaFilter == SubscriptionMediaFilter.VIDEOS,
+                onClick = { mediaFilter = SubscriptionMediaFilter.VIDEOS },
+                label = { Text("Videos") }
+            )
+            FilterChip(
+                selected = mediaFilter == SubscriptionMediaFilter.SHORTS,
+                onClick = { mediaFilter = SubscriptionMediaFilter.SHORTS },
+                label = { Text("Shorts") }
+            )
+            Spacer(Modifier.weight(1f))
+            if (selectedChannel != null) {
+                OutlinedButton(onClick = { onOpenChannel(selectedChannel) }) {
+                    Text("Ver canal", maxLines = 1)
+                }
+            }
+        }
+
         Text(
-            "${channels.size} canales",
+            if (selectedChannel == null) {
+                "${channels.size} canales · ${filteredVideos.size} publicaciones recientes"
+            } else {
+                "${selectedChannel.title} · ${filteredVideos.size} publicaciones"
+            },
             color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
         )
-        NativeChannelList(
+        HorizontalDivider()
+
+        NativeVideoList(
             modifier = Modifier.weight(1f).fillMaxWidth(),
-            channels = channels,
-            onOpenChannel = onOpenChannel
+            videos = filteredVideos,
+            loading = false,
+            mode = NativeVideoListMode.COMPACT,
+            emptyMessage = if (selectedChannel == null) {
+                "No se encontraron publicaciones recientes de tus suscripciones."
+            } else {
+                "No se encontraron publicaciones recientes de este canal. Pulsa Ver canal para buscar más."
+            },
+            onPlay = onPlay,
+            onSave = onWatchLater
         )
     }
+}
+
+@Composable
+private fun SubscriptionChannelButton(
+    title: String,
+    thumbnailUrl: String,
+    selected: Boolean,
+    onClick: () -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .width(82.dp)
+            .clip(RoundedCornerShape(14.dp))
+            .clickable(onClick = onClick)
+            .padding(vertical = 6.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Surface(
+            modifier = Modifier.size(62.dp),
+            shape = CircleShape,
+            color = if (selected) MaterialTheme.colorScheme.primaryContainer else Color(0xFF26232B),
+            border = if (selected) {
+                androidx.compose.foundation.BorderStroke(2.dp, MaterialTheme.colorScheme.primary)
+            } else null
+        ) {
+            if (thumbnailUrl.isBlank()) {
+                Box(contentAlignment = Alignment.Center) {
+                    Text("Todo", fontWeight = FontWeight.Bold, textAlign = TextAlign.Center)
+                }
+            } else {
+                val context = LocalContext.current
+                val request = remember(thumbnailUrl) {
+                    ImageRequest.Builder(context)
+                        .data(thumbnailUrl)
+                        .size(180)
+                        .crossfade(false)
+                        .build()
+                }
+                AsyncImage(
+                    model = request,
+                    contentDescription = title,
+                    modifier = Modifier.fillMaxSize(),
+                    contentScale = ContentScale.Crop
+                )
+            }
+        }
+        Text(
+            title,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            textAlign = TextAlign.Center,
+            style = MaterialTheme.typography.bodySmall,
+            fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
+            modifier = Modifier.fillMaxWidth().padding(top = 5.dp)
+        )
+    }
+}
+
+private fun VideoItem.looksLikeShortForLibrary(): Boolean {
+    if (durationMs in 1L..75_000L) return true
+    val text = "$title $description".lowercase()
+    return "#shorts" in text || "#short" in text || " youtube shorts" in text
 }
