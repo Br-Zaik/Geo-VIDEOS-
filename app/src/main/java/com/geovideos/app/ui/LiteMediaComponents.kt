@@ -15,6 +15,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -47,12 +48,22 @@ internal fun LitePlayerView(
     resizeMode: Int = androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_FIT,
     useTextureView: Boolean = false
 ) {
+    val attachedView = remember { arrayOfNulls<PlayerView>(1) }
+    DisposableEffect(controller) {
+        onDispose {
+            attachedView[0]?.let { view ->
+                if (view.player === controller) view.player = null
+            }
+            attachedView[0] = null
+        }
+    }
     AndroidView(
         modifier = modifier.background(Color.Black),
         factory = { context ->
             val layout = if (useTextureView) R.layout.geo_player_texture else R.layout.geo_player_surface
             (LayoutInflater.from(context)
                 .inflate(layout, null, false) as PlayerView).apply {
+                attachedView[0] = this
                 player = controller
                 this.useController = useController
                 controllerAutoShow = useController
@@ -70,6 +81,7 @@ internal fun LitePlayerView(
             }
         },
         update = { view ->
+            attachedView[0] = view
             if (view.player !== controller) view.player = controller
             view.useController = useController
             view.controllerAutoShow = useController

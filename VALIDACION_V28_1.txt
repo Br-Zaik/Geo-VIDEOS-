@@ -1,0 +1,6 @@
+GEO VIDEOS V28.1 - CORRECCION DE COMPILACION
+
+Correccion aplicada:
+- Eliminada la referencia incompatible RectangleShape.
+- Sustituida por RoundedCornerShape(0.dp), compatible con la version de Compose del proyecto.
+- No se modifico OAuth, inicio de sesion Google, package name, AndroidManifest ni firma.

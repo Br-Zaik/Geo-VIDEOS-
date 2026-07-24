@@ -59,11 +59,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
@@ -120,9 +118,8 @@ internal fun LitePlayerScreen(
     var dismissing by remember(video.id) { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     val density = LocalDensity.current
-    val configuration = LocalConfiguration.current
-    val dismissThresholdPx = with(density) { 64.dp.toPx() }
-    val dismissTargetPx = with(density) { configuration.screenHeightDp.dp.toPx() * 0.72f }
+    val dismissThresholdPx = with(density) { 92.dp.toPx() }
+    val dismissTargetPx = with(density) { 176.dp.toPx() }
     val dragProgress = (dragOffset / dismissThresholdPx).coerceIn(0f, 1f)
     val description = details?.description.orEmpty().ifBlank { video.description }
     val channelAvatar = details?.channelThumbnailUrl.orEmpty().ifBlank { video.channelThumbnailUrl }
@@ -170,7 +167,7 @@ internal fun LitePlayerScreen(
             animate(
                 initialValue = start,
                 targetValue = dismissTargetPx,
-                animationSpec = tween(durationMillis = 145)
+                animationSpec = tween(durationMillis = 105)
             ) { value, _ -> dragOffset = value }
             saveProgress()
             onBack()
@@ -206,11 +203,13 @@ internal fun LitePlayerScreen(
                 .fillMaxSize()
                 .graphicsLayer {
                     if (!fullscreen) {
-                        translationY = dragOffset
-                        val scale = 1f - (0.018f * dragProgress)
+                        translationY = dragOffset * 0.72f
+                        val scale = 1f - (0.045f * dragProgress)
                         scaleX = scale
                         scaleY = scale
-                        alpha = 1f - (0.04f * dragProgress)
+                        alpha = 1f - (0.10f * dragProgress)
+                        clip = dragProgress > 0f
+                        shape = RoundedCornerShape((18f * dragProgress).dp)
                     }
                 }
         ) {
@@ -249,7 +248,7 @@ internal fun LitePlayerScreen(
                 contentScale = ContentScale.Fit
             )
 
-            if (controller != null && controller?.currentMediaItem?.mediaId == video.id && !playback.connecting && !playback.resolving) {
+            if (!dismissing && controller != null && controller?.currentMediaItem?.mediaId == video.id && !playback.connecting && !playback.resolving) {
                 LitePlayerView(
                     controller = controller!!,
                     modifier = Modifier.fillMaxSize(),
@@ -327,7 +326,7 @@ internal fun LitePlayerScreen(
             Surface(
                 modifier = Modifier.weight(1f).fillMaxWidth(),
                 color = MaterialTheme.colorScheme.background.copy(alpha = if (dragProgress > 0f) 0.985f else 1f),
-                shape = if (dragProgress > 0f) RoundedCornerShape(topStart = 22.dp, topEnd = 22.dp) else RectangleShape,
+                shape = if (dragProgress > 0f) RoundedCornerShape(topStart = 22.dp, topEnd = 22.dp) else RoundedCornerShape(0.dp),
                 tonalElevation = if (dragProgress > 0f) 6.dp else 0.dp,
                 shadowElevation = if (dragProgress > 0f) 12.dp else 0.dp
             ) {

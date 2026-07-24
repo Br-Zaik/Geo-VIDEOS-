@@ -484,6 +484,8 @@ private fun MainShell(
     var showDownloadDialog by rememberSaveable { mutableStateOf(false) }
     var pendingDownload by remember { mutableStateOf<PendingDownload?>(null) }
     var libraryDestination by rememberSaveable { mutableStateOf(LibraryDestination.ROOT) }
+    var homeAtTop by rememberSaveable { mutableStateOf(true) }
+    var homeScrollToTopSignal by rememberSaveable { mutableLongStateOf(0L) }
 
     LaunchedEffect(state.section) {
         if (state.section != MainSection.LIBRARY) libraryDestination = LibraryDestination.ROOT
@@ -562,10 +564,16 @@ private fun MainShell(
         bottomBar = {
             NavigationBar {
                 val navigate: (MainSection) -> Unit = { target ->
-                    if (target == MainSection.LIBRARY && state.section == MainSection.LIBRARY) {
-                        libraryDestination = LibraryDestination.ROOT
+                    when {
+                        target == MainSection.HOME && state.section == MainSection.HOME -> {
+                            if (homeAtTop) onRefresh() else homeScrollToTopSignal += 1L
+                        }
+                        target == MainSection.LIBRARY && state.section == MainSection.LIBRARY -> {
+                            libraryDestination = LibraryDestination.ROOT
+                            onSection(target)
+                        }
+                        else -> onSection(target)
                     }
-                    onSection(target)
                 }
                 BottomItem(MainSection.HOME, state.section, "Principal", Icons.Default.Home, navigate)
                 BottomItem(MainSection.SHORTS, state.section, "Shorts", Icons.Default.AutoAwesome, navigate)
@@ -599,7 +607,9 @@ private fun MainShell(
                 onCategory = onCategory,
                 onPlay = onPlay,
                 onOpenShort = onPreviewShort,
-                onWatchLater = onWatchLater
+                onWatchLater = onWatchLater,
+                scrollToTopSignal = homeScrollToTopSignal,
+                onAtTopChanged = { homeAtTop = it }
             )
             MainSection.SHORTS -> RecyclerShortsScreen(
                 modifier = contentModifier,
@@ -1162,7 +1172,6 @@ private fun MiniPlayer(
     val playback by playerConnection.coreState.collectAsStateWithLifecycle()
     val controller by playerConnection.controller.collectAsStateWithLifecycle()
     val isPlaying = playback.isPlaying
-    var dragOffset by remember(video.id) { mutableFloatStateOf(0f) }
 
     fun saveCurrentProgress() {
         val active = controller
@@ -1176,24 +1185,7 @@ private fun MiniPlayer(
     Surface(
         modifier = modifier
             .fillMaxWidth()
-            .height(74.dp)
-            .graphicsLayer { translationY = dragOffset }
-            .pointerInput(video.id) {
-                detectVerticalDragGestures(
-                    onVerticalDrag = { _, amount -> dragOffset += amount },
-                    onDragEnd = {
-                        when {
-                            dragOffset <= -70f -> onExpand()
-                            dragOffset >= 70f -> {
-                                saveCurrentProgress()
-                                onClose()
-                            }
-                        }
-                        dragOffset = 0f
-                    },
-                    onDragCancel = { dragOffset = 0f }
-                )
-            },
+            .height(74.dp),
         tonalElevation = 8.dp,
         shadowElevation = 8.dp
     ) {
@@ -1201,6 +1193,20 @@ private fun MiniPlayer(
             Row(modifier = Modifier.fillMaxSize(), verticalAlignment = Alignment.CenterVertically) {
                 Box(modifier = Modifier.width(132.dp).height(74.dp).background(Color.Black)) {
                     Thumbnail(video.thumbnailUrl, Modifier.fillMaxSize())
+                    if (
+                        controller != null &&
+                        controller?.currentMediaItem?.mediaId == video.id &&
+                        !playback.resolving &&
+                        !playback.connecting
+                    ) {
+                        LitePlayerView(
+                            controller = controller!!,
+                            modifier = Modifier.fillMaxSize(),
+                            useController = false,
+                            resizeMode = androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_ZOOM,
+                            useTextureView = true
+                        )
+                    }
                     if (playback.resolving || playback.connecting) {
                         CircularProgressIndicator(
                             modifier = Modifier.align(Alignment.Center).size(24.dp),

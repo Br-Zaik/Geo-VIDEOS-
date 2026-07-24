@@ -837,12 +837,14 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
         videos: List<VideoItem>
     ): List<VideoItem> {
         if (videos.isEmpty()) return videos
+        val withDurations = runCatching { api.enrichVideoDurations(token, videos) }
+            .getOrDefault(videos)
         val cached = withContext(Dispatchers.IO) { repository.loadChannelAvatars() }
-        val embedded = videos.asSequence()
+        val embedded = withDurations.asSequence()
             .filter { it.channelId.isNotBlank() && it.channelThumbnailUrl.isNotBlank() }
             .associate { it.channelId to it.channelThumbnailUrl }
         val known = cached + embedded
-        val withKnownAvatars = videos.map { video ->
+        val withKnownAvatars = withDurations.map { video ->
             val avatar = known[video.channelId].orEmpty()
             if (video.channelThumbnailUrl.isNotBlank() || avatar.isBlank()) video
             else video.copy(channelThumbnailUrl = avatar)
@@ -1374,8 +1376,10 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
 
     private fun looksLikeShort(video: VideoItem): Boolean {
         val text = (video.title + " " + video.description).lowercase()
-        val taggedAsShort = listOf("#shorts", " shorts", "short ", "tiktok", "reel").any { it in text }
-        return taggedAsShort || video.durationMs in 1..60_000L
+        val taggedAsShort = listOf(
+            "#shorts", " shorts", "short ", "tiktok", "reel", "vertical", "status video"
+        ).any { it in text }
+        return taggedAsShort || video.durationMs in 1..90_000L
     }
 
     private fun handleApiError(error: YouTubeApiException) {

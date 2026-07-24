@@ -13,7 +13,11 @@ import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.TextView
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.recyclerview.widget.DiffUtil
@@ -35,8 +39,11 @@ internal fun RecyclerHomeFeed(
     onLoadMore: () -> Unit,
     onPlay: (VideoItem) -> Unit,
     onOpenShort: (VideoItem) -> Unit,
-    onWatchLater: (VideoItem) -> Unit
+    onWatchLater: (VideoItem) -> Unit,
+    scrollToTopSignal: Long,
+    onAtTopChanged: (Boolean) -> Unit
 ) {
+    var recyclerViewRef by remember { mutableStateOf<RecyclerView?>(null) }
     val adapter = remember {
         HomeFeedAdapter(
             onPlay = onPlay,
@@ -45,10 +52,17 @@ internal fun RecyclerHomeFeed(
         )
     }
 
+    LaunchedEffect(scrollToTopSignal) {
+        if (scrollToTopSignal > 0L) recyclerViewRef?.scrollHomeToTop()
+    }
+
     AndroidView(
         modifier = modifier,
         factory = { context ->
             RecyclerView(context).apply {
+                recyclerViewRef = this
+                val runtime = HomeFeedRuntime(onAtTopChanged)
+                tag = runtime
                 layoutManager = LinearLayoutManager(context).apply {
                     initialPrefetchItemCount = 4
                 }
@@ -62,6 +76,7 @@ internal fun RecyclerHomeFeed(
 
                 addOnScrollListener(object : RecyclerView.OnScrollListener() {
                     override fun onScrolled(recyclerView: RecyclerView, dx: Int, dy: Int) {
+                        runtime.onAtTopChanged(!recyclerView.canScrollVertically(-1))
                         if (dy <= 0) return
                         val manager = recyclerView.layoutManager as? LinearLayoutManager ?: return
                         val lastVisible = manager.findLastVisibleItemPosition()
@@ -77,10 +92,18 @@ internal fun RecyclerHomeFeed(
                             feedAdapter.onLoadMore()
                         }
                     }
+
+                    override fun onScrollStateChanged(recyclerView: RecyclerView, newState: Int) {
+                        runtime.onAtTopChanged(!recyclerView.canScrollVertically(-1))
+                    }
                 })
+                post { runtime.onAtTopChanged(!canScrollVertically(-1)) }
             }
         },
         update = { recyclerView ->
+            recyclerViewRef = recyclerView
+            (recyclerView.tag as? HomeFeedRuntime)?.onAtTopChanged = onAtTopChanged
+            onAtTopChanged(!recyclerView.canScrollVertically(-1))
             val homeAdapter = recyclerView.adapter as HomeFeedAdapter
             homeAdapter.onPlay = onPlay
             homeAdapter.onOpenShort = onOpenShort
@@ -97,6 +120,18 @@ internal fun RecyclerHomeFeed(
             )
         }
     )
+}
+
+
+private class HomeFeedRuntime(
+    var onAtTopChanged: (Boolean) -> Unit
+)
+
+private fun RecyclerView.scrollHomeToTop() {
+    val manager = layoutManager as? LinearLayoutManager ?: return
+    val first = manager.findFirstVisibleItemPosition().coerceAtLeast(0)
+    if (first > 12) scrollToPosition(8)
+    post { smoothScrollToPosition(0) }
 }
 
 private sealed interface HomeFeedRow {
@@ -562,7 +597,11 @@ private fun formatRecyclerPublished(value: String): String {
     if (value.isBlank()) return ""
     if (value.contains("hace", ignoreCase = true)) return value
     return runCatching {
-        val instant = java.time.Instant.parse(value)
+        val instant = runCatching { java.time.Instant.parse(value) }.getOrElse {
+            java.time.LocalDate.parse(value.take(10))
+                .atStartOfDay(java.time.ZoneId.systemDefault())
+                .toInstant()
+        }
         val elapsed = (java.time.Instant.now().epochSecond - instant.epochSecond).coerceAtLeast(0L)
         when {
             elapsed < 3_600L -> "hace ${maxOf(1L, elapsed / 60L)} min"

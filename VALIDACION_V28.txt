@@ -1,0 +1,11 @@
+Geo Videos V28
+
+Cambios:
+- Shorts del feed principal se separan de los videos normales por ID, etiquetas y duracion real.
+- Se consulta contentDetails en lote para reconocer videos cortos antes de dibujar el feed.
+- Tocar Principal estando abajo desplaza al inicio; tocar Principal estando arriba actualiza.
+- Minimizacion mas corta y natural, sin recorrido gigante.
+- El PlayerView se desconecta al salir para evitar ventanas de video flotantes o duplicadas.
+- El minirreproductor queda fijo y muestra el video real dentro de su miniatura.
+- Me gusta, No me gusta, Ver despues y Canal tienen respuesta visual y zonas tactiles activas.
+- No se modificaron OAuth, package name, manifiesto ni firma.

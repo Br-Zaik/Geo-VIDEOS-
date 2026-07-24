@@ -364,6 +364,35 @@ class YouTubeApi {
         parseSearchItems(json)
     }
 
+    suspend fun enrichVideoDurations(token: String, videos: List<VideoItem>): List<VideoItem> = withContext(Dispatchers.IO) {
+        if (videos.isEmpty()) return@withContext videos
+        val durations = LinkedHashMap<String, Long>()
+        videos.asSequence()
+            .filter { it.durationMs <= 0L && it.mediaKind == com.geovideos.app.data.MediaKind.YOUTUBE }
+            .map { it.id }
+            .filter { it.isNotBlank() }
+            .distinct()
+            .chunked(50)
+            .forEach { ids ->
+                val json = requestJson(
+                    "https://www.googleapis.com/youtube/v3/videos?part=contentDetails&id=${ids.joinToString(",")}&maxResults=50",
+                    token
+                )
+                val items = json.optJSONArray("items") ?: return@forEach
+                for (index in 0 until items.length()) {
+                    val item = items.optJSONObject(index) ?: continue
+                    val id = item.optString("id")
+                    val iso = item.optJSONObject("contentDetails")?.optString("duration").orEmpty()
+                    val durationMs = runCatching { java.time.Duration.parse(iso).toMillis() }.getOrDefault(0L)
+                    if (id.isNotBlank() && durationMs > 0L) durations[id] = durationMs
+                }
+            }
+        videos.map { video ->
+            val duration = durations[video.id] ?: video.durationMs
+            if (duration == video.durationMs) video else video.copy(durationMs = duration)
+        }
+    }
+
     suspend fun enrichVideos(token: String, videos: List<VideoItem>): List<VideoItem> = withContext(Dispatchers.IO) {
         if (videos.isEmpty()) return@withContext videos
         val ids = videos.asSequence()

@@ -50,16 +50,25 @@ internal fun LiteHomeScreen(
     onCategory: (HomeCategory) -> Unit,
     onPlay: (VideoItem) -> Unit,
     onOpenShort: (VideoItem) -> Unit,
-    onWatchLater: (VideoItem) -> Unit
+    onWatchLater: (VideoItem) -> Unit,
+    scrollToTopSignal: Long,
+    onAtTopChanged: (Boolean) -> Unit
 ) {
-    val videos = remember(category, personalized, popular, live, gaming, music) {
-        val base = when (category) {
+    val baseVideos = remember(category, personalized, popular, live, gaming, music) {
+        when (category) {
             HomeCategory.FOR_YOU -> personalized.ifEmpty { popular }
             HomeCategory.LIVE -> live
             HomeCategory.GAMING -> gaming
             HomeCategory.MUSIC -> music
         }
-        base.filterNot(::looksLikeHomeShort)
+    }
+    val homeShorts = remember(category, baseVideos, shorts) {
+        if (category != HomeCategory.FOR_YOU) emptyList()
+        else (shorts + baseVideos.filter(::looksLikeHomeShort)).distinctBy { it.id }.take(16)
+    }
+    val videos = remember(baseVideos, homeShorts) {
+        val shortIds = homeShorts.asSequence().map { it.id }.toHashSet()
+        baseVideos.filterNot { video -> video.id in shortIds || looksLikeHomeShort(video) }
     }
     val watchLaterIds = remember(watchLater) {
         watchLater.asSequence().map { it.id }.toHashSet()
@@ -96,7 +105,7 @@ internal fun LiteHomeScreen(
             RecyclerHomeFeed(
                 modifier = Modifier.fillMaxSize(),
                 videos = videos,
-                shorts = if (category == HomeCategory.FOR_YOU) shorts else emptyList(),
+                shorts = homeShorts,
                 loading = loading,
                 loadingMore = loadingMore,
                 canLoadMore = canLoadMore,
@@ -104,7 +113,9 @@ internal fun LiteHomeScreen(
                 onLoadMore = { onLoadMore(category) },
                 onPlay = onPlay,
                 onOpenShort = onOpenShort,
-                onWatchLater = onWatchLater
+                onWatchLater = onWatchLater,
+                scrollToTopSignal = scrollToTopSignal,
+                onAtTopChanged = onAtTopChanged
             )
         }
     }
@@ -128,6 +139,8 @@ private fun LiteCategoryChip(
 
 private fun looksLikeHomeShort(video: VideoItem): Boolean {
     val text = (video.title + " " + video.description).lowercase()
-    val taggedAsShort = listOf("#shorts", " shorts", "short ", "tiktok", "reel").any { it in text }
-    return taggedAsShort || video.durationMs in 1..60_000L
+    val taggedAsShort = listOf(
+        "#shorts", " shorts", "short ", "tiktok", "reel", "vertical", "status video"
+    ).any { it in text }
+    return taggedAsShort || video.durationMs in 1..90_000L
 }

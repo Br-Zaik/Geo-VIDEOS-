@@ -476,7 +476,8 @@ private object ChannelRowDiff : DiffUtil.ItemCallback<ChannelRow>() {
 private class NativeChannelAdapter(var onOpen: (ChannelItem) -> Unit) : ListAdapter<ChannelRow, RecyclerView.ViewHolder>(ChannelRowDiff) {
     init { setHasStableIds(true) }
     fun submitContent(channels: List<ChannelItem>, emptyMessage: String) = submitList(
-        if (channels.isEmpty()) listOf(ChannelRow.Empty(emptyMessage)) else channels.map { ChannelRow.Channel(it) }
+        if (channels.isEmpty()) listOf<ChannelRow>(ChannelRow.Empty(emptyMessage))
+        else channels.map<ChannelItem, ChannelRow> { ChannelRow.Channel(it) }
     )
     override fun getItemId(position: Int) = getItem(position).id
     override fun getItemViewType(position: Int) = if (getItem(position) is ChannelRow.Channel) TYPE_CHANNEL else TYPE_EMPTY
@@ -634,10 +635,12 @@ private class PlayerHeaderHolder(context: Context) : RecyclerView.ViewHolder(Pla
         }.joinToString(" · ")
         view.channel.text = video.channelTitle.ifBlank { "Canal" }
         view.subscribers.text = data.details?.subscriberCount?.takeIf { it > 0 }?.let { "${compactNumber(it)} suscriptores" }.orEmpty()
-        view.like.text = data.details?.likeCount?.takeIf { it > 0 }?.let(::compactNumber) ?: "Me gusta"
-        view.like.isSelected = data.isLiked
-        view.dislike.isSelected = data.isDisliked
-        view.watchLater.text = if (data.isWatchLater) "Guardado" else "Ver después"
+        view.like.text = data.details?.likeCount?.takeIf { it > 0 }?.let { "👍 ${compactNumber(it)}" } ?: "👍 Me gusta"
+        view.dislike.text = "👎 No me gusta"
+        view.watchLater.text = if (data.isWatchLater) "✓ Guardado" else "◷ Ver después"
+        setActionSelected(view.like, data.isLiked)
+        setActionSelected(view.dislike, data.isDisliked)
+        setActionSelected(view.watchLater, data.isWatchLater)
         view.description.text = data.description
         view.descriptionBox.visibility = if (data.description.isBlank()) View.GONE else View.VISIBLE
         view.like.setOnClickListener { onLike() }
@@ -645,9 +648,16 @@ private class PlayerHeaderHolder(context: Context) : RecyclerView.ViewHolder(Pla
         view.watchLater.setOnClickListener { onWatchLater() }
         view.share.setOnClickListener { onShare() }
         view.channelButton.visibility = if (video.channelId.isBlank()) View.GONE else View.VISIBLE
-        view.channelButton.setOnClickListener {
-            onOpenChannel(ChannelItem(video.channelId, video.channelTitle, data.channelAvatar))
+        view.channelButton.text = "Ver canal"
+        val openChannel = View.OnClickListener {
+            if (video.channelId.isNotBlank()) {
+                onOpenChannel(ChannelItem(video.channelId, video.channelTitle, data.channelAvatar))
+            }
         }
+        view.channelButton.setOnClickListener(openChannel)
+        view.avatar.setOnClickListener(openChannel)
+        view.channel.setOnClickListener(openChannel)
+        view.subscribers.setOnClickListener(openChannel)
         loadAvatar(view.avatar, data.channelAvatar, 112)
     }
 }
@@ -870,6 +880,18 @@ private fun compactNumber(value: Long): String = when {
     value >= 1_000_000 -> "%.1f M".format(value / 1_000_000.0).replace(".0", "")
     value >= 1_000 -> "%.1f K".format(value / 1_000.0).replace(".0", "")
     else -> value.toString()
+}
+
+
+private fun setActionSelected(view: TextView, selected: Boolean) {
+    view.isSelected = selected
+    view.setTextColor(Color.WHITE)
+    view.background = roundedDrawable(
+        if (selected) 0xFF6E43C7.toInt() else 0xFF242128.toInt(),
+        18f,
+        view.context,
+        if (selected) 0xFFB89BFF.toInt() else 0xFF5B5663.toInt()
+    )
 }
 
 private fun styleAction(context: Context, view: TextView, text: String) {
