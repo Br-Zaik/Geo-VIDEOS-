@@ -1,0 +1,9 @@
+Geo Videos V31
+
+Cambios:
+- Se elimina la X y el boton de pantalla completa permanentes del reproductor expandido.
+- Los controles aparecen al tocar el video usando PlayerView.
+- Descripcion cerrada por defecto con boton Mas/Menos.
+- Se agrega bloque de Comentarios con contador disponible.
+- Videos relacionados en tarjetas grandes 16:9.
+- No se modifica OAuth, paquete, firma ni manifiesto.

@@ -455,43 +455,9 @@ internal fun UnifiedPlayerOverlay(
                 }
             }
 
-            if (fullscreen || (p <= 0.01f && !dragging && !settling)) {
-                Row(
-                    modifier = Modifier.fillMaxWidth().padding(4.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    IconButton(
-                        onClick = {
-                            if (fullscreen) fullscreen = false else settle(1f, fast = true)
-                        },
-                        modifier = Modifier.background(Color.Black.copy(alpha = 0.42f), CircleShape)
-                    ) {
-                        Icon(Icons.Default.ArrowBack, "Bajar", tint = Color.White)
-                    }
-                    Spacer(Modifier.weight(1f))
-                    IconButton(
-                        onClick = { fullscreen = !fullscreen },
-                        modifier = Modifier.background(Color.Black.copy(alpha = 0.42f), CircleShape)
-                    ) {
-                        Icon(
-                            if (fullscreen) Icons.Default.FullscreenExit else Icons.Default.Fullscreen,
-                            if (fullscreen) "Salir de pantalla completa" else "Pantalla completa",
-                            tint = Color.White
-                        )
-                    }
-                    if (!fullscreen) {
-                        IconButton(
-                            onClick = {
-                                saveProgress()
-                                onClose()
-                            },
-                            modifier = Modifier.background(Color.Black.copy(alpha = 0.42f), CircleShape)
-                        ) {
-                            Icon(Icons.Default.Close, "Cerrar", tint = Color.White)
-                        }
-                    }
-                }
-            }
+            // Los controles aparecen al tocar el video mediante PlayerView.
+            // Se elimina la barra superior permanente con X y pantalla completa,
+            // para mantener una vista limpia como DayliTube.
         }
     }
 }

@@ -595,7 +595,7 @@ private class NativePlayerAdapter(
     }
     override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): RecyclerView.ViewHolder = when (viewType) {
         TYPE_HEADER -> PlayerHeaderHolder(parent.context)
-        TYPE_RELATED -> CompactVideoHolder(parent.context)
+        TYPE_RELATED -> FullVideoHolder(parent.context)
         TYPE_LOADING -> LoadingRowHolder(parent.context)
         else -> MoreRowHolder(parent.context)
     }
@@ -604,7 +604,7 @@ private class NativePlayerAdapter(
             is PlayerRow.Header -> (holder as PlayerHeaderHolder).bind(
                 row.data, onLike, onDislike, onWatchLater, onShare, onOpenChannel
             )
-            is PlayerRow.Related -> (holder as CompactVideoHolder).bind(row.item, onPlayRelated, onSaveRelated)
+            is PlayerRow.Related -> (holder as FullVideoHolder).bind(row.item, onPlayRelated, onSaveRelated)
             PlayerRow.More -> (holder as MoreRowHolder).bind(onLoadMore)
             PlayerRow.Loading -> Unit
         }
@@ -641,8 +641,21 @@ private class PlayerHeaderHolder(context: Context) : RecyclerView.ViewHolder(Pla
         setActionSelected(view.like, data.isLiked)
         setActionSelected(view.dislike, data.isDisliked)
         setActionSelected(view.watchLater, data.isWatchLater)
+        val commentCount = data.details?.commentCount ?: 0L
+        view.commentsTitle.text = if (commentCount > 0L) {
+            "Comentarios ${compactNumber(commentCount)}"
+        } else {
+            "Comentarios"
+        }
         view.description.text = data.description
-        view.descriptionBox.visibility = if (data.description.isBlank()) View.GONE else View.VISIBLE
+        view.descriptionToggle.visibility = if (data.description.isBlank()) View.GONE else View.VISIBLE
+        view.descriptionBox.visibility = View.GONE
+        view.descriptionToggle.text = "Descripción   Más"
+        view.descriptionToggle.setOnClickListener {
+            val expanded = view.descriptionBox.visibility == View.VISIBLE
+            view.descriptionBox.visibility = if (expanded) View.GONE else View.VISIBLE
+            view.descriptionToggle.text = if (expanded) "Descripción   Más" else "Descripción   Menos"
+        }
         view.like.setOnClickListener { onLike() }
         view.dislike.setOnClickListener { onDislike() }
         view.watchLater.setOnClickListener { onWatchLater() }
@@ -673,6 +686,10 @@ private class PlayerHeaderView(context: Context) : LinearLayout(context) {
     val dislike = TextView(context)
     val watchLater = TextView(context)
     val share = TextView(context)
+    val commentsRow = LinearLayout(context)
+    val commentsTitle = TextView(context)
+    val commentsHint = TextView(context)
+    val descriptionToggle = TextView(context)
     val descriptionBox = LinearLayout(context)
     val description = TextView(context)
 
@@ -726,24 +743,42 @@ private class PlayerHeaderView(context: Context) : LinearLayout(context) {
         scroll.addView(actions)
         addView(scroll, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(context, 52)).apply { topMargin = dp(context, 12) })
 
+        commentsRow.orientation = HORIZONTAL
+        commentsRow.gravity = Gravity.CENTER_VERTICAL
+        commentsRow.setPadding(dp(context, 14), dp(context, 13), dp(context, 14), dp(context, 13))
+        commentsRow.background = roundedDrawable(0xFF1D1B22.toInt(), 12f, context)
+        commentsTitle.setTextColor(Color.WHITE)
+        commentsTitle.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16f)
+        commentsTitle.setTypeface(commentsTitle.typeface, android.graphics.Typeface.BOLD)
+        commentsHint.text = "Ver"
+        commentsHint.setTextColor(0xFF9D6CFF.toInt())
+        commentsHint.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
+        commentsHint.setTypeface(commentsHint.typeface, android.graphics.Typeface.BOLD)
+        commentsRow.addView(commentsTitle, LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        commentsRow.addView(commentsHint)
+        addView(commentsRow, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(context, 10) })
+
+        descriptionToggle.setTextColor(Color.WHITE)
+        descriptionToggle.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16f)
+        descriptionToggle.setTypeface(descriptionToggle.typeface, android.graphics.Typeface.BOLD)
+        descriptionToggle.gravity = Gravity.CENTER_VERTICAL
+        descriptionToggle.setPadding(dp(context, 14), dp(context, 13), dp(context, 14), dp(context, 13))
+        descriptionToggle.background = roundedDrawable(0xFF1D1B22.toInt(), 12f, context)
+        addView(descriptionToggle, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(context, 10) })
+
         descriptionBox.orientation = VERTICAL
         descriptionBox.setPadding(dp(context, 14), dp(context, 12), dp(context, 14), dp(context, 12))
-        descriptionBox.background = roundedDrawable(0xFF1D1B22.toInt(), 12f, context)
-        descriptionBox.addView(TextView(context).apply {
-            text = "Descripción"
-            setTextColor(Color.WHITE)
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 16f)
-            setTypeface(typeface, android.graphics.Typeface.BOLD)
-        })
+        descriptionBox.background = roundedDrawable(0xFF17151B.toInt(), 12f, context)
         description.setTextColor(0xFFC8C5CE.toInt())
         description.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
-        description.maxLines = 5
-        description.ellipsize = TextUtils.TruncateAt.END
-        descriptionBox.addView(description, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(context, 6) })
-        addView(descriptionBox, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(context, 10) })
+        description.maxLines = Int.MAX_VALUE
+        description.ellipsize = null
+        descriptionBox.addView(description, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        descriptionBox.visibility = View.GONE
+        addView(descriptionBox, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(context, 6) })
 
         addView(TextView(context).apply {
-            text = "Videos similares"
+            text = "Videos relacionados"
             setTextColor(Color.WHITE)
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 22f)
             setTypeface(typeface, android.graphics.Typeface.BOLD)
