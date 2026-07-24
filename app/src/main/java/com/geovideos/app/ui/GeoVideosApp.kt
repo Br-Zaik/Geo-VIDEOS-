@@ -281,7 +281,8 @@ fun GeoVideosApp(
                         onAutoplayChange = viewModel::setAutoplay,
                         onDataSaverChange = viewModel::setDataSaver,
                         onNotificationsChange = viewModel::setNotificationsEnabled,
-                        onMessage = viewModel::showMessage
+                        onMessage = viewModel::showMessage,
+                        miniPlayerVisible = selectedVideo != null && !state.playerExpanded && state.section != MainSection.SHORTS
                     )
                 }
 
@@ -475,7 +476,8 @@ private fun MainShell(
     onAutoplayChange: (Boolean) -> Unit,
     onDataSaverChange: (Boolean) -> Unit,
     onNotificationsChange: (Boolean) -> Unit,
-    onMessage: (String) -> Unit
+    onMessage: (String) -> Unit,
+    miniPlayerVisible: Boolean
 ) {
     val context = LocalContext.current
     var showNotifications by rememberSaveable { mutableStateOf(false) }
@@ -574,9 +576,12 @@ private fun MainShell(
         },
         snackbarHost = { SnackbarHost(snackbar) }
     ) { padding ->
+        val contentModifier = Modifier
+            .padding(padding)
+            .padding(bottom = if (miniPlayerVisible) 80.dp else 0.dp)
         when (state.section) {
             MainSection.HOME -> LiteHomeScreen(
-                modifier = Modifier.padding(padding),
+                modifier = contentModifier,
                 category = state.homeCategory,
                 personalized = state.personalized,
                 popular = state.popular,
@@ -597,7 +602,7 @@ private fun MainShell(
                 onWatchLater = onWatchLater
             )
             MainSection.SHORTS -> RecyclerShortsScreen(
-                modifier = Modifier.padding(padding),
+                modifier = contentModifier,
                 videos = state.shorts,
                 selectedVideoId = state.selectedVideo?.id.orEmpty(),
                 localLikedIds = state.localLikedIds,
@@ -614,7 +619,7 @@ private fun MainShell(
                 onDislike = onDislike
             )
             MainSection.SEARCH -> SearchScreen(
-                modifier = Modifier.padding(padding),
+                modifier = contentModifier,
                 results = state.searchResults,
                 history = state.searchHistory,
                 loading = state.loading,
@@ -627,7 +632,7 @@ private fun MainShell(
             MainSection.LIBRARY -> {
                 if (libraryDestination == LibraryDestination.ROOT) {
                     LibraryScreen(
-                        modifier = Modifier.padding(padding),
+                        modifier = contentModifier,
                         history = state.history,
                         watchLater = state.watchLater,
                         liked = (state.localLikedVideos + state.liked).distinctBy { it.id },
@@ -654,7 +659,7 @@ private fun MainShell(
                     )
                 } else if (libraryDestination == LibraryDestination.SUBSCRIPTIONS) {
                     SubscriptionCollectionScreen(
-                        modifier = Modifier.padding(padding),
+                        modifier = contentModifier,
                         channels = state.subscriptions,
                         onBack = { libraryDestination = LibraryDestination.ROOT },
                         onOpenChannel = onOpenChannel
@@ -668,7 +673,7 @@ private fun MainShell(
                         LibraryDestination.ROOT, LibraryDestination.SUBSCRIPTIONS -> emptyList()
                     }
                     LibraryCollectionScreen(
-                        modifier = Modifier.padding(padding),
+                        modifier = contentModifier,
                         destination = libraryDestination,
                         videos = collectionVideos,
                         loadingMore = libraryDestination == LibraryDestination.LIKED && state.likedLoadingMore,
@@ -681,7 +686,7 @@ private fun MainShell(
                 }
             }
             MainSection.ACCOUNT -> AccountScreen(
-                modifier = Modifier.padding(padding),
+                modifier = contentModifier,
                 profile = state.profile,
                 autoplay = state.autoplay,
                 dataSaver = state.dataSaver,

@@ -14,8 +14,8 @@ android {
         applicationId = "com.geovideos.app"
         minSdk = 23
         targetSdk = 35
-        versionCode = 28
-        versionName = "25.0.0"
+        versionCode = 271
+        versionName = "27.1.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables.useSupportLibrary = true

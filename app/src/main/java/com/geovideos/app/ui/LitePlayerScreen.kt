@@ -59,6 +59,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
@@ -203,7 +204,6 @@ internal fun LitePlayerScreen(
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .background(if (fullscreen) Color.Black else MaterialTheme.colorScheme.background)
                 .graphicsLayer {
                     if (!fullscreen) {
                         translationY = dragOffset
@@ -324,31 +324,39 @@ internal fun LitePlayerScreen(
         }
 
         if (!fullscreen) {
-            NativePlayerDetailsList(
+            Surface(
                 modifier = Modifier.weight(1f).fillMaxWidth(),
-                header = PlayerHeaderData(
-                    video = video,
-                    details = details,
-                    isLiked = isLiked,
-                    isDisliked = isDisliked,
-                    isWatchLater = isWatchLater,
-                    description = description,
-                    channelAvatar = channelAvatar,
-                    publishedAt = published
-                ),
-                related = related,
-                relatedLoading = relatedLoading,
-                relatedLoadingMore = relatedLoadingMore,
-                relatedCanLoadMore = relatedCanLoadMore,
-                onLike = onLike,
-                onDislike = onDislike,
-                onWatchLater = onWatchLater,
-                onShare = { shareVideoLite(context, video) },
-                onOpenChannel = onOpenChannel,
-                onPlayRelated = onPlayRelated,
-                onSaveRelated = onWatchLaterRelated,
-                onLoadMore = onLoadMoreRelated
-            )
+                color = MaterialTheme.colorScheme.background.copy(alpha = if (dragProgress > 0f) 0.985f else 1f),
+                shape = if (dragProgress > 0f) RoundedCornerShape(topStart = 22.dp, topEnd = 22.dp) else RectangleShape,
+                tonalElevation = if (dragProgress > 0f) 6.dp else 0.dp,
+                shadowElevation = if (dragProgress > 0f) 12.dp else 0.dp
+            ) {
+                NativePlayerDetailsList(
+                    modifier = Modifier.fillMaxSize(),
+                    header = PlayerHeaderData(
+                        video = video,
+                        details = details,
+                        isLiked = isLiked,
+                        isDisliked = isDisliked,
+                        isWatchLater = isWatchLater,
+                        description = description,
+                        channelAvatar = channelAvatar,
+                        publishedAt = published
+                    ),
+                    related = related,
+                    relatedLoading = relatedLoading,
+                    relatedLoadingMore = relatedLoadingMore,
+                    relatedCanLoadMore = relatedCanLoadMore,
+                    onLike = onLike,
+                    onDislike = onDislike,
+                    onWatchLater = onWatchLater,
+                    onShare = { shareVideoLite(context, video) },
+                    onOpenChannel = onOpenChannel,
+                    onPlayRelated = onPlayRelated,
+                    onSaveRelated = onWatchLaterRelated,
+                    onLoadMore = onLoadMoreRelated
+                )
+            }
         }
         }
     }

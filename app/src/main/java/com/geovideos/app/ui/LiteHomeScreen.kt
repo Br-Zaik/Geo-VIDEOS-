@@ -52,11 +52,14 @@ internal fun LiteHomeScreen(
     onOpenShort: (VideoItem) -> Unit,
     onWatchLater: (VideoItem) -> Unit
 ) {
-    val videos = when (category) {
-        HomeCategory.FOR_YOU -> personalized.ifEmpty { popular }
-        HomeCategory.LIVE -> live
-        HomeCategory.GAMING -> gaming
-        HomeCategory.MUSIC -> music
+    val videos = remember(category, personalized, popular, live, gaming, music) {
+        val base = when (category) {
+            HomeCategory.FOR_YOU -> personalized.ifEmpty { popular }
+            HomeCategory.LIVE -> live
+            HomeCategory.GAMING -> gaming
+            HomeCategory.MUSIC -> music
+        }
+        base.filterNot(::looksLikeHomeShort)
     }
     val watchLaterIds = remember(watchLater) {
         watchLater.asSequence().map { it.id }.toHashSet()
@@ -120,4 +123,11 @@ private fun LiteCategoryChip(
         label = { Text(text) },
         leadingIcon = { Icon(icon, null, modifier = Modifier.size(17.dp)) }
     )
+}
+
+
+private fun looksLikeHomeShort(video: VideoItem): Boolean {
+    val text = (video.title + " " + video.description).lowercase()
+    val taggedAsShort = listOf("#shorts", " shorts", "short ", "tiktok", "reel").any { it in text }
+    return taggedAsShort || video.durationMs in 1..60_000L
 }
