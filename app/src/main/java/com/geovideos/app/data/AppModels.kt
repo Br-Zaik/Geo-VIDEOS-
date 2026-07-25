@@ -68,6 +68,16 @@ data class ChannelDetails(
 )
 
 @Immutable
+data class CommentItem(
+    val id: String,
+    val author: String,
+    val authorThumbnailUrl: String = "",
+    val text: String,
+    val likeCount: Long = 0L,
+    val publishedAt: String = ""
+)
+
+@Immutable
 data class VideoDetails(
     val videoId: String,
     val viewCount: Long = 0L,
@@ -76,5 +86,6 @@ data class VideoDetails(
     val subscriberCount: Long = 0L,
     val channelThumbnailUrl: String = "",
     val publishedAt: String = "",
-    val description: String = ""
+    val description: String = "",
+    val comments: List<CommentItem> = emptyList()
 )

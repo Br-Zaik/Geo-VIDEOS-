@@ -1,0 +1,12 @@
+Geo Videos V32 - Rediseño DayliTube
+
+Cambios:
+- Shorts filtrados después de obtener la duración real: no se agregan videos normales por relleno.
+- Reproductor de Shorts en RESIZE_MODE_ZOOM y miniaturas CENTER_CROP para llenar la pantalla vertical.
+- Nueva barra lateral de Shorts con iconos limpios: Me gusta, No me gusta, Comentarios, Compartir y Guardar.
+- Precarga de miniaturas anterior/siguiente y caché de tres páginas.
+- Comentarios reales cargados con YouTube Data API y panel plegable.
+- Descripción cerrada por defecto y panel plegable.
+- Videos relacionados grandes en formato 16:9.
+- Colección compacta: Continuar viendo, listas, Suscripciones, Historial, Ver más tarde y Me gusta.
+- Mantiene applicationId, OAuth, keystore, manifiesto e inicio de sesión.

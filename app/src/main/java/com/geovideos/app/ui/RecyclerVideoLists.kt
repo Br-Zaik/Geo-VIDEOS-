@@ -25,6 +25,7 @@ import androidx.recyclerview.widget.ListAdapter
 import androidx.recyclerview.widget.RecyclerView
 import com.bumptech.glide.Glide
 import com.geovideos.app.data.ChannelItem
+import com.geovideos.app.data.CommentItem
 import com.geovideos.app.data.VideoDetails
 import com.geovideos.app.data.VideoItem
 import java.time.Instant
@@ -635,9 +636,10 @@ private class PlayerHeaderHolder(context: Context) : RecyclerView.ViewHolder(Pla
         }.joinToString(" · ")
         view.channel.text = video.channelTitle.ifBlank { "Canal" }
         view.subscribers.text = data.details?.subscriberCount?.takeIf { it > 0 }?.let { "${compactNumber(it)} suscriptores" }.orEmpty()
-        view.like.text = data.details?.likeCount?.takeIf { it > 0 }?.let { "👍 ${compactNumber(it)}" } ?: "👍 Me gusta"
-        view.dislike.text = "👎 No me gusta"
-        view.watchLater.text = if (data.isWatchLater) "✓ Guardado" else "◷ Ver después"
+        view.like.setLabel(data.details?.likeCount?.takeIf { it > 0 }?.let(::compactNumber) ?: "Me gusta")
+        view.dislike.setLabel("No me gusta")
+        view.watchLater.setLabel(if (data.isWatchLater) "Guardado" else "Ver después")
+        view.share.setLabel("Compartir")
         setActionSelected(view.like, data.isLiked)
         setActionSelected(view.dislike, data.isDisliked)
         setActionSelected(view.watchLater, data.isWatchLater)
@@ -655,6 +657,14 @@ private class PlayerHeaderHolder(context: Context) : RecyclerView.ViewHolder(Pla
             val expanded = view.descriptionBox.visibility == View.VISIBLE
             view.descriptionBox.visibility = if (expanded) View.GONE else View.VISIBLE
             view.descriptionToggle.text = if (expanded) "Descripción   Más" else "Descripción   Menos"
+        }
+        bindCommentPreview(view.commentsBox, data.details?.comments.orEmpty())
+        view.commentsBox.visibility = View.GONE
+        view.commentsHint.text = "Ver"
+        view.commentsRow.setOnClickListener {
+            val expanded = view.commentsBox.visibility == View.VISIBLE
+            view.commentsBox.visibility = if (expanded) View.GONE else View.VISIBLE
+            view.commentsHint.text = if (expanded) "Ver" else "Cerrar"
         }
         view.like.setOnClickListener { onLike() }
         view.dislike.setOnClickListener { onDislike() }
@@ -682,13 +692,14 @@ private class PlayerHeaderView(context: Context) : LinearLayout(context) {
     val channel = TextView(context)
     val subscribers = TextView(context)
     val channelButton = TextView(context)
-    val like = TextView(context)
-    val dislike = TextView(context)
-    val watchLater = TextView(context)
-    val share = TextView(context)
+    val like = PlayerActionView(context, com.geovideos.app.R.drawable.ic_short_like, "Me gusta")
+    val dislike = PlayerActionView(context, com.geovideos.app.R.drawable.ic_short_dislike, "No me gusta")
+    val watchLater = PlayerActionView(context, com.geovideos.app.R.drawable.ic_short_save, "Ver después")
+    val share = PlayerActionView(context, com.geovideos.app.R.drawable.ic_short_share, "Compartir")
     val commentsRow = LinearLayout(context)
     val commentsTitle = TextView(context)
     val commentsHint = TextView(context)
+    val commentsBox = LinearLayout(context)
     val descriptionToggle = TextView(context)
     val descriptionBox = LinearLayout(context)
     val description = TextView(context)
@@ -729,19 +740,16 @@ private class PlayerHeaderView(context: Context) : LinearLayout(context) {
         channelRow.addView(channelButton)
         addView(channelRow, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(context, 14) })
 
-        val scroll = HorizontalScrollView(context).apply { isHorizontalScrollBarEnabled = false }
+        val scroll = HorizontalScrollView(context).apply {
+            isHorizontalScrollBarEnabled = false
+            overScrollMode = View.OVER_SCROLL_NEVER
+        }
         val actions = LinearLayout(context).apply { orientation = HORIZONTAL }
-        styleAction(context, like, "Me gusta")
-        styleAction(context, dislike, "No me gusta")
-        styleAction(context, watchLater, "Ver después")
-        styleAction(context, share, "Compartir")
-        listOf(like, dislike, watchLater, share).forEachIndexed { index, item ->
-            actions.addView(item, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(context, 42)).apply {
-                if (index > 0) marginStart = dp(context, 8)
-            })
+        listOf(like, dislike, watchLater, share).forEach { item ->
+            actions.addView(item, LinearLayout.LayoutParams(dp(context, 88), dp(context, 72)))
         }
         scroll.addView(actions)
-        addView(scroll, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(context, 52)).apply { topMargin = dp(context, 12) })
+        addView(scroll, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(context, 78)).apply { topMargin = dp(context, 8) })
 
         commentsRow.orientation = HORIZONTAL
         commentsRow.gravity = Gravity.CENTER_VERTICAL
@@ -757,6 +765,12 @@ private class PlayerHeaderView(context: Context) : LinearLayout(context) {
         commentsRow.addView(commentsTitle, LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
         commentsRow.addView(commentsHint)
         addView(commentsRow, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(context, 10) })
+
+        commentsBox.orientation = VERTICAL
+        commentsBox.setPadding(dp(context, 12), dp(context, 8), dp(context, 12), dp(context, 8))
+        commentsBox.background = roundedDrawable(0xFF151419.toInt(), 12f, context)
+        commentsBox.visibility = View.GONE
+        addView(commentsBox, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(context, 6) })
 
         descriptionToggle.setTextColor(Color.WHITE)
         descriptionToggle.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16f)
@@ -784,6 +798,69 @@ private class PlayerHeaderView(context: Context) : LinearLayout(context) {
             setTypeface(typeface, android.graphics.Typeface.BOLD)
             setPadding(0, dp(context, 20), 0, dp(context, 8))
         })
+    }
+}
+
+
+private fun bindCommentPreview(container: LinearLayout, comments: List<CommentItem>) {
+    val context = container.context
+    container.removeAllViews()
+    if (comments.isEmpty()) {
+        container.addView(TextView(context).apply {
+            text = "No hay comentarios disponibles para mostrar."
+            setTextColor(0xFFB9B5C0.toInt())
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+            setPadding(dp(context, 2), dp(context, 8), dp(context, 2), dp(context, 8))
+        })
+        return
+    }
+    comments.take(5).forEachIndexed { index, comment ->
+        val row = LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.TOP
+            setPadding(0, dp(context, 8), 0, dp(context, 8))
+        }
+        val avatar = ImageView(context).apply { scaleType = ImageView.ScaleType.CENTER_CROP }
+        row.addView(avatar, LinearLayout.LayoutParams(dp(context, 34), dp(context, 34)))
+        val texts = LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(TextView(context).apply {
+                text = comment.author.ifBlank { "Usuario" }
+                setTextColor(Color.WHITE)
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+                setTypeface(typeface, android.graphics.Typeface.BOLD)
+                maxLines = 1
+                ellipsize = TextUtils.TruncateAt.END
+            })
+            addView(TextView(context).apply {
+                text = comment.text
+                setTextColor(0xFFD0CCD6.toInt())
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+                maxLines = 4
+                ellipsize = TextUtils.TruncateAt.END
+                setPadding(0, dp(context, 3), 0, 0)
+            })
+            val metaText = buildList {
+                formatRelativeTime(comment.publishedAt).takeIf { it.isNotBlank() }?.let(::add)
+                comment.likeCount.takeIf { it > 0L }?.let { add("${compactNumber(it)} Me gusta") }
+            }.joinToString(" · ")
+            if (metaText.isNotBlank()) {
+                addView(TextView(context).apply {
+                    text = metaText
+                    setTextColor(0xFF8F8B96.toInt())
+                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
+                    setPadding(0, dp(context, 4), 0, 0)
+                })
+            }
+        }
+        row.addView(texts, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+            marginStart = dp(context, 10)
+        })
+        container.addView(row, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        loadAvatar(avatar, comment.authorThumbnailUrl, 72)
+        if (index < comments.take(5).lastIndex) {
+            container.addView(View(context).apply { setBackgroundColor(0xFF2A2830.toInt()) }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(context, 1)))
+        }
     }
 }
 
@@ -918,15 +995,43 @@ private fun compactNumber(value: Long): String = when {
 }
 
 
-private fun setActionSelected(view: TextView, selected: Boolean) {
-    view.isSelected = selected
-    view.setTextColor(Color.WHITE)
-    view.background = roundedDrawable(
-        if (selected) 0xFF6E43C7.toInt() else 0xFF242128.toInt(),
-        18f,
-        view.context,
-        if (selected) 0xFFB89BFF.toInt() else 0xFF5B5663.toInt()
-    )
+private class PlayerActionView(context: Context, iconRes: Int, label: String) : LinearLayout(context) {
+    private val icon = ImageView(context)
+    private val labelView = TextView(context)
+
+    init {
+        orientation = VERTICAL
+        gravity = Gravity.CENTER
+        isClickable = true
+        isFocusable = true
+        icon.setImageResource(iconRes)
+        icon.setColorFilter(Color.WHITE)
+        addView(icon, LayoutParams(dp(context, 27), dp(context, 27)))
+        labelView.text = label
+        labelView.gravity = Gravity.CENTER
+        labelView.setTextColor(Color.WHITE)
+        labelView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
+        labelView.maxLines = 2
+        labelView.ellipsize = TextUtils.TruncateAt.END
+        addView(labelView, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+            topMargin = dp(context, 4)
+        })
+    }
+
+    fun setLabel(value: String) {
+        labelView.text = value
+    }
+
+    fun setSelectedState(selected: Boolean) {
+        isSelected = selected
+        val color = if (selected) 0xFF9D6CFF.toInt() else Color.WHITE
+        icon.setColorFilter(color)
+        labelView.setTextColor(color)
+    }
+}
+
+private fun setActionSelected(view: PlayerActionView, selected: Boolean) {
+    view.setSelectedState(selected)
 }
 
 private fun styleAction(context: Context, view: TextView, text: String) {

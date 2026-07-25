@@ -86,7 +86,6 @@ internal fun LibraryCollectionScreen(
     onPlay: (VideoItem) -> Unit,
     onWatchLater: (VideoItem) -> Unit
 ) {
-    val firstVideo = videos.firstOrNull()
     Column(modifier = modifier.fillMaxSize().background(Color.Black)) {
         TopAppBar(
             title = { Text(destination.title(), fontWeight = FontWeight.Bold) },
@@ -97,68 +96,34 @@ internal fun LibraryCollectionScreen(
             }
         )
 
-        Box(modifier = Modifier.fillMaxWidth().height(174.dp)) {
-            if (firstVideo != null) {
-                LiteThumbnail(
-                    url = firstVideo.thumbnailUrl,
-                    description = firstVideo.title,
-                    modifier = Modifier.fillMaxSize(),
-                    widthPx = 960,
-                    heightPx = 540,
-                    contentScale = ContentScale.Crop
-                )
-            } else {
-                Box(
-                    modifier = Modifier.fillMaxSize().background(
-                        Brush.linearGradient(
-                            listOf(Color(0xFF25143D), Color(0xFF5D3494), Color.Black)
-                        )
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text("${videos.size} videos", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                if (destination == LibraryDestination.HISTORY) {
+                    Text(
+                        "Continúa desde donde lo dejaste",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 2.dp)
                     )
-                )
-            }
-            Box(
-                modifier = Modifier.fillMaxSize().background(
-                    Brush.verticalGradient(
-                        listOf(Color.Black.copy(alpha = 0.15f), Color.Black.copy(alpha = 0.94f))
-                    )
-                )
-            )
-            Column(
-                modifier = Modifier.align(Alignment.BottomStart).padding(horizontal = 16.dp, vertical = 14.dp)
-            ) {
-                Text(
-                    destination.title(),
-                    style = MaterialTheme.typography.headlineSmall,
-                    fontWeight = FontWeight.ExtraBold,
-                    color = Color.White
-                )
-                Text(
-                    "${videos.size} videos",
-                    color = Color.White.copy(alpha = 0.78f),
-                    modifier = Modifier.padding(top = 3.dp)
-                )
-            }
-            Row(
-                modifier = Modifier.align(Alignment.BottomEnd).padding(14.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                IconButton(
-                    onClick = { videos.randomOrNull()?.let(onPlay) },
-                    enabled = videos.isNotEmpty(),
-                    modifier = Modifier.background(Color.Black.copy(alpha = 0.55f), CircleShape)
-                ) {
-                    Icon(Icons.Default.Shuffle, contentDescription = "Reproducir aleatoriamente", tint = Color.White)
                 }
-                FilledIconButton(
-                    onClick = { videos.firstOrNull()?.let(onPlay) },
-                    enabled = videos.isNotEmpty()
-                ) {
-                    Icon(Icons.Default.PlayArrow, contentDescription = "Reproducir")
-                }
+            }
+            IconButton(
+                onClick = { videos.randomOrNull()?.let(onPlay) },
+                enabled = videos.isNotEmpty()
+            ) {
+                Icon(Icons.Default.Shuffle, contentDescription = "Aleatorio")
+            }
+            FilledIconButton(
+                onClick = { videos.firstOrNull()?.let(onPlay) },
+                enabled = videos.isNotEmpty()
+            ) {
+                Icon(Icons.Default.PlayArrow, contentDescription = "Reproducir")
             }
         }
-
         HorizontalDivider()
         NativeVideoList(
             modifier = Modifier.weight(1f).fillMaxWidth(),

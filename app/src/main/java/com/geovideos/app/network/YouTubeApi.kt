@@ -2,6 +2,7 @@ package com.geovideos.app.network
 
 import com.geovideos.app.data.ChannelDetails
 import com.geovideos.app.data.ChannelItem
+import com.geovideos.app.data.CommentItem
 import com.geovideos.app.data.GoogleProfile
 import com.geovideos.app.data.NotificationItem
 import com.geovideos.app.data.PlaylistItem
@@ -79,6 +80,36 @@ class YouTubeApi {
             channelThumbnail = bestThumbnail(channel?.optJSONObject("snippet")).ifBlank { channelThumbnail }
         }
 
+        val comments = runCatching {
+            val commentsJson = requestJson(
+                "https://www.googleapis.com/youtube/v3/commentThreads?part=snippet&videoId=${encode(video.id)}&order=relevance&textFormat=plainText&maxResults=8",
+                token
+            )
+            val items = commentsJson.optJSONArray("items")
+            buildList {
+                if (items != null) {
+                    for (index in 0 until items.length()) {
+                        val thread = items.optJSONObject(index) ?: continue
+                        val top = thread.optJSONObject("snippet")
+                            ?.optJSONObject("topLevelComment")
+                        val commentSnippet = top?.optJSONObject("snippet") ?: continue
+                        val text = commentSnippet.optString("textDisplay").decodeHtml().trim()
+                        if (text.isBlank()) continue
+                        add(
+                            CommentItem(
+                                id = top.optString("id").ifBlank { thread.optString("id") },
+                                author = commentSnippet.optString("authorDisplayName", "Usuario"),
+                                authorThumbnailUrl = commentSnippet.optString("authorProfileImageUrl"),
+                                text = text,
+                                likeCount = commentSnippet.optLong("likeCount", 0L),
+                                publishedAt = commentSnippet.optString("publishedAt")
+                            )
+                        )
+                    }
+                }
+            }
+        }.getOrDefault(emptyList())
+
         VideoDetails(
             videoId = video.id,
             viewCount = statistics?.optString("viewCount")?.toLongOrNull() ?: 0L,
@@ -87,7 +118,8 @@ class YouTubeApi {
             subscriberCount = subscriberCount,
             channelThumbnailUrl = channelThumbnail,
             publishedAt = snippet?.optString("publishedAt").orEmpty().ifBlank { video.publishedAt },
-            description = snippet?.optString("description").orEmpty().decodeHtml().ifBlank { video.description }
+            description = snippet?.optString("description").orEmpty().decodeHtml().ifBlank { video.description },
+            comments = comments
         )
     }
 

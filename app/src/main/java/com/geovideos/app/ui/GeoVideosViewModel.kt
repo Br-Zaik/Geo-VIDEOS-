@@ -147,7 +147,7 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
             live = repository.loadLive(),
             gaming = repository.loadGaming(),
             music = repository.loadMusic(),
-            shorts = repository.loadShorts(),
+            shorts = repository.loadShorts().filter(::looksLikeShort),
             subscriptions = repository.loadSubscriptions(),
             playlists = repository.loadPlaylists(),
             liked = repository.loadLiked(),
@@ -416,15 +416,10 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
                     val familiarShorts = mergeUniqueVideos(likedRaw, previous.history)
                         .filter(::looksLikeShort)
                     val taggedSearchShorts = shortsPage.items.filter(::looksLikeShort)
-                    val personalizedSearchShorts = if (taggedSearchShorts.size >= 6) {
-                        taggedSearchShorts
-                    } else {
-                        shortsPage.items
-                    }
                     val shortsRaw = mergeUniqueVideos(
                         subscriptionShorts,
                         familiarShorts,
-                        personalizedSearchShorts
+                        taggedSearchShorts
                     ).take(MAX_HOME_ITEMS)
                     val notificationsRaw = activitiesDeferred.await()
                     val activityVideosRaw = notificationsRaw.mapNotNull { it.video }
@@ -450,7 +445,7 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
                     val live = enriched(livePage.items)
                     val gaming = enriched(gamingPage.items).filterNot(::looksLikeShort)
                     val music = enriched(musicPage.items).filterNot(::looksLikeShort)
-                    val shorts = enriched(shortsRaw)
+                    val shorts = enriched(shortsRaw).filter(::looksLikeShort)
                     val liked = enriched(likedRaw)
                     val subscriptionFeed = enriched(subscriptionFeedRaw)
                     val normalSubscriptionFeed = subscriptionFeed.filterNot(::looksLikeShort)
@@ -650,11 +645,10 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
                 )
                 shortsNextToken = page.nextPageToken
                 val tagged = page.items.filter(::looksLikeShort)
-                val candidates = if (tagged.size >= 5) tagged else page.items
-                val enriched = enrichVideosWithCache(token, candidates)
+                val enriched = enrichVideosWithCache(token, tagged).filter(::looksLikeShort)
                 _uiState.update {
                     it.copy(
-                        shorts = mergeUniqueVideos(it.shorts, enriched).take(MAX_HOME_ITEMS),
+                        shorts = mergeUniqueVideos(it.shorts.filter(::looksLikeShort), enriched).take(MAX_HOME_ITEMS),
                         shortsLoadingMore = false,
                         shortsCanLoadMore = page.nextPageToken.isNotBlank()
                     )
@@ -1407,7 +1401,7 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
         val taggedAsShort = listOf(
             "#shorts", " shorts", "short ", "tiktok", "reel", "vertical", "status video"
         ).any { it in text }
-        return taggedAsShort || video.durationMs in 1..90_000L
+        return taggedAsShort || video.durationMs in 1..75_000L
     }
 
     private fun handleApiError(error: YouTubeApiException) {

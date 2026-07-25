@@ -6,7 +6,7 @@
     android:layout_height="match_parent"
     android:background="@android:color/black"
     app:keep_content_on_player_reset="true"
-    app:resize_mode="fit"
+    app:resize_mode="zoom"
     app:show_buffering="never"
     app:surface_type="texture_view"
     app:use_controller="false" />

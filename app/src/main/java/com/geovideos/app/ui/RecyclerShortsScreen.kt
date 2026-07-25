@@ -1,6 +1,7 @@
 package com.geovideos.app.ui
 
 import android.content.Context
+import android.content.Intent
 import android.graphics.Color
 import android.graphics.drawable.ColorDrawable
 import android.graphics.drawable.GradientDrawable
@@ -55,10 +56,11 @@ internal fun RecyclerShortsScreen(
 ) {
     val controller by playerConnection.controller.collectAsStateWithLifecycle()
     val playback by playerConnection.coreState.collectAsStateWithLifecycle()
+    val shortVideos = remember(videos) { videos.filter(::isStrictShort).distinctBy { it.id } }
     val adapter = remember {
         NativeShortsAdapter(
             onPreview = onPreview,
-            onOpenVideo = onOpenVideo,
+            onOpenComments = onOpenVideo,
             onWatchLater = onWatchLater,
             onLike = onLike,
             onDislike = onDislike,
@@ -79,12 +81,14 @@ internal fun RecyclerShortsScreen(
         modifier = modifier,
         factory = { context ->
             RecyclerView(context).apply {
-                val manager = LinearLayoutManager(context, RecyclerView.VERTICAL, false)
+                val manager = LinearLayoutManager(context, RecyclerView.VERTICAL, false).apply {
+                    initialPrefetchItemCount = 2
+                }
                 layoutManager = manager
                 this.adapter = adapter
                 itemAnimator = null
                 setHasFixedSize(true)
-                setItemViewCacheSize(2)
+                setItemViewCacheSize(3)
                 overScrollMode = View.OVER_SCROLL_NEVER
                 val snap = PagerSnapHelper()
                 snap.attachToRecyclerView(this)
@@ -95,6 +99,7 @@ internal fun RecyclerShortsScreen(
                         val position = manager.getPosition(snapView)
                         adapter.currentList.getOrNull(position)?.let { item ->
                             if (item.id != adapter.activeId) adapter.onPreviewCurrent(item)
+                            adapter.preloadAround(position)
                             if (position >= adapter.itemCount - 3 && adapter.canLoadMore && !adapter.loadingMore) {
                                 adapter.loadingMore = true
                                 adapter.onLoadMore()
@@ -113,19 +118,19 @@ internal fun RecyclerShortsScreen(
             adapter.canLoadMore = canLoadMore
             adapter.loadingMore = loadingMore
             adapter.onLoadMore = onLoadMore
-            adapter.submitList(videos.distinctBy { it.id })
-            if (selectedVideoId.isBlank() && videos.isNotEmpty() && adapter.activeId.isBlank()) {
-                recyclerView.post { adapter.onPreviewCurrent(videos.first()) }
+            adapter.submitList(shortVideos)
+            if (selectedVideoId.isBlank() && shortVideos.isNotEmpty() && adapter.activeId.isBlank()) {
+                recyclerView.post { adapter.onPreviewCurrent(shortVideos.first()) }
             }
             adapter.setState(
                 selectedVideoId = selectedVideoId,
                 liked = localLikedIds,
                 disliked = localDislikedIds,
                 controller = controller,
-                connecting = playback.connecting || playback.resolving
+                connecting = loading || playback.connecting || playback.resolving
             )
             if (selectedVideoId.isNotBlank()) {
-                val index = videos.indexOfFirst { it.id == selectedVideoId }
+                val index = shortVideos.indexOfFirst { it.id == selectedVideoId }
                 val manager = recyclerView.layoutManager as? LinearLayoutManager
                 if (index >= 0 && manager?.findFirstCompletelyVisibleItemPosition() != index) {
                     recyclerView.post { manager?.scrollToPositionWithOffset(index, 0) }
@@ -135,6 +140,12 @@ internal fun RecyclerShortsScreen(
     )
 }
 
+private fun isStrictShort(video: VideoItem): Boolean {
+    if (video.durationMs in 1L..75_000L) return true
+    val text = "${video.title} ${video.description}".lowercase()
+    return listOf("#shorts", "#short", " tiktok", " reel", "video vertical").any { it in text }
+}
+
 private object ShortVideoDiff : DiffUtil.ItemCallback<VideoItem>() {
     override fun areItemsTheSame(oldItem: VideoItem, newItem: VideoItem) = oldItem.id == newItem.id
     override fun areContentsTheSame(oldItem: VideoItem, newItem: VideoItem) = oldItem == newItem
@@ -142,7 +153,7 @@ private object ShortVideoDiff : DiffUtil.ItemCallback<VideoItem>() {
 
 private class NativeShortsAdapter(
     private var onPreview: (VideoItem) -> Unit,
-    private var onOpenVideo: (VideoItem) -> Unit,
+    private var onOpenComments: (VideoItem) -> Unit,
     private var onWatchLater: (VideoItem) -> Unit,
     private var onLike: (VideoItem) -> Unit,
     private var onDislike: (VideoItem) -> Unit,
@@ -153,7 +164,6 @@ private class NativeShortsAdapter(
     var canLoadMore: Boolean = false
     var loadingMore: Boolean = false
     var onLoadMore: () -> Unit = {}
-    fun onPreviewCurrent(video: VideoItem) = onPreview(video)
     private var likedIds: Set<String> = emptySet()
     private var dislikedIds: Set<String> = emptySet()
     private var controller: MediaController? = null
@@ -161,17 +171,22 @@ private class NativeShortsAdapter(
 
     init { setHasStableIds(true) }
     override fun getItemId(position: Int) = getItem(position).id.hashCode().toLong()
+    fun onPreviewCurrent(video: VideoItem) = onPreview(video)
 
     fun updateCallbacks(
         preview: (VideoItem) -> Unit,
-        open: (VideoItem) -> Unit,
+        comments: (VideoItem) -> Unit,
         later: (VideoItem) -> Unit,
         like: (VideoItem) -> Unit,
         dislike: (VideoItem) -> Unit,
         toggle: (VideoItem) -> Unit
     ) {
-        onPreview = preview; onOpenVideo = open; onWatchLater = later
-        onLike = like; onDislike = dislike; onTogglePlayback = toggle
+        onPreview = preview
+        onOpenComments = comments
+        onWatchLater = later
+        onLike = like
+        onDislike = dislike
+        onTogglePlayback = toggle
     }
 
     fun setState(
@@ -187,12 +202,30 @@ private class NativeShortsAdapter(
         dislikedIds = disliked
         this.controller = controller
         this.connecting = connecting
-        if (previous != activeId) {
-            currentList.indexOfFirst { it.id == previous }.takeIf { it >= 0 }?.let(::notifyItemChanged)
-            currentList.indexOfFirst { it.id == activeId }.takeIf { it >= 0 }?.let(::notifyItemChanged)
-        } else {
-            currentList.indexOfFirst { it.id == activeId }.takeIf { it >= 0 }?.let(::notifyItemChanged)
+        listOf(previous, activeId).filter { it.isNotBlank() }.distinct().forEach { id ->
+            currentList.indexOfFirst { it.id == id }.takeIf { it >= 0 }?.let(::notifyItemChanged)
         }
+    }
+
+    fun preloadAround(position: Int) {
+        val context = recyclerViewContext ?: return
+        listOf(position - 1, position + 1).forEach { index ->
+            currentList.getOrNull(index)?.thumbnailUrl?.takeIf { it.isNotBlank() }?.let { url ->
+                Glide.with(context).load(url).preload(540, 960)
+            }
+        }
+    }
+
+    private var recyclerViewContext: Context? = null
+
+    override fun onAttachedToRecyclerView(recyclerView: RecyclerView) {
+        recyclerViewContext = recyclerView.context
+        super.onAttachedToRecyclerView(recyclerView)
+    }
+
+    override fun onDetachedFromRecyclerView(recyclerView: RecyclerView) {
+        recyclerViewContext = null
+        super.onDetachedFromRecyclerView(recyclerView)
     }
 
     override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): NativeShortHolder =
@@ -213,7 +246,7 @@ private class NativeShortsAdapter(
             controller = controller,
             connecting = connecting,
             onToggle = onTogglePlayback,
-            onOpen = onOpenVideo,
+            onComments = onOpenComments,
             onLater = onWatchLater,
             onLike = onLike,
             onDislike = onDislike
@@ -235,20 +268,21 @@ private class NativeShortHolder(private val page: ShortPageView) : RecyclerView.
         controller: MediaController?,
         connecting: Boolean,
         onToggle: (VideoItem) -> Unit,
-        onOpen: (VideoItem) -> Unit,
+        onComments: (VideoItem) -> Unit,
         onLater: (VideoItem) -> Unit,
         onLike: (VideoItem) -> Unit,
         onDislike: (VideoItem) -> Unit
     ) {
         page.channel.text = video.channelTitle.ifBlank { "Canal" }
         page.title.text = video.title
-        page.like.text = if (liked) "♥\nMe gusta" else "♡\nMe gusta"
-        page.dislike.text = if (disliked) "▼\nNo me gusta" else "▽\nNo me gusta"
+        page.like.setSelectedState(liked)
+        page.dislike.setSelectedState(disliked)
         page.setOnClickListener { onToggle(video) }
         page.like.setOnClickListener { onLike(video) }
         page.dislike.setOnClickListener { onDislike(video) }
+        page.comments.setOnClickListener { onComments(video) }
         page.save.setOnClickListener { onLater(video) }
-        page.open.setOnClickListener { onOpen(video) }
+        page.share.setOnClickListener { shareShort(page.context, video) }
         loadShortImage(page.thumbnail, video.thumbnailUrl)
         if (active && controller != null && controller.currentMediaItem?.mediaId == video.id && !connecting) {
             page.attach(controller)
@@ -271,13 +305,14 @@ private class ShortPageView(context: Context) : FrameLayout(context) {
     val progress = ProgressBar(context)
     val channel = TextView(context)
     val title = TextView(context)
-    val like = TextView(context)
-    val dislike = TextView(context)
-    val save = TextView(context)
-    val open = TextView(context)
-    private val playerView = (LayoutInflater.from(context).inflate(R.layout.geo_player_surface, null, false) as PlayerView).apply {
+    val like = ShortActionView(context, R.drawable.ic_short_like, "Me gusta")
+    val dislike = ShortActionView(context, R.drawable.ic_short_dislike, "No me gusta")
+    val comments = ShortActionView(context, R.drawable.ic_short_comment, "Comentarios")
+    val share = ShortActionView(context, R.drawable.ic_short_share, "Compartir")
+    val save = ShortActionView(context, R.drawable.ic_short_save, "Guardar")
+    private val playerView = (LayoutInflater.from(context).inflate(R.layout.geo_player_texture, null, false) as PlayerView).apply {
         useController = false
-        resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
+        resizeMode = AspectRatioFrameLayout.RESIZE_MODE_ZOOM
         setShowBuffering(PlayerView.SHOW_BUFFERING_NEVER)
         setShutterBackgroundColor(Color.TRANSPARENT)
         setKeepContentOnPlayerReset(true)
@@ -285,47 +320,50 @@ private class ShortPageView(context: Context) : FrameLayout(context) {
 
     init {
         setBackgroundColor(Color.BLACK)
-        thumbnail.scaleType = ImageView.ScaleType.FIT_CENTER
+        isClickable = true
+        isFocusable = true
+        thumbnail.scaleType = ImageView.ScaleType.CENTER_CROP
         addView(thumbnail, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
         addView(playerContainer, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
         addView(View(context).apply {
-            background = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(0x22000000, 0x00000000, 0xCC000000.toInt()))
+            background = GradientDrawable(
+                GradientDrawable.Orientation.TOP_BOTTOM,
+                intArrayOf(0x22000000, 0x00000000, 0x00000000, 0xD9000000.toInt())
+            )
         }, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
-        addView(progress, LayoutParams(dpShort(context, 42), dpShort(context, 42), Gravity.CENTER))
+        addView(progress, LayoutParams(dpShort(context, 38), dpShort(context, 38), Gravity.CENTER))
 
         val info = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
             channel.setTextColor(Color.WHITE)
             channel.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
             channel.setTypeface(channel.typeface, android.graphics.Typeface.BOLD)
+            channel.maxLines = 1
+            channel.ellipsize = TextUtils.TruncateAt.END
             title.setTextColor(Color.WHITE)
-            title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
-            title.setTypeface(title.typeface, android.graphics.Typeface.BOLD)
+            title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
             title.maxLines = 3
             title.ellipsize = TextUtils.TruncateAt.END
             addView(channel)
-            addView(title, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dpShort(context, 8) })
+            addView(title, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                topMargin = dpShort(context, 7)
+            })
         }
-        addView(info, LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM or Gravity.START).apply {
-            width = (context.resources.displayMetrics.widthPixels * 0.76f).toInt()
-            setMargins(dpShort(context, 16), 0, 0, dpShort(context, 24))
+        addView(info, LayoutParams((context.resources.displayMetrics.widthPixels * 0.72f).toInt(), ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM or Gravity.START).apply {
+            setMargins(dpShort(context, 16), 0, 0, dpShort(context, 22))
         })
 
         val actions = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER_HORIZONTAL
-            listOf(like, dislike, save, open).forEach { button ->
-                button.gravity = Gravity.CENTER
-                button.setTextColor(Color.WHITE)
-                button.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
-                button.background = roundedShort(0x66000000, 22f, context)
-                addView(button, LinearLayout.LayoutParams(dpShort(context, 64), dpShort(context, 62)).apply { bottomMargin = dpShort(context, 7) })
+            listOf(like, dislike, comments, share, save).forEach { action ->
+                addView(action, LinearLayout.LayoutParams(dpShort(context, 62), dpShort(context, 64)).apply {
+                    bottomMargin = dpShort(context, 5)
+                })
             }
-            save.text = "＋\nGuardar"
-            open.text = "□\nAbrir"
         }
-        addView(actions, LayoutParams(dpShort(context, 72), ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM or Gravity.END).apply {
-            setMargins(0, 0, dpShort(context, 7), dpShort(context, 16))
+        addView(actions, LayoutParams(dpShort(context, 70), ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM or Gravity.END).apply {
+            setMargins(0, 0, dpShort(context, 7), dpShort(context, 15))
         })
     }
 
@@ -346,15 +384,55 @@ private class ShortPageView(context: Context) : FrameLayout(context) {
     }
 }
 
+private class ShortActionView(context: Context, iconRes: Int, label: String) : LinearLayout(context) {
+    private val icon = ImageView(context)
+    private val text = TextView(context)
+
+    init {
+        orientation = VERTICAL
+        gravity = Gravity.CENTER
+        isClickable = true
+        isFocusable = true
+        icon.setImageResource(iconRes)
+        icon.setColorFilter(Color.WHITE)
+        addView(icon, LayoutParams(dpShort(context, 29), dpShort(context, 29)))
+        text.text = label
+        text.gravity = Gravity.CENTER
+        text.setTextColor(Color.WHITE)
+        text.setTextSize(TypedValue.COMPLEX_UNIT_SP, 10.5f)
+        text.maxLines = 2
+        text.ellipsize = TextUtils.TruncateAt.END
+        addView(text, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+            topMargin = dpShort(context, 3)
+        })
+    }
+
+    fun setSelectedState(selected: Boolean) {
+        val color = if (selected) 0xFF9D6CFF.toInt() else Color.WHITE
+        icon.setColorFilter(color)
+        text.setTextColor(color)
+    }
+}
+
+private fun shareShort(context: Context, video: VideoItem) {
+    val url = if (video.source.startsWith("http")) video.source else "https://www.youtube.com/watch?v=${video.id}"
+    val intent = Intent(Intent.ACTION_SEND).apply {
+        type = "text/plain"
+        putExtra(Intent.EXTRA_TEXT, "${video.title}\n$url")
+    }
+    runCatching { context.startActivity(Intent.createChooser(intent, "Compartir video")) }
+}
+
 private fun loadShortImage(view: ImageView, url: String) {
     val manager = Glide.with(view)
+    val placeholder = ColorDrawable(0xFF17171B.toInt())
     if (!url.contains("ytimg.com", true) && !url.contains("youtube.com", true)) {
         manager.load(url)
             .override(540, 960)
             .dontAnimate()
-            .placeholder(ColorDrawable(0xFF202024.toInt()))
+            .placeholder(placeholder)
             .error(ColorDrawable(0xFF2B1B45.toInt()))
-            .fitCenter()
+            .centerCrop()
             .into(view)
         return
     }
@@ -362,28 +440,16 @@ private fun loadShortImage(view: ImageView, url: String) {
         Regex("(maxresdefault|sddefault|hqdefault|mqdefault|default)\\.jpg"),
         name
     )
-    val low = manager.load(candidate("mqdefault.jpg"))
-        .override(320, 568)
-        .dontAnimate()
-        .fitCenter()
-    val fallback = manager.load(candidate("hqdefault.jpg"))
-        .override(540, 960)
-        .dontAnimate()
-        .fitCenter()
-        .error(low)
+    val low = manager.load(candidate("mqdefault.jpg")).override(320, 568).dontAnimate().centerCrop()
+    val fallback = manager.load(candidate("hqdefault.jpg")).override(540, 960).dontAnimate().centerCrop().error(low)
     manager.load(candidate("sddefault.jpg"))
         .override(540, 960)
         .dontAnimate()
-        .placeholder(ColorDrawable(0xFF202024.toInt()))
+        .placeholder(placeholder)
         .thumbnail(low)
         .error(fallback)
-        .fitCenter()
+        .centerCrop()
         .into(view)
-}
-
-private fun roundedShort(color: Int, radius: Float, context: Context) = GradientDrawable().apply {
-    setColor(color)
-    cornerRadius = radius * context.resources.displayMetrics.density
 }
 
 private fun dpShort(context: Context, value: Int): Int =
