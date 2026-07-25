@@ -265,7 +265,7 @@ fun GeoVideosApp(
                         },
                         onCategory = viewModel::selectHomeCategory,
                         onPlay = viewModel::play,
-                        onOpenVideo = viewModel::previewShort,
+                        onOpenVideo = viewModel::openShortDetails,
                         onPreviewShort = viewModel::previewShort,
                         onWatchLater = viewModel::toggleWatchLater,
                         onLike = viewModel::toggleLocalLike,
@@ -323,7 +323,9 @@ fun GeoVideosApp(
                             viewModel.openChannel(channel)
                             viewModel.minimizePlayer()
                         },
-                        onSavePlayback = viewModel::savePlayback
+                        onSavePlayback = viewModel::savePlayback,
+                        onRegisterDownload = viewModel::registerDownload,
+                        onMessage = viewModel::showMessage
                     )
                 }
             }
@@ -602,6 +604,7 @@ private fun MainShell(
                 loading = state.loading,
                 loadingMore = state.shortsLoadingMore,
                 canLoadMore = state.shortsCanLoadMore,
+                dataSaver = state.dataSaver,
                 playerConnection = playerConnection,
                 onLoadMore = onLoadMoreShorts,
                 onPreview = onPreviewShort,

@@ -135,7 +135,8 @@ internal data class PlayerHeaderData(
     val isWatchLater: Boolean,
     val description: String,
     val channelAvatar: String,
-    val publishedAt: String
+    val publishedAt: String,
+    val qualityLabel: String = "Calidad"
 )
 
 @Composable
@@ -150,6 +151,8 @@ internal fun NativePlayerDetailsList(
     onDislike: () -> Unit,
     onWatchLater: () -> Unit,
     onShare: () -> Unit,
+    onQuality: () -> Unit,
+    onDownload: () -> Unit,
     onOpenChannel: (ChannelItem) -> Unit,
     onPlayRelated: (VideoItem) -> Unit,
     onSaveRelated: (VideoItem) -> Unit,
@@ -161,6 +164,8 @@ internal fun NativePlayerDetailsList(
             onDislike = onDislike,
             onWatchLater = onWatchLater,
             onShare = onShare,
+            onQuality = onQuality,
+            onDownload = onDownload,
             onOpenChannel = onOpenChannel,
             onPlayRelated = onPlayRelated,
             onSaveRelated = onSaveRelated,
@@ -194,8 +199,8 @@ internal fun NativePlayerDetailsList(
         update = { recyclerView ->
             val current = recyclerView.adapter as NativePlayerAdapter
             current.updateCallbacks(
-                onLike, onDislike, onWatchLater, onShare, onOpenChannel,
-                onPlayRelated, onSaveRelated, onLoadMore
+                onLike, onDislike, onWatchLater, onShare, onQuality, onDownload,
+                onOpenChannel, onPlayRelated, onSaveRelated, onLoadMore
             )
             current.canLoadMore = relatedCanLoadMore
             current.loadingMore = relatedLoadingMore
@@ -558,6 +563,8 @@ private class NativePlayerAdapter(
     private var onDislike: () -> Unit,
     private var onWatchLater: () -> Unit,
     private var onShare: () -> Unit,
+    private var onQuality: () -> Unit,
+    private var onDownload: () -> Unit,
     private var onOpenChannel: (ChannelItem) -> Unit,
     private var onPlayRelated: (VideoItem) -> Unit,
     private var onSaveRelated: (VideoItem) -> Unit,
@@ -569,10 +576,12 @@ private class NativePlayerAdapter(
 
     fun updateCallbacks(
         like: () -> Unit, dislike: () -> Unit, later: () -> Unit, share: () -> Unit,
+        quality: () -> Unit, download: () -> Unit,
         channel: (ChannelItem) -> Unit, play: (VideoItem) -> Unit,
         save: (VideoItem) -> Unit, load: () -> Unit
     ) {
         onLike = like; onDislike = dislike; onWatchLater = later; onShare = share
+        onQuality = quality; onDownload = download
         onOpenChannel = channel; onPlayRelated = play; onSaveRelated = save; onLoadMore = load
     }
 
@@ -603,7 +612,8 @@ private class NativePlayerAdapter(
     override fun onBindViewHolder(holder: RecyclerView.ViewHolder, position: Int) {
         when (val row = getItem(position)) {
             is PlayerRow.Header -> (holder as PlayerHeaderHolder).bind(
-                row.data, onLike, onDislike, onWatchLater, onShare, onOpenChannel
+                row.data, onLike, onDislike, onWatchLater, onShare,
+                onQuality, onDownload, onOpenChannel
             )
             is PlayerRow.Related -> (holder as FullVideoHolder).bind(row.item, onPlayRelated, onSaveRelated)
             PlayerRow.More -> (holder as MoreRowHolder).bind(onLoadMore)
@@ -626,6 +636,8 @@ private class PlayerHeaderHolder(context: Context) : RecyclerView.ViewHolder(Pla
         onDislike: () -> Unit,
         onWatchLater: () -> Unit,
         onShare: () -> Unit,
+        onQuality: () -> Unit,
+        onDownload: () -> Unit,
         onOpenChannel: (ChannelItem) -> Unit
     ) {
         val video = data.video
@@ -640,6 +652,8 @@ private class PlayerHeaderHolder(context: Context) : RecyclerView.ViewHolder(Pla
         view.dislike.setLabel("No me gusta")
         view.watchLater.setLabel(if (data.isWatchLater) "Guardado" else "Ver después")
         view.share.setLabel("Compartir")
+        view.quality.setLabel(data.qualityLabel)
+        view.download.setLabel("Descargar")
         setActionSelected(view.like, data.isLiked)
         setActionSelected(view.dislike, data.isDisliked)
         setActionSelected(view.watchLater, data.isWatchLater)
@@ -670,6 +684,8 @@ private class PlayerHeaderHolder(context: Context) : RecyclerView.ViewHolder(Pla
         view.dislike.setOnClickListener { onDislike() }
         view.watchLater.setOnClickListener { onWatchLater() }
         view.share.setOnClickListener { onShare() }
+        view.quality.setOnClickListener { onQuality() }
+        view.download.setOnClickListener { onDownload() }
         view.channelButton.visibility = if (video.channelId.isBlank()) View.GONE else View.VISIBLE
         view.channelButton.text = "Ver canal"
         val openChannel = View.OnClickListener {
@@ -696,6 +712,8 @@ private class PlayerHeaderView(context: Context) : LinearLayout(context) {
     val dislike = PlayerActionView(context, com.geovideos.app.R.drawable.ic_short_dislike, "No me gusta")
     val watchLater = PlayerActionView(context, com.geovideos.app.R.drawable.ic_short_save, "Ver después")
     val share = PlayerActionView(context, com.geovideos.app.R.drawable.ic_short_share, "Compartir")
+    val quality = PlayerActionView(context, com.geovideos.app.R.drawable.ic_player_quality, "Calidad")
+    val download = PlayerActionView(context, com.geovideos.app.R.drawable.ic_player_download, "Descargar")
     val commentsRow = LinearLayout(context)
     val commentsTitle = TextView(context)
     val commentsHint = TextView(context)
@@ -745,8 +763,8 @@ private class PlayerHeaderView(context: Context) : LinearLayout(context) {
             overScrollMode = View.OVER_SCROLL_NEVER
         }
         val actions = LinearLayout(context).apply { orientation = HORIZONTAL }
-        listOf(like, dislike, watchLater, share).forEach { item ->
-            actions.addView(item, LinearLayout.LayoutParams(dp(context, 88), dp(context, 72)))
+        listOf(like, dislike, download, quality, watchLater, share).forEach { item ->
+            actions.addView(item, LinearLayout.LayoutParams(dp(context, 82), dp(context, 72)))
         }
         scroll.addView(actions)
         addView(scroll, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(context, 78)).apply { topMargin = dp(context, 8) })

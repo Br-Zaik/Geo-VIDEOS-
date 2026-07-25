@@ -1,0 +1,17 @@
+Geo Videos V33.1 - Correccion de compilacion
+
+Cambio realizado:
+- Eliminada la importacion explicita androidx.compose.foundation.layout.weight de UnifiedPlayerOverlay.kt.
+- Modifier.weight se mantiene dentro de RowScope/ColumnScope, como en la version V32 que ya compilaba.
+- Corregido el error: Cannot access RowColumnParentData.weight: it is internal in file.
+
+Version:
+- versionCode: 331
+- versionName: 33.1.0
+
+Sin cambios en:
+- applicationId / namespace
+- Google OAuth
+- SHA-1 / firma
+- AndroidManifest.xml
+- funciones de calidad, descarga y Shorts incorporadas en V33

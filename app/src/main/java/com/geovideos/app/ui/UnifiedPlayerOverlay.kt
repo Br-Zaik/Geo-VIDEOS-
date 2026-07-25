@@ -1,7 +1,12 @@
 package com.geovideos.app.ui
 
+import android.Manifest
 import android.content.pm.ActivityInfo
+import android.content.pm.PackageManager
+import android.os.Build
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.animate
 import androidx.compose.animation.core.tween
@@ -23,24 +28,32 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.Fullscreen
 import androidx.compose.material.icons.filled.FullscreenExit
+import androidx.compose.material.icons.filled.HighQuality
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -64,6 +77,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
@@ -72,7 +86,10 @@ import androidx.media3.ui.AspectRatioFrameLayout
 import com.geovideos.app.data.ChannelItem
 import com.geovideos.app.data.VideoDetails
 import com.geovideos.app.data.VideoItem
+import com.geovideos.app.playback.DownloadStreamOption
 import com.geovideos.app.playback.GeoPlayerConnection
+import com.geovideos.app.playback.StreamOptions
+import com.geovideos.app.playback.enqueueResolvedMediaDownload
 import kotlinx.coroutines.launch
 import kotlin.math.abs
 import kotlin.math.roundToInt
@@ -85,6 +102,7 @@ import kotlin.math.roundToInt
  * - La velocidad del gesto decide el destino, evitando esperas y rebotes artificiales.
  * - Durante el arrastre no se recalculan sombras ni esquinas en cada fotograma.
  */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun UnifiedPlayerOverlay(
     video: VideoItem,
@@ -111,7 +129,9 @@ internal fun UnifiedPlayerOverlay(
     onWatchLaterRelated: (VideoItem) -> Unit,
     onLoadMoreRelated: () -> Unit,
     onOpenChannel: (ChannelItem) -> Unit,
-    onSavePlayback: (VideoItem, Long, Long) -> Unit
+    onSavePlayback: (VideoItem, Long, Long) -> Unit,
+    onRegisterDownload: (String, String, Long) -> Unit,
+    onMessage: (String) -> Unit
 ) {
     val context = LocalContext.current
     val activity = context.findActivityLite()
@@ -120,8 +140,15 @@ internal fun UnifiedPlayerOverlay(
     val controller by playerConnection.controller.collectAsStateWithLifecycle()
     val scope = rememberCoroutineScope()
     val density = LocalDensity.current
+    val preferredQuality by playerConnection.preferredQualityHeight.collectAsStateWithLifecycle()
 
     var fullscreen by rememberSaveable(video.id) { mutableStateOf(false) }
+    var showQualitySheet by rememberSaveable(video.id) { mutableStateOf(false) }
+    var showDownloadSheet by rememberSaveable(video.id) { mutableStateOf(false) }
+    var streamOptions by remember(video.id) { mutableStateOf<StreamOptions?>(null) }
+    var streamOptionsLoading by remember(video.id) { mutableStateOf(false) }
+    var streamOptionsError by remember(video.id) { mutableStateOf<String?>(null) }
+    var pendingDownload by remember(video.id) { mutableStateOf<DownloadStreamOption?>(null) }
     var transition by remember(video.id) { mutableFloatStateOf(if (expanded) 0f else 1f) }
     var dragging by remember(video.id) { mutableStateOf(false) }
     var settling by remember(video.id) { mutableStateOf(false) }
@@ -130,6 +157,58 @@ internal fun UnifiedPlayerOverlay(
     val channelAvatar = details?.channelThumbnailUrl.orEmpty().ifBlank { video.channelThumbnailUrl }
     val published = details?.publishedAt.orEmpty().ifBlank { video.publishedAt }
     val related = remember(video.id, relatedVideos) { relatedVideos.distinctBy { it.id }.take(30) }
+
+    val storagePermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        val option = pendingDownload
+        pendingDownload = null
+        if (granted && option != null) {
+            val downloadId = enqueueResolvedMediaDownload(context, video, option)
+            if (downloadId >= 0L) {
+                onRegisterDownload("${video.title} (${option.label})", option.uri, downloadId)
+                showDownloadSheet = false
+            } else {
+                onMessage("No se pudo iniciar la descarga de esa calidad.")
+            }
+        } else if (!granted) {
+            onMessage("Android necesita permiso de almacenamiento para descargar en esta versión.")
+        }
+    }
+
+    val startDownload: (DownloadStreamOption) -> Unit = { option ->
+        val needsPermission = Build.VERSION.SDK_INT <= Build.VERSION_CODES.P &&
+            ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.WRITE_EXTERNAL_STORAGE
+            ) != PackageManager.PERMISSION_GRANTED
+        if (needsPermission) {
+            pendingDownload = option
+            storagePermissionLauncher.launch(Manifest.permission.WRITE_EXTERNAL_STORAGE)
+        } else {
+            val downloadId = enqueueResolvedMediaDownload(context, video, option)
+            if (downloadId >= 0L) {
+                onRegisterDownload("${video.title} (${option.label})", option.uri, downloadId)
+                showDownloadSheet = false
+            } else {
+                onMessage("No se pudo iniciar la descarga de esa calidad.")
+            }
+        }
+    }
+
+    LaunchedEffect(showQualitySheet, showDownloadSheet, video.id) {
+        if (!(showQualitySheet || showDownloadSheet) || streamOptions != null || streamOptionsLoading) {
+            return@LaunchedEffect
+        }
+        streamOptionsLoading = true
+        streamOptionsError = null
+        runCatching { playerConnection.streamOptions(video) }
+            .onSuccess { streamOptions = it }
+            .onFailure {
+                streamOptionsError = "No se pudieron obtener las calidades disponibles. Revisa tu conexión."
+            }
+        streamOptionsLoading = false
+    }
 
     fun saveProgress() {
         val active = controller
@@ -268,7 +347,8 @@ internal fun UnifiedPlayerOverlay(
                         isWatchLater = isWatchLater,
                         description = description,
                         channelAvatar = channelAvatar,
-                        publishedAt = published
+                        publishedAt = published,
+                        qualityLabel = preferredQuality?.let { "${it}p" } ?: "Calidad"
                     ),
                     related = related,
                     relatedLoading = relatedLoading || detailsLoading,
@@ -278,6 +358,8 @@ internal fun UnifiedPlayerOverlay(
                     onDislike = onDislike,
                     onWatchLater = onWatchLater,
                     onShare = { shareVideoLite(context, video) },
+                    onQuality = { showQualitySheet = true },
+                    onDownload = { showDownloadSheet = true },
                     onOpenChannel = onOpenChannel,
                     onPlayRelated = onPlayRelated,
                     onSaveRelated = onWatchLaterRelated,
@@ -459,5 +541,177 @@ internal fun UnifiedPlayerOverlay(
             // Se elimina la barra superior permanente con X y pantalla completa,
             // para mantener una vista limpia como DayliTube.
         }
+    }
+
+    if (showQualitySheet) {
+        ModalBottomSheet(onDismissRequest = { showQualitySheet = false }) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState())
+                    .padding(horizontal = 20.dp, vertical = 8.dp)
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.HighQuality, contentDescription = null)
+                    Text(
+                        "Calidad del video",
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.padding(start = 12.dp)
+                    )
+                }
+                Text(
+                    "Solo se muestran las resoluciones que este video ofrece realmente.",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 8.dp, bottom = 12.dp)
+                )
+                when {
+                    streamOptionsLoading -> Box(
+                        modifier = Modifier.fillMaxWidth().height(120.dp),
+                        contentAlignment = Alignment.Center
+                    ) { CircularProgressIndicator() }
+                    streamOptionsError != null -> Text(
+                        streamOptionsError.orEmpty(),
+                        color = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.padding(vertical = 16.dp)
+                    )
+                    else -> {
+                        QualityChoiceRow(
+                            label = "Automática",
+                            subtitle = "Se adapta a la conexión",
+                            selected = preferredQuality == null,
+                            onClick = {
+                                playerConnection.selectQuality(video, null, dataSaver)
+                                showQualitySheet = false
+                            }
+                        )
+                        streamOptions?.qualities.orEmpty().forEach { option ->
+                            HorizontalDivider()
+                            QualityChoiceRow(
+                                label = option.label,
+                                subtitle = if (option.height >= 720) "Alta definición" else "Menor consumo de datos",
+                                selected = preferredQuality == option.height,
+                                onClick = {
+                                    playerConnection.selectQuality(video, option.height, dataSaver)
+                                    showQualitySheet = false
+                                }
+                            )
+                        }
+                        if (streamOptions?.qualities.isNullOrEmpty()) {
+                            Text(
+                                "Este video no expone varias calidades seleccionables.",
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(vertical = 18.dp)
+                            )
+                        }
+                    }
+                }
+                Spacer(Modifier.height(24.dp))
+            }
+        }
+    }
+
+    if (showDownloadSheet) {
+        ModalBottomSheet(onDismissRequest = { showDownloadSheet = false }) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState())
+                    .padding(horizontal = 20.dp, vertical = 8.dp)
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.Download, contentDescription = null)
+                    Text(
+                        "Descargar video",
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.padding(start = 12.dp)
+                    )
+                }
+                Text(
+                    "Elige una calidad disponible. El archivo se guardará en Películas/GeoVideos.",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 8.dp, bottom = 12.dp)
+                )
+                when {
+                    streamOptionsLoading -> Box(
+                        modifier = Modifier.fillMaxWidth().height(120.dp),
+                        contentAlignment = Alignment.Center
+                    ) { CircularProgressIndicator() }
+                    streamOptionsError != null -> Text(
+                        streamOptionsError.orEmpty(),
+                        color = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.padding(vertical = 16.dp)
+                    )
+                    streamOptions?.isLive == true -> Text(
+                        "Las transmisiones en vivo no se pueden descargar desde esta pantalla.",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(vertical = 18.dp)
+                    )
+                    streamOptions?.downloads.isNullOrEmpty() -> Text(
+                        "Este video no ofrece un archivo de video con audio descargable directamente.",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(vertical = 18.dp)
+                    )
+                    else -> streamOptions?.downloads.orEmpty().forEachIndexed { index, option ->
+                        if (index > 0) HorizontalDivider()
+                        DownloadChoiceRow(option = option, onClick = { startDownload(option) })
+                    }
+                }
+                Spacer(Modifier.height(24.dp))
+            }
+        }
+    }
+}
+
+@Composable
+private fun QualityChoiceRow(
+    label: String,
+    subtitle: String,
+    selected: Boolean,
+    onClick: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(vertical = 14.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(label, fontWeight = FontWeight.SemiBold)
+            Text(
+                subtitle,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 2.dp)
+            )
+        }
+        if (selected) {
+            Text("✓", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
+        }
+    }
+}
+
+@Composable
+private fun DownloadChoiceRow(option: DownloadStreamOption, onClick: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(vertical = 14.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(Icons.Default.Download, contentDescription = null)
+        Column(modifier = Modifier.weight(1f).padding(start = 14.dp)) {
+            Text(option.label, fontWeight = FontWeight.SemiBold)
+            Text(
+                "Incluye audio · ${option.extension.uppercase()}",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 2.dp)
+            )
+        }
+        TextButton(onClick = onClick) { Text("Descargar") }
     }
 }

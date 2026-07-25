@@ -80,6 +80,9 @@ class GeoPlayerConnection private constructor(context: Context) {
     private val _controller = MutableStateFlow<MediaController?>(null)
     val controller: StateFlow<MediaController?> = _controller.asStateFlow()
 
+    private val _preferredQualityHeight = MutableStateFlow<Int?>(null)
+    val preferredQualityHeight: StateFlow<Int?> = _preferredQualityHeight.asStateFlow()
+
     private val _state = MutableStateFlow(PlaybackUiState())
     val state: StateFlow<PlaybackUiState> = _state.asStateFlow()
 
@@ -183,8 +186,27 @@ class GeoPlayerConnection private constructor(context: Context) {
         dataSaver: Boolean,
         repeat: Boolean = false
     ) {
+        openInternal(
+            video = video,
+            autoplay = autoplay,
+            dataSaver = dataSaver,
+            repeat = repeat,
+            preferredHeight = null,
+            forceReload = false
+        )
+    }
+
+    private fun openInternal(
+        video: VideoItem,
+        autoplay: Boolean,
+        dataSaver: Boolean,
+        repeat: Boolean,
+        preferredHeight: Int?,
+        forceReload: Boolean
+    ) {
         val controllerNow = _controller.value
         if (
+            !forceReload &&
             currentVideo?.id == video.id &&
             controllerNow?.currentMediaItem?.mediaId == video.id &&
             controllerNow.mediaItemCount > 0
@@ -200,6 +222,7 @@ class GeoPlayerConnection private constructor(context: Context) {
 
         controllerNow?.pause()
         currentVideo = video
+        _preferredQualityHeight.value = preferredHeight
         resolveJob?.cancel()
         requestSerial += 1L
         val requestId = requestSerial
@@ -213,7 +236,7 @@ class GeoPlayerConnection private constructor(context: Context) {
 
         resolveJob = scope.launch {
             try {
-                val resolved = StreamResolver.resolve(video, dataSaver)
+                val resolved = StreamResolver.resolve(video, dataSaver, preferredHeight)
                 if (requestId != requestSerial || currentVideo?.id != video.id) return@launch
                 withController { controller ->
                     if (requestId != requestSerial || currentVideo?.id != video.id) return@withController
@@ -228,6 +251,13 @@ class GeoPlayerConnection private constructor(context: Context) {
                         .setMimeType(resolved.mimeType)
                         .setMediaMetadata(metadata)
                         .build()
+                    val maxHeight = preferredHeight?.takeIf { it > 0 } ?: Int.MAX_VALUE
+                    controller.setTrackSelectionParameters(
+                        controller.trackSelectionParameters
+                            .buildUpon()
+                            .setMaxVideoSize(Int.MAX_VALUE, maxHeight)
+                            .build()
+                    )
                     controller.repeatMode = if (repeat) Player.REPEAT_MODE_ONE else Player.REPEAT_MODE_OFF
                     controller.setMediaItem(item, video.resumePositionMs.coerceAtLeast(0L))
                     controller.prepare()
@@ -246,6 +276,27 @@ class GeoPlayerConnection private constructor(context: Context) {
                 }
             }
         }
+    }
+
+    internal suspend fun streamOptions(video: VideoItem): StreamOptions = StreamResolver.options(video)
+
+    suspend fun isVerifiedShort(video: VideoItem): Boolean = StreamResolver.isVerifiedShort(video)
+
+    fun selectQuality(video: VideoItem, height: Int?, dataSaver: Boolean) {
+        val controllerNow = _controller.value
+        val position = controllerNow?.currentPosition
+            ?.takeIf { it >= 0L }
+            ?: video.resumePositionMs
+        val shouldPlay = controllerNow?.playWhenReady ?: true
+        val repeat = controllerNow?.repeatMode == Player.REPEAT_MODE_ONE
+        openInternal(
+            video = video.copy(resumePositionMs = position),
+            autoplay = shouldPlay,
+            dataSaver = dataSaver,
+            repeat = repeat,
+            preferredHeight = height,
+            forceReload = true
+        )
     }
 
     fun play() = withController { it.play() }
@@ -274,6 +325,7 @@ class GeoPlayerConnection private constructor(context: Context) {
         requestSerial += 1L
         resolveJob?.cancel()
         currentVideo = null
+        _preferredQualityHeight.value = null
         withController {
             it.stop()
             it.clearMediaItems()

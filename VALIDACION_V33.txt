@@ -1,0 +1,18 @@
+GEO VIDEOS V33 - CALIDAD, DESCARGAS Y SHORTS VERIFICADOS
+
+CAMBIOS REALIZADOS
+- Selector de calidad real: Automática y únicamente las resoluciones detectadas para el video.
+- La calidad elegida conserva la posición actual y vuelve a cargar el mismo video.
+- El botón muestra la calidad seleccionada (por ejemplo 720p).
+- Descarga con selección de calidad usando únicamente archivos progresivos que ya incluyen video y audio.
+- Las descargas se guardan en Películas/GeoVideos y se registran en Colección > Descargas.
+- Botones Descargar y Calidad se colocaron al inicio de la fila de acciones para que sean visibles sin desplazarse demasiado.
+- Shorts filtrados mediante la identificación real isShortFormContent del extractor, evitando videos horizontales cortos.
+- Precarga de los dos Shorts siguientes y páginas de altura fija para un deslizamiento vertical más estable.
+- Interfaz vertical con video a pantalla completa, canal/título abajo y acciones laterales compactas.
+- Google, OAuth, nombre del paquete, manifiesto de autenticación y firma no fueron modificados.
+
+COMPROBACIONES
+- Archivos Kotlin modificados revisados con el analizador sintáctico de Kotlin: sin errores de sintaxis.
+- Recursos XML nuevos validados correctamente.
+- Se intentó ejecutar :app:compileDebugKotlin, pero el entorno no pudo resolver services.gradle.org y no descargó Gradle 8.13. Por ello la compilación Android final debe verificarse en GitHub Actions.

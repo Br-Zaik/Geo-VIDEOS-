@@ -16,11 +16,19 @@ import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.TextView
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.media3.session.MediaController
@@ -46,6 +54,7 @@ internal fun RecyclerShortsScreen(
     loading: Boolean,
     loadingMore: Boolean,
     canLoadMore: Boolean,
+    dataSaver: Boolean,
     playerConnection: GeoPlayerConnection,
     onLoadMore: () -> Unit,
     onPreview: (VideoItem) -> Unit,
@@ -57,6 +66,22 @@ internal fun RecyclerShortsScreen(
     val controller by playerConnection.controller.collectAsStateWithLifecycle()
     val playback by playerConnection.coreState.collectAsStateWithLifecycle()
     val shortVideos = remember(videos) { videos.filter(::isStrictShort).distinctBy { it.id } }
+
+    if (shortVideos.isEmpty()) {
+        Box(modifier = modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            if (loading) {
+                CircularProgressIndicator()
+            } else {
+                Text(
+                    "No se encontraron Shorts reales. Actualiza para buscar nuevos.",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(24.dp)
+                )
+            }
+        }
+        return
+    }
+
     val adapter = remember {
         NativeShortsAdapter(
             onPreview = onPreview,
@@ -87,11 +112,19 @@ internal fun RecyclerShortsScreen(
                 layoutManager = manager
                 this.adapter = adapter
                 itemAnimator = null
-                setHasFixedSize(true)
+                setHasFixedSize(false)
                 setItemViewCacheSize(3)
+                clipToPadding = false
                 overScrollMode = View.OVER_SCROLL_NEVER
                 val snap = PagerSnapHelper()
                 snap.attachToRecyclerView(this)
+                addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ ->
+                    val newHeight = height
+                    if (newHeight > 0 && adapter.pageHeight != newHeight) {
+                        adapter.pageHeight = newHeight
+                        adapter.notifyItemRangeChanged(0, adapter.itemCount, NativeShortsAdapter.PAYLOAD_SIZE)
+                    }
+                }
                 addOnScrollListener(object : RecyclerView.OnScrollListener() {
                     override fun onScrollStateChanged(recyclerView: RecyclerView, newState: Int) {
                         if (newState != RecyclerView.SCROLL_STATE_IDLE) return
@@ -100,6 +133,10 @@ internal fun RecyclerShortsScreen(
                         adapter.currentList.getOrNull(position)?.let { item ->
                             if (item.id != adapter.activeId) adapter.onPreviewCurrent(item)
                             adapter.preloadAround(position)
+                            playerConnection.preload(
+                                adapter.currentList.drop(position + 1).take(2),
+                                dataSaver
+                            )
                             if (position >= adapter.itemCount - 3 && adapter.canLoadMore && !adapter.loadingMore) {
                                 adapter.loadingMore = true
                                 adapter.onLoadMore()
@@ -141,9 +178,9 @@ internal fun RecyclerShortsScreen(
 }
 
 private fun isStrictShort(video: VideoItem): Boolean {
-    if (video.durationMs in 1L..75_000L) return true
-    val text = "${video.title} ${video.description}".lowercase()
-    return listOf("#shorts", "#short", " tiktok", " reel", "video vertical").any { it in text }
+    if (video.durationMs > 0L) return video.durationMs <= 75_000L
+    val text = "${video.title} ${video.description} ${video.source}".lowercase()
+    return "/shorts/" in text || "#shorts" in text || "#short " in text
 }
 
 private object ShortVideoDiff : DiffUtil.ItemCallback<VideoItem>() {
@@ -168,6 +205,7 @@ private class NativeShortsAdapter(
     private var dislikedIds: Set<String> = emptySet()
     private var controller: MediaController? = null
     private var connecting = false
+    var pageHeight: Int = 0
 
     init { setHasStableIds(true) }
     override fun getItemId(position: Int) = getItem(position).id.hashCode().toLong()
@@ -232,11 +270,19 @@ private class NativeShortsAdapter(
         NativeShortHolder(ShortPageView(parent.context).apply {
             layoutParams = RecyclerView.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
-                parent.measuredHeight.takeIf { it > 0 } ?: ViewGroup.LayoutParams.MATCH_PARENT
+                pageHeight.takeIf { it > 0 }
+                    ?: parent.measuredHeight.takeIf { it > 0 }
+                    ?: ViewGroup.LayoutParams.MATCH_PARENT
             )
         })
 
     override fun onBindViewHolder(holder: NativeShortHolder, position: Int) {
+        if (pageHeight > 0 && holder.itemView.layoutParams.height != pageHeight) {
+            holder.itemView.layoutParams = RecyclerView.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                pageHeight
+            )
+        }
         val video = getItem(position)
         holder.bind(
             video = video,
@@ -253,9 +299,26 @@ private class NativeShortsAdapter(
         )
     }
 
+    override fun onBindViewHolder(holder: NativeShortHolder, position: Int, payloads: MutableList<Any>) {
+        if (payloads.contains(PAYLOAD_SIZE)) {
+            if (pageHeight > 0) {
+                holder.itemView.layoutParams = RecyclerView.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    pageHeight
+                )
+            }
+            return
+        }
+        super.onBindViewHolder(holder, position, payloads)
+    }
+
     override fun onViewRecycled(holder: NativeShortHolder) {
         holder.recycle()
         super.onViewRecycled(holder)
+    }
+
+    companion object {
+        const val PAYLOAD_SIZE = "short-page-size"
     }
 }
 
@@ -275,6 +338,7 @@ private class NativeShortHolder(private val page: ShortPageView) : RecyclerView.
     ) {
         page.channel.text = video.channelTitle.ifBlank { "Canal" }
         page.title.text = video.title
+        loadShortAvatar(page.channelAvatar, video.channelThumbnailUrl)
         page.like.setSelectedState(liked)
         page.dislike.setSelectedState(disliked)
         page.setOnClickListener { onToggle(video) }
@@ -295,6 +359,7 @@ private class NativeShortHolder(private val page: ShortPageView) : RecyclerView.
     fun recycle() {
         page.detach()
         Glide.with(page.thumbnail).clear(page.thumbnail)
+        Glide.with(page.channelAvatar).clear(page.channelAvatar)
         page.setOnClickListener(null)
     }
 }
@@ -303,6 +368,7 @@ private class ShortPageView(context: Context) : FrameLayout(context) {
     val thumbnail = ImageView(context)
     val playerContainer = FrameLayout(context)
     val progress = ProgressBar(context)
+    val channelAvatar = ImageView(context)
     val channel = TextView(context)
     val title = TextView(context)
     val like = ShortActionView(context, R.drawable.ic_short_like, "Me gusta")
@@ -334,36 +400,45 @@ private class ShortPageView(context: Context) : FrameLayout(context) {
         addView(progress, LayoutParams(dpShort(context, 38), dpShort(context, 38), Gravity.CENTER))
 
         val info = LinearLayout(context).apply {
-            orientation = LinearLayout.VERTICAL
-            channel.setTextColor(Color.WHITE)
-            channel.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
-            channel.setTypeface(channel.typeface, android.graphics.Typeface.BOLD)
-            channel.maxLines = 1
-            channel.ellipsize = TextUtils.TruncateAt.END
-            title.setTextColor(Color.WHITE)
-            title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
-            title.maxLines = 3
-            title.ellipsize = TextUtils.TruncateAt.END
-            addView(channel)
-            addView(title, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
-                topMargin = dpShort(context, 7)
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.BOTTOM
+            channelAvatar.scaleType = ImageView.ScaleType.CENTER_CROP
+            channelAvatar.background = circleDrawable(0xFF3C2A55.toInt())
+            addView(channelAvatar, LinearLayout.LayoutParams(dpShort(context, 38), dpShort(context, 38)).apply {
+                marginEnd = dpShort(context, 10)
             })
+            addView(LinearLayout(context).apply {
+                orientation = LinearLayout.VERTICAL
+                channel.setTextColor(Color.WHITE)
+                channel.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14.5f)
+                channel.setTypeface(channel.typeface, android.graphics.Typeface.BOLD)
+                channel.maxLines = 1
+                channel.ellipsize = TextUtils.TruncateAt.END
+                title.setTextColor(Color.WHITE)
+                title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13.5f)
+                title.maxLines = 3
+                title.ellipsize = TextUtils.TruncateAt.END
+                addView(channel)
+                addView(title, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                    topMargin = dpShort(context, 5)
+                })
+            }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
         }
-        addView(info, LayoutParams((context.resources.displayMetrics.widthPixels * 0.72f).toInt(), ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM or Gravity.START).apply {
-            setMargins(dpShort(context, 16), 0, 0, dpShort(context, 22))
+        addView(info, LayoutParams((context.resources.displayMetrics.widthPixels * 0.78f).toInt(), ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM or Gravity.START).apply {
+            setMargins(dpShort(context, 14), 0, 0, dpShort(context, 18))
         })
 
         val actions = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER_HORIZONTAL
             listOf(like, dislike, comments, share, save).forEach { action ->
-                addView(action, LinearLayout.LayoutParams(dpShort(context, 62), dpShort(context, 64)).apply {
-                    bottomMargin = dpShort(context, 5)
+                addView(action, LinearLayout.LayoutParams(dpShort(context, 58), dpShort(context, 62)).apply {
+                    bottomMargin = dpShort(context, 6)
                 })
             }
         }
-        addView(actions, LayoutParams(dpShort(context, 70), ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM or Gravity.END).apply {
-            setMargins(0, 0, dpShort(context, 7), dpShort(context, 15))
+        addView(actions, LayoutParams(dpShort(context, 66), ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM or Gravity.END).apply {
+            setMargins(0, 0, dpShort(context, 5), dpShort(context, 12))
         })
     }
 
@@ -395,11 +470,13 @@ private class ShortActionView(context: Context, iconRes: Int, label: String) : L
         isFocusable = true
         icon.setImageResource(iconRes)
         icon.setColorFilter(Color.WHITE)
-        addView(icon, LayoutParams(dpShort(context, 29), dpShort(context, 29)))
+        icon.setPadding(dpShort(context, 9), dpShort(context, 9), dpShort(context, 9), dpShort(context, 9))
+        icon.background = circleDrawable(0x88000000.toInt())
+        addView(icon, LayoutParams(dpShort(context, 43), dpShort(context, 43)))
         text.text = label
         text.gravity = Gravity.CENTER
         text.setTextColor(Color.WHITE)
-        text.setTextSize(TypedValue.COMPLEX_UNIT_SP, 10.5f)
+        text.setTextSize(TypedValue.COMPLEX_UNIT_SP, 9.5f)
         text.maxLines = 2
         text.ellipsize = TextUtils.TruncateAt.END
         addView(text, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
@@ -450,6 +527,26 @@ private fun loadShortImage(view: ImageView, url: String) {
         .error(fallback)
         .centerCrop()
         .into(view)
+}
+
+private fun loadShortAvatar(view: ImageView, url: String) {
+    if (url.isBlank()) {
+        view.setImageDrawable(ColorDrawable(0xFF3C2A55.toInt()))
+        return
+    }
+    Glide.with(view)
+        .load(url)
+        .override(96, 96)
+        .dontAnimate()
+        .circleCrop()
+        .placeholder(ColorDrawable(0xFF3C2A55.toInt()))
+        .error(ColorDrawable(0xFF3C2A55.toInt()))
+        .into(view)
+}
+
+private fun circleDrawable(color: Int): GradientDrawable = GradientDrawable().apply {
+    shape = GradientDrawable.OVAL
+    setColor(color)
 }
 
 private fun dpShort(context: Context, value: Int): Int =
