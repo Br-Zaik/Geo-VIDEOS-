@@ -148,6 +148,7 @@ internal fun UnifiedPlayerOverlay(
     var streamOptions by remember(video.id) { mutableStateOf<StreamOptions?>(null) }
     var streamOptionsLoading by remember(video.id) { mutableStateOf(false) }
     var streamOptionsError by remember(video.id) { mutableStateOf<String?>(null) }
+    var selectedDownloadHeight by rememberSaveable(video.id) { mutableStateOf<Int?>(null) }
     var pendingDownload by remember(video.id) { mutableStateOf<DownloadStreamOption?>(null) }
     var transition by remember(video.id) { mutableFloatStateOf(if (expanded) 0f else 1f) }
     var dragging by remember(video.id) { mutableStateOf(false) }
@@ -203,11 +204,29 @@ internal fun UnifiedPlayerOverlay(
         streamOptionsLoading = true
         streamOptionsError = null
         runCatching { playerConnection.streamOptions(video) }
-            .onSuccess { streamOptions = it }
+            .onSuccess { options ->
+                streamOptions = options
+                if (selectedDownloadHeight == null) {
+                    selectedDownloadHeight = options.downloads
+                        .firstOrNull { it.height == preferredQuality }
+                        ?.height
+                        ?: options.downloads.maxByOrNull { it.height }?.height
+                }
+            }
             .onFailure {
                 streamOptionsError = "No se pudieron obtener las calidades disponibles. Revisa tu conexión."
             }
         streamOptionsLoading = false
+    }
+
+    LaunchedEffect(showDownloadSheet, preferredQuality, streamOptions) {
+        if (!showDownloadSheet) return@LaunchedEffect
+        val downloads = streamOptions?.downloads.orEmpty()
+        selectedDownloadHeight = downloads
+            .firstOrNull { it.height == preferredQuality }
+            ?.height
+            ?: selectedDownloadHeight
+            ?: downloads.maxByOrNull { it.height }?.height
     }
 
     fun saveProgress() {
@@ -612,6 +631,10 @@ internal fun UnifiedPlayerOverlay(
     }
 
     if (showDownloadSheet) {
+        val downloadOptions = streamOptions?.downloads.orEmpty()
+        val selectedDownload = downloadOptions.firstOrNull { it.height == selectedDownloadHeight }
+            ?: downloadOptions.maxByOrNull { it.height }
+
         ModalBottomSheet(onDismissRequest = { showDownloadSheet = false }) {
             Column(
                 modifier = Modifier
@@ -629,7 +652,7 @@ internal fun UnifiedPlayerOverlay(
                     )
                 }
                 Text(
-                    "Elige una calidad disponible. El archivo se guardará en Películas/GeoVideos.",
+                    "Escoge primero la calidad. Solo aparecen archivos que incluyen imagen y audio.",
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(top = 8.dp, bottom = 12.dp)
                 )
@@ -648,20 +671,47 @@ internal fun UnifiedPlayerOverlay(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(vertical = 18.dp)
                     )
-                    streamOptions?.downloads.isNullOrEmpty() -> Text(
-                        "Este video no ofrece un archivo de video con audio descargable directamente.",
+                    downloadOptions.isEmpty() -> Text(
+                        "Este video no ofrece un archivo directo con audio para descargar. No se mostrarán calidades falsas.",
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(vertical = 18.dp)
                     )
-                    else -> streamOptions?.downloads.orEmpty().forEachIndexed { index, option ->
-                        if (index > 0) HorizontalDivider()
-                        DownloadChoiceRow(option = option, onClick = { startDownload(option) })
+                    else -> {
+                        downloadOptions.sortedByDescending { it.height }.forEachIndexed { index, option ->
+                            if (index > 0) HorizontalDivider()
+                            DownloadQualityChoiceRow(
+                                option = option,
+                                selected = option.height == selectedDownload?.height,
+                                onClick = { selectedDownloadHeight = option.height }
+                            )
+                        }
+                        Button(
+                            onClick = { selectedDownload?.let(startDownload) },
+                            enabled = selectedDownload != null,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(top = 18.dp)
+                        ) {
+                            Icon(Icons.Default.Download, contentDescription = null)
+                            Text(
+                                selectedDownload?.let { "Descargar en ${it.label.removePrefix("Video ")}" }
+                                    ?: "Selecciona una calidad",
+                                modifier = Modifier.padding(start = 10.dp)
+                            )
+                        }
+                        Text(
+                            "Se guardará en Películas/GeoVideos.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(top = 8.dp)
+                        )
                     }
                 }
                 Spacer(Modifier.height(24.dp))
             }
         }
     }
+
 }
 
 @Composable
@@ -694,7 +744,11 @@ private fun QualityChoiceRow(
 }
 
 @Composable
-private fun DownloadChoiceRow(option: DownloadStreamOption, onClick: () -> Unit) {
+private fun DownloadQualityChoiceRow(
+    option: DownloadStreamOption,
+    selected: Boolean,
+    onClick: () -> Unit
+) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -702,7 +756,15 @@ private fun DownloadChoiceRow(option: DownloadStreamOption, onClick: () -> Unit)
             .padding(vertical = 14.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Icon(Icons.Default.Download, contentDescription = null)
+        Surface(
+            shape = CircleShape,
+            color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant,
+            modifier = Modifier.size(24.dp)
+        ) {
+            Box(contentAlignment = Alignment.Center) {
+                if (selected) Text("✓", color = MaterialTheme.colorScheme.onPrimary, fontWeight = FontWeight.Bold)
+            }
+        }
         Column(modifier = Modifier.weight(1f).padding(start = 14.dp)) {
             Text(option.label, fontWeight = FontWeight.SemiBold)
             Text(
@@ -712,6 +774,5 @@ private fun DownloadChoiceRow(option: DownloadStreamOption, onClick: () -> Unit)
                 modifier = Modifier.padding(top = 2.dp)
             )
         }
-        TextButton(onClick = onClick) { Text("Descargar") }
     }
 }

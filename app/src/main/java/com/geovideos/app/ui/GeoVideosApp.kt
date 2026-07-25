@@ -601,7 +601,7 @@ private fun MainShell(
                 selectedVideoId = state.selectedVideo?.id.orEmpty(),
                 localLikedIds = state.localLikedIds,
                 localDislikedIds = state.localDislikedIds,
-                loading = state.loading,
+                loading = state.loading || (state.shorts.isEmpty() && state.shortsLoadingMore),
                 loadingMore = state.shortsLoadingMore,
                 canLoadMore = state.shortsCanLoadMore,
                 dataSaver = state.dataSaver,

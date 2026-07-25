@@ -1,0 +1,24 @@
+Geo Videos V34.0.0
+
+Cambios:
+- Selector de calidad de reproduccion con Automatica y resoluciones reales del extractor.
+- Selector de descarga separado: primero se marca una calidad y luego se confirma con un boton grande.
+- Descarga solo ofrece archivos progresivos que ya incluyen video y audio; no muestra calidades falsas.
+- La calidad elegida para reproducir se usa como preferencia inicial de descarga cuando existe.
+- Si se abre Descargar directamente, queda marcada la mayor calidad descargable disponible.
+- Shorts se obtienen solo de la busqueda dedicada #shorts; ya no se mezclan historial ni videos normales de suscripciones.
+- Se elimino el segundo filtro visual que dejaba la pantalla Shorts vacia cuando la duracion tardaba en llegar.
+- Al entrar a Shorts con la lista vacia, la app vuelve a consultar automaticamente el feed dedicado.
+- Fallback seguro para mantener el feed Shorts visible cuando el extractor temporalmente no puede verificar contenido.
+- Compatibilidad con Shorts de hasta 180 segundos.
+
+No modificados:
+- applicationId
+- OAuth / Google Sign-In
+- AndroidManifest
+- firma geovideos-dev.jks
+
+Validacion local:
+- Integridad de llaves, parentesis y corchetes verificada en archivos modificados.
+- Analisis sintactico Kotlin sin errores de parser.
+- La compilacion Gradle completa no pudo ejecutarse porque el entorno no resolvio services.gradle.org.

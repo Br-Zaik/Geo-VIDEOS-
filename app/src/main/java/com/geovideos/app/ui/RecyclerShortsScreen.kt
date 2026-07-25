@@ -65,7 +65,9 @@ internal fun RecyclerShortsScreen(
 ) {
     val controller by playerConnection.controller.collectAsStateWithLifecycle()
     val playback by playerConnection.coreState.collectAsStateWithLifecycle()
-    val shortVideos = remember(videos) { videos.filter(::isStrictShort).distinctBy { it.id } }
+    // The ViewModel already supplies a dedicated Shorts feed. Do not filter it again here:
+    // a second strict filter previously removed every item when duration metadata was delayed.
+    val shortVideos = remember(videos) { videos.distinctBy { it.id } }
 
     if (shortVideos.isEmpty()) {
         Box(modifier = modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -178,7 +180,7 @@ internal fun RecyclerShortsScreen(
 }
 
 private fun isStrictShort(video: VideoItem): Boolean {
-    if (video.durationMs > 0L) return video.durationMs <= 75_000L
+    if (video.durationMs > 0L) return video.durationMs <= 180_000L
     val text = "${video.title} ${video.description} ${video.source}".lowercase()
     return "/shorts/" in text || "#shorts" in text || "#short " in text
 }

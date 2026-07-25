@@ -324,7 +324,7 @@ private fun SubscriptionChannelButton(
 }
 
 private fun VideoItem.looksLikeShortForLibrary(): Boolean {
-    if (durationMs in 1L..75_000L) return true
+    if (durationMs in 1L..180_000L) return true
     val text = "$title $description".lowercase()
     return "#shorts" in text || "#short" in text || " youtube shorts" in text
 }

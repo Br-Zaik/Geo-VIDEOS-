@@ -174,14 +174,14 @@ internal object StreamResolver {
             return video.durationMs in 1L..MAX_SHORT_DURATION_MS
         }
         return withContext(Dispatchers.IO) {
+            val text = "${video.title} ${video.description} ${video.source}".lowercase()
+            val tagged = "/shorts/" in text || "#shorts" in text || "#short " in text
             runCatching {
-                // NewPipe distinguishes the real YouTube Shorts surface from ordinary
-                // horizontal videos that merely happen to last less than one minute.
-                streamInfo(video.id).isShortFormContent
+                val info = streamInfo(video.id)
+                info.isShortFormContent ||
+                    (tagged && info.duration in 1L..(MAX_SHORT_DURATION_MS / 1000L))
             }.getOrElse {
-                val text = "${video.title} ${video.description} ${video.source}".lowercase()
-                ("/shorts/" in text || "#shorts" in text || "#short " in text) &&
-                    (video.durationMs <= 0L || video.durationMs <= MAX_SHORT_DURATION_MS)
+                tagged && (video.durationMs <= 0L || video.durationMs <= MAX_SHORT_DURATION_MS)
             }
         }
     }
@@ -271,5 +271,5 @@ internal object StreamResolver {
     private const val MAX_CACHE_ENTRIES = 30
     private const val MAX_INFO_CACHE_ENTRIES = 12
     private const val PRELOAD_COUNT = 2
-    private const val MAX_SHORT_DURATION_MS = 75_000L
+    private const val MAX_SHORT_DURATION_MS = 180_000L
 }
