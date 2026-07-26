@@ -1,0 +1,17 @@
+Geo Videos V37 - Shorts personalizados y calidad aplicada
+
+Cambios:
+- Shorts priorizados desde suscripciones, historial, videos que gustan y feed personalizado.
+- La busqueda generica queda solo como respaldo.
+- Calidad dentro de Shorts mediante el boton Calidad.
+- La calidad elegida se mantiene para los siguientes Shorts y videos.
+- Las calidades bajas como 144p/240p usan primero el stream progresivo exacto.
+- El selector solo muestra calidades reproducibles cuando no existe manifiesto adaptativo.
+- Se mantienen las correcciones V36 para evitar pantalla negra.
+- Sin cambios en OAuth, paquete, manifest o firma.
+
+Validacion local:
+- Balance de llaves y parentesis revisado.
+- Analisis sintactico Kotlin sin errores de sintaxis.
+- XML de recursos validado.
+- Compilacion Gradle no ejecutada: services.gradle.org no resolvio en este entorno.

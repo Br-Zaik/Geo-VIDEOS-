@@ -191,7 +191,7 @@ class GeoPlayerConnection private constructor(context: Context) {
             autoplay = autoplay,
             dataSaver = dataSaver,
             repeat = repeat,
-            preferredHeight = null,
+            preferredHeight = _preferredQualityHeight.value,
             forceReload = false
         )
     }
@@ -313,7 +313,7 @@ class GeoPlayerConnection private constructor(context: Context) {
             autoplay = true,
             dataSaver = dataSaver,
             repeat = true,
-            preferredHeight = null,
+            preferredHeight = _preferredQualityHeight.value,
             forceReload = true
         )
     }
@@ -346,7 +346,8 @@ class GeoPlayerConnection private constructor(context: Context) {
         requestSerial += 1L
         resolveJob?.cancel()
         currentVideo = null
-        _preferredQualityHeight.value = null
+        // Keep the user's quality preference when closing or leaving Shorts.
+        // The next video reuses it, matching DayliTube/YouTube behavior.
         withController {
             it.stop()
             it.clearMediaItems()

@@ -29,9 +29,10 @@ internal fun enqueueResolvedMediaDownload(
     context: Context,
     video: VideoItem,
     option: DownloadStreamOption,
+    relativeFolder: String = "GeoVideos",
     onCompleted: (downloadId: Long, localUri: String) -> Unit = { _, _ -> },
     onFailed: (message: String) -> Unit = {}
-): Long = MediaDownloadQueue.enqueue(context, video, option, onCompleted, onFailed)
+): Long = MediaDownloadQueue.enqueue(context, video, option, relativeFolder, onCompleted, onFailed)
 
 private object MediaDownloadQueue {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -42,6 +43,7 @@ private object MediaDownloadQueue {
         context: Context,
         video: VideoItem,
         option: DownloadStreamOption,
+        relativeFolder: String,
         onCompleted: (Long, String) -> Unit,
         onFailed: (String) -> Unit
     ): Long {
@@ -66,7 +68,9 @@ private object MediaDownloadQueue {
                     muxFiles(videoFile, audioFile, muxedFile, outputExtension)
                     muxedFile
                 }
-                val finalUri = publishVideo(appContext, video, option, completedFile, outputExtension)
+                val finalUri = publishVideo(
+                    appContext, video, option, completedFile, outputExtension, relativeFolder
+                )
                 mainHandler.post { onCompleted(id, finalUri) }
             } catch (error: Exception) {
                 val message = when {
@@ -181,17 +185,24 @@ private object MediaDownloadQueue {
         video: VideoItem,
         option: DownloadStreamOption,
         source: File,
-        extension: String
+        extension: String,
+        relativeFolder: String
     ): String {
         val title = video.title.ifBlank { "Geo Video" }
         val name = "${safeFileName(title)}_${option.height}p.$extension"
         val mime = if (extension.equals("webm", true)) "video/webm" else "video/mp4"
+        val safeFolder = relativeFolder
+            .split('/')
+            .map { safeFolderSegment(it) }
+            .filter { it.isNotBlank() }
+            .joinToString("/")
+            .ifBlank { "GeoVideos" }
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             val values = ContentValues().apply {
                 put(MediaStore.Video.Media.DISPLAY_NAME, name)
                 put(MediaStore.Video.Media.MIME_TYPE, mime)
-                put(MediaStore.Video.Media.RELATIVE_PATH, "${Environment.DIRECTORY_MOVIES}/GeoVideos")
+                put(MediaStore.Video.Media.RELATIVE_PATH, "${Environment.DIRECTORY_MOVIES}/$safeFolder")
                 put(MediaStore.Video.Media.IS_PENDING, 1)
             }
             val resolver = context.contentResolver
@@ -211,11 +222,12 @@ private object MediaDownloadQueue {
             }
         }
 
-        val directory = File(
-            Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MOVIES),
-            "GeoVideos"
-        )
-        if (!directory.mkdirs() && !directory.isDirectory) error("No se pudo crear Películas/GeoVideos")
+        val directory = safeFolder.split('/').fold(
+            Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MOVIES)
+        ) { parent, segment -> File(parent, segment) }
+        if (!directory.mkdirs() && !directory.isDirectory) {
+            error("No se pudo crear Películas/$safeFolder")
+        }
         val target = uniqueFile(directory, name)
         FileInputStream(source).buffered().use { input ->
             FileOutputStream(target).buffered().use { output -> input.copyTo(output, DOWNLOAD_BUFFER_SIZE) }
@@ -255,3 +267,8 @@ private fun extensionFromMime(mimeType: String?, fallback: String): String = whe
     mimeType?.contains("m4a", ignoreCase = true) == true -> "m4a"
     else -> fallback.ifBlank { "mp4" }
 }
+
+
+private fun safeFolderSegment(value: String): String = value
+    .replace(Regex("[^A-Za-z0-9._-]"), "_")
+    .trim('_')

@@ -1,0 +1,11 @@
+Geo Videos V38 - Descarga de Shorts por calidad
+
+Cambios:
+- Botón Descargar agregado dentro de la columna lateral de cada Short.
+- Selector independiente con todas las calidades descargables reales.
+- La calidad de descarga no modifica la calidad de reproducción.
+- Descargas HD descargan video y audio y los unen cuando es necesario.
+- Los Shorts se guardan en Películas/GeoVideos/Shorts.
+- Las descargas completadas aparecen en Colección > Descargas.
+- Compatibilidad con permiso de almacenamiento en Android 9 o anterior.
+- Sin cambios en OAuth, paquete, manifiesto o firma.

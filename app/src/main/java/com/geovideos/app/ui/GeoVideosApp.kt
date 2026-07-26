@@ -614,7 +614,9 @@ private fun MainShell(
                 onOpenVideo = onOpenVideo,
                 onWatchLater = onWatchLater,
                 onLike = onLike,
-                onDislike = onDislike
+                onDislike = onDislike,
+                onRegisterDownload = onRegisterDownload,
+                onMessage = onMessage
             )
             MainSection.SEARCH -> SearchScreen(
                 modifier = contentModifier,
@@ -843,89 +845,89 @@ private fun LibraryScreen(
     onRemoveDownload: (Long) -> Unit
 ) {
     val context = LocalContext.current
+    val uniqueHistory = remember(history) { history.distinctBy { it.id } }
     val uniqueLiked = remember(liked) { liked.distinctBy { it.id } }
-    val continueWatching = remember(history) {
-        history.filter { it.resumePositionMs > 0L && it.durationMs > 0L }
-            .ifEmpty { history }
-            .distinctBy { it.id }
-            .take(12)
-    }
 
     LazyColumn(
         modifier = modifier.fillMaxSize().background(Color.Black),
-        contentPadding = PaddingValues(top = 8.dp, bottom = 18.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp)
+        contentPadding = PaddingValues(top = 8.dp, bottom = 22.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp)
     ) {
-        if (continueWatching.isNotEmpty()) {
-            item(key = "library-continue-title") {
-                CompactLibraryHeader("Continuar viendo", "Ver todo", onOpenHistory)
+        item(key = "library-history-title") {
+            CompactLibraryHeader("Historial", "Ver todo", onOpenHistory)
+        }
+        if (uniqueHistory.isEmpty()) {
+            item(key = "library-history-empty") {
+                Text(
+                    "Los videos que veas aparecerán aquí.",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.bodyMedium,
+                    modifier = Modifier.padding(horizontal = 18.dp, vertical = 8.dp)
+                )
             }
-            item(key = "library-continue-row") {
+        } else {
+            item(key = "library-history-row") {
                 LazyRow(
                     contentPadding = PaddingValues(horizontal = 14.dp),
-                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
-                    items(continueWatching, key = { "continue-${it.id}" }) { video ->
+                    items(uniqueHistory.take(14), key = { "history-${it.id}" }) { video ->
                         CompactHistoryCard(video = video, onClick = { onPlay(video) })
                     }
                 }
             }
         }
 
-        item(key = "library-lists-title") {
-            CompactLibraryHeader("Listas", "Ver todo", onOpenWatchLater)
+        item(key = "library-playlists-title") {
+            CompactLibraryHeader("Playlists", "Ver todo", onOpenWatchLater)
         }
-        item(key = "library-lists-row") {
+        item(key = "library-playlists-row") {
             LazyRow(
                 contentPadding = PaddingValues(horizontal = 14.dp),
-                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                item {
+                item(key = "liked-playlist") {
                     LibraryCoverCard(
                         title = "Videos que me gustan",
                         count = uniqueLiked.size,
-                        icon = Icons.Default.Favorite,
+                        icon = Icons.Default.ThumbUp,
                         thumbnailUrl = uniqueLiked.firstOrNull()?.thumbnailUrl.orEmpty(),
+                        subtitle = "Privado",
                         onClick = onOpenLiked
                     )
                 }
-                item {
+                item(key = "watch-later-playlist") {
                     LibraryCoverCard(
-                        title = "Ver después",
+                        title = "Ver más tarde",
                         count = watchLater.size,
                         icon = Icons.Default.WatchLater,
                         thumbnailUrl = watchLater.firstOrNull()?.thumbnailUrl.orEmpty(),
+                        subtitle = "Privado",
                         onClick = onOpenWatchLater
                     )
                 }
-                items(playlists.take(8), key = { "library-playlist-${it.id}" }) { playlist ->
+                items(playlists.take(10), key = { "library-playlist-${it.id}" }) { playlist ->
                     PlaylistCard(playlist)
                 }
             }
         }
 
-        item(key = "library-main-actions") {
-            Row(
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 2.dp),
-                horizontalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-                LibraryWideTile(
-                    modifier = Modifier.weight(1f),
-                    icon = Icons.Default.Subscriptions,
-                    title = "Suscripciones",
-                    subtitle = "${subscriptions.size} canales",
-                    onClick = onOpenSubscriptions
-                )
-                LibraryWideTile(
-                    modifier = Modifier.weight(1f),
-                    icon = Icons.Default.History,
-                    title = "Historial",
-                    subtitle = "${history.size} videos",
-                    onClick = onOpenHistory
-                )
-            }
+        item(key = "library-subscriptions-row") {
+            LibraryNavigationRow(
+                icon = Icons.Default.Subscriptions,
+                title = "Suscripciones",
+                subtitle = "${subscriptions.size} canales",
+                onClick = onOpenSubscriptions
+            )
         }
-
+        item(key = "library-history-navigation-row") {
+            LibraryNavigationRow(
+                icon = Icons.Default.History,
+                title = "Historial",
+                subtitle = "${uniqueHistory.size} videos",
+                onClick = onOpenHistory
+            )
+        }
         item(key = "library-watch-later-row") {
             LibraryNavigationRow(
                 icon = Icons.Default.WatchLater,
@@ -936,7 +938,7 @@ private fun LibraryScreen(
         }
         item(key = "library-liked-row") {
             LibraryNavigationRow(
-                icon = Icons.Default.Favorite,
+                icon = Icons.Default.ThumbUp,
                 title = "Videos que me gustan",
                 subtitle = "${uniqueLiked.size} videos",
                 onClick = onOpenLiked
@@ -945,7 +947,7 @@ private fun LibraryScreen(
         item(key = "library-uploads-row") {
             LibraryNavigationRow(
                 icon = Icons.Default.VideoLibrary,
-                title = "Mis videos",
+                title = "Tus videos",
                 subtitle = when {
                     uploadsLoadingMore -> "Cargando…"
                     uploadsCanLoadMore -> "${uploads.size} videos · hay más"
@@ -957,50 +959,35 @@ private fun LibraryScreen(
                 }
             )
         }
+        item(key = "library-downloads-row") {
+            LibraryNavigationRow(
+                icon = Icons.Default.DownloadDone,
+                title = "Descargas",
+                subtitle = "${downloads.size} archivos",
+                onClick = { openSystemDownloads(context) }
+            )
+        }
 
-        if (subscriptions.isNotEmpty() && subscriptionVideos.isNotEmpty()) {
-            item(key = "library-subscriptions-preview") {
-                CompactLibraryHeader("De tus suscripciones", "Ver todo", onOpenSubscriptions)
-            }
-            item(key = "library-subscriptions-videos") {
-                LazyRow(
-                    contentPadding = PaddingValues(horizontal = 14.dp),
-                    horizontalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    items(subscriptionVideos.take(8), key = { "subscription-preview-${it.id}" }) { video ->
-                        CompactHistoryCard(video = video, onClick = { onPlay(video) })
-                    }
+        if (downloads.isNotEmpty()) {
+            items(downloads.take(3), key = { "download-${it.downloadId}-${it.id}" }) { video ->
+                Box(modifier = Modifier.padding(horizontal = 14.dp, vertical = 2.dp)) {
+                    DownloadStatusCard(
+                        video = video,
+                        onOpen = { openSystemDownloads(context) },
+                        onRemove = { onRemoveDownload(video.downloadId) }
+                    )
                 }
             }
         }
 
-        item(key = "library-downloads-title") {
-            CompactLibraryHeader("Descargas", "Archivos", { openSystemDownloads(context) })
-        }
-        item(key = "library-download-buttons") {
-            Row(
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp),
-                horizontalArrangement = Arrangement.spacedBy(10.dp)
+        item(key = "library-add-download") {
+            TextButton(
+                onClick = onAddDownload,
+                modifier = Modifier.padding(horizontal = 10.dp)
             ) {
-                Button(onClick = onAddDownload, modifier = Modifier.weight(1f)) {
-                    Icon(Icons.Default.Download, null)
-                    Spacer(Modifier.width(7.dp))
-                    Text("Nueva")
-                }
-                OutlinedButton(onClick = { openSystemDownloads(context) }, modifier = Modifier.weight(1f)) {
-                    Icon(Icons.Default.DownloadDone, null)
-                    Spacer(Modifier.width(7.dp))
-                    Text("Ver archivos")
-                }
-            }
-        }
-        items(downloads.take(4), key = { "download-${it.downloadId}-${it.id}" }) { video ->
-            Box(modifier = Modifier.padding(horizontal = 14.dp)) {
-                DownloadStatusCard(
-                    video = video,
-                    onOpen = { openSystemDownloads(context) },
-                    onRemove = { onRemoveDownload(video.downloadId) }
-                )
+                Icon(Icons.Default.Download, null)
+                Spacer(Modifier.width(8.dp))
+                Text("Agregar descarga por enlace")
             }
         }
     }
@@ -1009,7 +996,10 @@ private fun LibraryScreen(
 @Composable
 private fun CompactLibraryHeader(title: String, action: String, onAction: () -> Unit) {
     Row(
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onAction)
+            .padding(horizontal = 16.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Text(
@@ -1022,7 +1012,7 @@ private fun CompactLibraryHeader(title: String, action: String, onAction: () -> 
             action,
             color = MaterialTheme.colorScheme.primary,
             fontWeight = FontWeight.SemiBold,
-            modifier = Modifier.clickable(onClick = onAction).padding(6.dp)
+            style = MaterialTheme.typography.bodyLarge
         )
     }
 }
@@ -1030,13 +1020,13 @@ private fun CompactLibraryHeader(title: String, action: String, onAction: () -> 
 @Composable
 private fun CompactHistoryCard(video: VideoItem, onClick: () -> Unit) {
     Column(
-        modifier = Modifier.width(174.dp).clickable(onClick = onClick)
+        modifier = Modifier.width(148.dp).clickable(onClick = onClick)
     ) {
         Box(
             modifier = Modifier
                 .fillMaxWidth()
                 .aspectRatio(16f / 9f)
-                .clip(RoundedCornerShape(8.dp))
+                .clip(RoundedCornerShape(9.dp))
                 .background(Color(0xFF1B1A20))
         ) {
             Thumbnail(video.thumbnailUrl, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
@@ -1048,9 +1038,9 @@ private fun CompactHistoryCard(video: VideoItem, onClick: () -> Unit) {
                     style = MaterialTheme.typography.labelSmall,
                     modifier = Modifier
                         .align(Alignment.BottomEnd)
-                        .padding(5.dp)
-                        .background(Color.Black.copy(alpha = 0.78f), RoundedCornerShape(4.dp))
-                        .padding(horizontal = 5.dp, vertical = 2.dp)
+                        .padding(4.dp)
+                        .background(Color.Black.copy(alpha = 0.78f), RoundedCornerShape(3.dp))
+                        .padding(horizontal = 4.dp, vertical = 1.dp)
                 )
             }
         }
@@ -1059,16 +1049,16 @@ private fun CompactHistoryCard(video: VideoItem, onClick: () -> Unit) {
             maxLines = 2,
             overflow = TextOverflow.Ellipsis,
             fontWeight = FontWeight.Medium,
-            style = MaterialTheme.typography.bodyMedium,
-            modifier = Modifier.padding(top = 6.dp)
+            style = MaterialTheme.typography.bodySmall,
+            modifier = Modifier.padding(top = 5.dp)
         )
         Text(
             video.channelTitle,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
-            style = MaterialTheme.typography.bodySmall,
-            modifier = Modifier.padding(top = 2.dp)
+            style = MaterialTheme.typography.labelMedium,
+            modifier = Modifier.padding(top = 1.dp)
         )
     }
 }
@@ -1079,42 +1069,68 @@ private fun LibraryCoverCard(
     count: Int,
     icon: androidx.compose.ui.graphics.vector.ImageVector,
     thumbnailUrl: String,
+    subtitle: String = "Playlist",
     onClick: () -> Unit
 ) {
-    Card(
-        onClick = onClick,
-        modifier = Modifier.width(166.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+    Column(
+        modifier = Modifier.width(148.dp).clickable(onClick = onClick)
     ) {
-        Box(modifier = Modifier.fillMaxWidth().aspectRatio(16f / 9f)) {
-            Thumbnail(thumbnailUrl, Modifier.fillMaxSize())
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .aspectRatio(16f / 9f)
+                .clip(RoundedCornerShape(9.dp))
+                .background(Color(0xFF1B1A20))
+        ) {
+            Thumbnail(thumbnailUrl, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
             Box(
                 modifier = Modifier.fillMaxSize().background(
                     Brush.verticalGradient(
-                        listOf(Color.Transparent, Color.Black.copy(alpha = 0.82f))
+                        listOf(Color.Transparent, Color.Black.copy(alpha = 0.76f))
                     )
                 )
             )
             Row(
-                modifier = Modifier.align(Alignment.BottomStart).padding(10.dp),
+                modifier = Modifier.align(Alignment.BottomStart).padding(8.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Icon(icon, null, tint = Color.White)
+                Icon(icon, null, tint = Color.White, modifier = Modifier.size(22.dp))
                 Text(
                     count.toString(),
                     color = Color.White,
                     fontWeight = FontWeight.Bold,
+                    style = MaterialTheme.typography.bodyMedium,
                     modifier = Modifier.padding(start = 6.dp)
                 )
             }
         }
-        Text(
-            title,
-            fontWeight = FontWeight.SemiBold,
-            maxLines = 2,
-            overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.padding(horizontal = 8.dp, vertical = 7.dp)
-        )
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(top = 5.dp),
+            verticalAlignment = Alignment.Top
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    title,
+                    fontWeight = FontWeight.Medium,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                    style = MaterialTheme.typography.bodySmall
+                )
+                Text(
+                    subtitle,
+                    maxLines = 1,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.labelMedium,
+                    modifier = Modifier.padding(top = 1.dp)
+                )
+            }
+            Icon(
+                Icons.Default.MoreVert,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(18.dp)
+            )
+        }
     }
 }
 
@@ -1161,20 +1177,33 @@ private fun LibraryNavigationRow(
         modifier = Modifier
             .fillMaxWidth()
             .clickable(onClick = onClick)
-            .padding(horizontal = 20.dp, vertical = 10.dp),
+            .padding(horizontal = 20.dp, vertical = 9.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Icon(icon, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(26.dp))
+        Icon(
+            icon,
+            null,
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.size(25.dp)
+        )
         Column(modifier = Modifier.weight(1f).padding(start = 16.dp)) {
-            Text(title, fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.titleMedium)
+            Text(
+                title,
+                fontWeight = FontWeight.Medium,
+                style = MaterialTheme.typography.titleMedium
+            )
             Text(
                 subtitle,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 style = MaterialTheme.typography.bodySmall,
-                modifier = Modifier.padding(top = 2.dp)
+                modifier = Modifier.padding(top = 1.dp)
             )
         }
-        Text("›", style = MaterialTheme.typography.headlineSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text(
+            "›",
+            style = MaterialTheme.typography.headlineSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
     }
 }
 
@@ -1740,14 +1769,51 @@ private fun ResumeProgress(video: VideoItem, modifier: Modifier = Modifier) {
 
 @Composable
 private fun PlaylistCard(playlist: PlaylistItem) {
-    Card(modifier = Modifier.width(166.dp)) {
-        Box {
-            Thumbnail(playlist.thumbnailUrl, Modifier.fillMaxWidth().aspectRatio(16f / 9f))
-            Text("${playlist.itemCount}", modifier = Modifier.align(Alignment.BottomEnd).padding(8.dp).background(Color.Black.copy(0.75f), RoundedCornerShape(6.dp)).padding(horizontal = 7.dp, vertical = 3.dp))
+    Column(modifier = Modifier.width(148.dp)) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .aspectRatio(16f / 9f)
+                .clip(RoundedCornerShape(9.dp))
+                .background(Color(0xFF1B1A20))
+        ) {
+            Thumbnail(playlist.thumbnailUrl, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
+            Text(
+                "${playlist.itemCount}",
+                color = Color.White,
+                style = MaterialTheme.typography.labelMedium,
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(5.dp)
+                    .background(Color.Black.copy(alpha = 0.76f), RoundedCornerShape(4.dp))
+                    .padding(horizontal = 6.dp, vertical = 2.dp)
+            )
         }
-        Column(modifier = Modifier.padding(horizontal = 8.dp, vertical = 7.dp)) {
-            Text(playlist.title, fontWeight = FontWeight.SemiBold, maxLines = 2, overflow = TextOverflow.Ellipsis)
-            Text("Lista", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(top = 5.dp),
+            verticalAlignment = Alignment.Top
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    playlist.title,
+                    fontWeight = FontWeight.Medium,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                    style = MaterialTheme.typography.bodySmall
+                )
+                Text(
+                    "Playlist",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 1.dp)
+                )
+            }
+            Icon(
+                Icons.Default.MoreVert,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(18.dp)
+            )
         }
     }
 }

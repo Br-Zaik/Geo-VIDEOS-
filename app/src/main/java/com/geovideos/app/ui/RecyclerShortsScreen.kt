@@ -1,10 +1,13 @@
 package com.geovideos.app.ui
 
+import android.Manifest
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.graphics.Color
 import android.graphics.drawable.ColorDrawable
 import android.graphics.drawable.GradientDrawable
+import android.os.Build
 import android.text.TextUtils
 import android.util.TypedValue
 import android.view.Gravity
@@ -16,24 +19,41 @@ import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.TextView
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
@@ -48,8 +68,13 @@ import androidx.recyclerview.widget.RecyclerView
 import com.bumptech.glide.Glide
 import com.geovideos.app.R
 import com.geovideos.app.data.VideoItem
+import com.geovideos.app.playback.DownloadStreamOption
 import com.geovideos.app.playback.GeoPlayerConnection
+import com.geovideos.app.playback.StreamOptions
+import com.geovideos.app.playback.enqueueResolvedMediaDownload
+import kotlinx.coroutines.launch
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun RecyclerShortsScreen(
     modifier: Modifier,
@@ -68,10 +93,112 @@ internal fun RecyclerShortsScreen(
     onOpenVideo: (VideoItem) -> Unit,
     onWatchLater: (VideoItem) -> Unit,
     onLike: (VideoItem) -> Unit,
-    onDislike: (VideoItem) -> Unit
+    onDislike: (VideoItem) -> Unit,
+    onRegisterDownload: (String, String, Long) -> Unit,
+    onMessage: (String) -> Unit
 ) {
     val controller by playerConnection.controller.collectAsStateWithLifecycle()
     val playback by playerConnection.coreState.collectAsStateWithLifecycle()
+    val preferredQuality by playerConnection.preferredQualityHeight.collectAsStateWithLifecycle()
+    val scope = rememberCoroutineScope()
+    val context = LocalContext.current
+    var qualityVideo by remember { mutableStateOf<VideoItem?>(null) }
+    var qualityOptions by remember { mutableStateOf<StreamOptions?>(null) }
+    var qualityLoading by remember { mutableStateOf(false) }
+    var qualityError by remember { mutableStateOf<String?>(null) }
+    var downloadVideo by remember { mutableStateOf<VideoItem?>(null) }
+    var downloadOptions by remember { mutableStateOf<StreamOptions?>(null) }
+    var downloadLoading by remember { mutableStateOf(false) }
+    var downloadError by remember { mutableStateOf<String?>(null) }
+    var selectedDownloadHeight by remember { mutableStateOf<Int?>(null) }
+    var pendingDownload by remember { mutableStateOf<Pair<VideoItem, DownloadStreamOption>?>(null) }
+
+    fun openQuality(video: VideoItem) {
+        qualityVideo = video
+        qualityOptions = null
+        qualityError = null
+        qualityLoading = true
+        scope.launch {
+            runCatching { playerConnection.streamOptions(video) }
+                .onSuccess { qualityOptions = it }
+                .onFailure { qualityError = "No se pudieron obtener las calidades de este Short." }
+            qualityLoading = false
+        }
+    }
+
+    fun openDownload(video: VideoItem) {
+        downloadVideo = video
+        downloadOptions = null
+        downloadError = null
+        selectedDownloadHeight = null
+        downloadLoading = true
+        scope.launch {
+            runCatching { playerConnection.streamOptions(video) }
+                .onSuccess { options ->
+                    downloadOptions = options
+                    selectedDownloadHeight = options.downloads
+                        .firstOrNull { it.height == preferredQuality }
+                        ?.height
+                        ?: options.downloads.maxByOrNull { it.height }?.height
+                }
+                .onFailure {
+                    downloadError = "No se pudieron obtener las calidades descargables de este Short."
+                }
+            downloadLoading = false
+        }
+    }
+
+    fun enqueueShortDownload(video: VideoItem, option: DownloadStreamOption) {
+        val downloadId = enqueueResolvedMediaDownload(
+            context = context,
+            video = video,
+            option = option,
+            relativeFolder = "GeoVideos/Shorts",
+            onCompleted = { completedId, localUri ->
+                onRegisterDownload("${video.title} (${option.label})", localUri, completedId)
+                onMessage("Short descargado en ${option.height}p.")
+            },
+            onFailed = onMessage
+        )
+        if (downloadId >= 0L) {
+            downloadVideo = null
+            onMessage(
+                if (option.requiresMux) {
+                    "Descargando el Short en ${option.height}p y uniendo el audio..."
+                } else {
+                    "Descargando el Short en ${option.height}p..."
+                }
+            )
+        } else {
+            onMessage("No se pudo iniciar la descarga del Short.")
+        }
+    }
+
+    val storagePermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        val request = pendingDownload
+        pendingDownload = null
+        if (granted && request != null) {
+            enqueueShortDownload(request.first, request.second)
+        } else if (!granted) {
+            onMessage("Android necesita permiso de almacenamiento para descargar en esta versión.")
+        }
+    }
+
+    fun startShortDownload(video: VideoItem, option: DownloadStreamOption) {
+        val needsPermission = Build.VERSION.SDK_INT <= Build.VERSION_CODES.P &&
+            ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.WRITE_EXTERNAL_STORAGE
+            ) != PackageManager.PERMISSION_GRANTED
+        if (needsPermission) {
+            pendingDownload = video to option
+            storagePermissionLauncher.launch(Manifest.permission.WRITE_EXTERNAL_STORAGE)
+        } else {
+            enqueueShortDownload(video, option)
+        }
+    }
     // The ViewModel already supplies a dedicated Shorts feed. Do not filter it again here:
     // a second strict filter previously removed every item when duration metadata was delayed.
     val shortVideos = remember(videos) { videos.distinctBy { it.id } }
@@ -102,6 +229,8 @@ internal fun RecyclerShortsScreen(
             onWatchLater = onWatchLater,
             onLike = onLike,
             onDislike = onDislike,
+            onQuality = ::openQuality,
+            onDownload = ::openDownload,
             onTogglePlayback = { video ->
                 if (playback.currentVideoId == video.id && playback.error != null) {
                     playerConnection.retryShort(video, dataSaver)
@@ -162,7 +291,7 @@ internal fun RecyclerShortsScreen(
             }
         },
         update = { recyclerView ->
-            adapter.updateCallbacks(onPreview, onOpenVideo, onWatchLater, onLike, onDislike) { video ->
+            adapter.updateCallbacks(onPreview, onOpenVideo, onWatchLater, onLike, onDislike, ::openQuality, ::openDownload) { video ->
                 if (playback.currentVideoId == video.id && playback.error != null) {
                     playerConnection.retryShort(video, dataSaver)
                 } else if (playback.currentVideoId == video.id) {
@@ -193,6 +322,179 @@ internal fun RecyclerShortsScreen(
             }
         }
     )
+
+    qualityVideo?.let { video ->
+        ModalBottomSheet(onDismissRequest = { qualityVideo = null }) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState())
+                    .padding(horizontal = 20.dp, vertical = 8.dp)
+            ) {
+                Text("Calidad del Short", style = MaterialTheme.typography.titleLarge)
+                Text(
+                    "La calidad elegida se aplicará también a los siguientes Shorts.",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 4.dp, bottom = 10.dp)
+                )
+                when {
+                    qualityLoading -> Box(
+                        modifier = Modifier.fillMaxWidth().height(120.dp),
+                        contentAlignment = Alignment.Center
+                    ) { CircularProgressIndicator() }
+                    qualityError != null -> Text(
+                        qualityError.orEmpty(),
+                        color = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.padding(vertical = 16.dp)
+                    )
+                    else -> {
+                        ShortQualityRow(
+                            label = "Automática",
+                            selected = preferredQuality == null,
+                            onClick = {
+                                playerConnection.selectQuality(video, null, dataSaver)
+                                qualityVideo = null
+                            }
+                        )
+                        qualityOptions?.qualities.orEmpty().forEach { option ->
+                            HorizontalDivider()
+                            ShortQualityRow(
+                                label = option.label,
+                                selected = preferredQuality == option.height,
+                                onClick = {
+                                    playerConnection.selectQuality(video, option.height, dataSaver)
+                                    qualityVideo = null
+                                }
+                            )
+                        }
+                        if (qualityOptions?.qualities.isNullOrEmpty()) {
+                            Text(
+                                "Este Short solo ofrece calidad automática.",
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(vertical = 18.dp)
+                            )
+                        }
+                    }
+                }
+                Spacer(Modifier.height(24.dp))
+            }
+        }
+    }
+
+    downloadVideo?.let { video ->
+        val options = downloadOptions?.downloads.orEmpty().sortedByDescending { it.height }
+        val selected = options.firstOrNull { it.height == selectedDownloadHeight }
+            ?: options.firstOrNull()
+
+        ModalBottomSheet(onDismissRequest = { downloadVideo = null }) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState())
+                    .padding(horizontal = 20.dp, vertical = 8.dp)
+            ) {
+                Text("Descargar Short", style = MaterialTheme.typography.titleLarge)
+                Text(
+                    "Escoge la calidad de descarga. La calidad que estás viendo no cambia.",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 4.dp, bottom = 10.dp)
+                )
+                when {
+                    downloadLoading -> Box(
+                        modifier = Modifier.fillMaxWidth().height(120.dp),
+                        contentAlignment = Alignment.Center
+                    ) { CircularProgressIndicator() }
+                    downloadError != null -> Text(
+                        downloadError.orEmpty(),
+                        color = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.padding(vertical = 16.dp)
+                    )
+                    downloadOptions?.isLive == true -> Text(
+                        "Los Shorts en directo no se pueden descargar.",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(vertical = 18.dp)
+                    )
+                    options.isEmpty() -> Text(
+                        "Este Short no ofrece una calidad descargable compatible.",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(vertical = 18.dp)
+                    )
+                    else -> {
+                        options.forEachIndexed { index, option ->
+                            if (index > 0) HorizontalDivider()
+                            ShortDownloadRow(
+                                option = option,
+                                selected = option.height == selected?.height,
+                                onClick = { selectedDownloadHeight = option.height }
+                            )
+                        }
+                        Button(
+                            onClick = { selected?.let { startShortDownload(video, it) } },
+                            enabled = selected != null,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(top = 18.dp)
+                        ) {
+                            Text(
+                                selected?.let { "Descargar en ${it.height}p" }
+                                    ?: "Selecciona una calidad"
+                            )
+                        }
+                        Text(
+                            "Se guardará en Películas/GeoVideos/Shorts y aparecerá en Colección > Descargas.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(top = 8.dp)
+                        )
+                    }
+                }
+                Spacer(Modifier.height(24.dp))
+            }
+        }
+    }
+}
+
+@Composable
+private fun ShortDownloadRow(
+    option: DownloadStreamOption,
+    selected: Boolean,
+    onClick: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        RadioButton(selected = selected, onClick = onClick)
+        Column(modifier = Modifier.padding(start = 10.dp)) {
+            Text("${option.height}p")
+            Text(
+                if (option.requiresMux) "Video HD + audio" else "Video con audio",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+    }
+}
+
+@Composable
+private fun ShortQualityRow(
+    label: String,
+    selected: Boolean,
+    onClick: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        RadioButton(selected = selected, onClick = onClick)
+        Text(label, modifier = Modifier.padding(start = 10.dp))
+    }
 }
 
 private fun isStrictShort(video: VideoItem): Boolean {
@@ -212,6 +514,8 @@ private class NativeShortsAdapter(
     private var onWatchLater: (VideoItem) -> Unit,
     private var onLike: (VideoItem) -> Unit,
     private var onDislike: (VideoItem) -> Unit,
+    private var onQuality: (VideoItem) -> Unit,
+    private var onDownload: (VideoItem) -> Unit,
     private var onTogglePlayback: (VideoItem) -> Unit
 ) : ListAdapter<VideoItem, NativeShortHolder>(ShortVideoDiff) {
     var activeId: String = ""
@@ -236,6 +540,8 @@ private class NativeShortsAdapter(
         later: (VideoItem) -> Unit,
         like: (VideoItem) -> Unit,
         dislike: (VideoItem) -> Unit,
+        quality: (VideoItem) -> Unit,
+        download: (VideoItem) -> Unit,
         toggle: (VideoItem) -> Unit
     ) {
         onPreview = preview
@@ -243,6 +549,8 @@ private class NativeShortsAdapter(
         onWatchLater = later
         onLike = like
         onDislike = dislike
+        onQuality = quality
+        onDownload = download
         onTogglePlayback = toggle
     }
 
@@ -317,7 +625,9 @@ private class NativeShortsAdapter(
             onComments = onOpenComments,
             onLater = onWatchLater,
             onLike = onLike,
-            onDislike = onDislike
+            onDislike = onDislike,
+            onQuality = onQuality,
+            onDownload = onDownload
         )
     }
 
@@ -357,7 +667,9 @@ private class NativeShortHolder(private val page: ShortPageView) : RecyclerView.
         onComments: (VideoItem) -> Unit,
         onLater: (VideoItem) -> Unit,
         onLike: (VideoItem) -> Unit,
-        onDislike: (VideoItem) -> Unit
+        onDislike: (VideoItem) -> Unit,
+        onQuality: (VideoItem) -> Unit,
+        onDownload: (VideoItem) -> Unit
     ) {
         page.bindVideo(video.id)
         page.channel.text = video.channelTitle.ifBlank { "Canal" }
@@ -371,6 +683,8 @@ private class NativeShortHolder(private val page: ShortPageView) : RecyclerView.
         page.comments.setOnClickListener { onComments(video) }
         page.save.setOnClickListener { onLater(video) }
         page.share.setOnClickListener { shareShort(page.context, video) }
+        page.quality.setOnClickListener { onQuality(video) }
+        page.download.setOnClickListener { onDownload(video) }
         loadShortImage(page.thumbnail, video.thumbnailUrl)
         if (active && controller != null && controller.currentMediaItem?.mediaId == video.id) {
             page.attach(controller, video.id)
@@ -403,6 +717,8 @@ private class ShortPageView(context: Context) : FrameLayout(context) {
     val comments = ShortActionView(context, R.drawable.ic_short_comment, "Comentarios")
     val share = ShortActionView(context, R.drawable.ic_short_share, "Compartir")
     val save = ShortActionView(context, R.drawable.ic_short_save, "Guardar")
+    val download = ShortActionView(context, R.drawable.ic_player_download, "Descargar")
+    val quality = ShortActionView(context, R.drawable.ic_player_quality, "Calidad")
     private val errorText = TextView(context)
     private var boundVideoId: String = ""
     private var renderedVideoId: String = ""
@@ -506,9 +822,9 @@ private class ShortPageView(context: Context) : FrameLayout(context) {
         val actions = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER_HORIZONTAL
-            listOf(like, dislike, comments, share, save).forEach { action ->
-                addView(action, LinearLayout.LayoutParams(dpShort(context, 58), dpShort(context, 62)).apply {
-                    bottomMargin = dpShort(context, 6)
+            listOf(like, dislike, comments, share, save, download, quality).forEach { action ->
+                addView(action, LinearLayout.LayoutParams(dpShort(context, 54), dpShort(context, 54)).apply {
+                    bottomMargin = dpShort(context, 2)
                 })
             }
         }

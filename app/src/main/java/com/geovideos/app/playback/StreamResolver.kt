@@ -80,13 +80,31 @@ internal object StreamResolver {
                 return@withContext ResolvedMedia(info.hlsUrl, MimeTypes.APPLICATION_M3U8)
             }
 
-            // Shorts start faster and more reliably with a progressive stream.
-            // It avoids recreating adaptive video/audio tracks every time the vertical page changes.
+            // When the user chooses a quality, prefer the exact progressive stream first.
+            // This makes low qualities such as 144p/240p apply immediately instead of
+            // leaving the adaptive player on a different resolution.
+            preferredHeight?.takeIf { it > 0 }?.let { exactHeight ->
+                val exactProgressive = selectExactProgressive(info.videoStreams, exactHeight)
+                if (exactProgressive != null) {
+                    return@withContext ResolvedMedia(
+                        exactProgressive.content,
+                        exactProgressive.format?.mimeType
+                    )
+                }
+                // Higher qualities are commonly adaptive. Use DASH only when the exact
+                // progressive variant is unavailable; Media3 then locks the selected height.
+                if (info.dashMpdUrl.isNotBlank()) {
+                    return@withContext ResolvedMedia(info.dashMpdUrl, MimeTypes.APPLICATION_MPD)
+                }
+            }
+
+            // Shorts start faster and more reliably with a progressive stream in automatic mode.
+            // Once a manual quality is selected, the exact-quality path above is used.
             if (preferProgressive) {
                 val fastStart = selectProgressive(
                     streams = info.videoStreams,
                     dataSaver = dataSaver,
-                    preferredHeight = preferredHeight ?: if (dataSaver) 360 else 720
+                    preferredHeight = if (dataSaver) 360 else 720
                 )
                 if (fastStart != null) {
                     return@withContext ResolvedMedia(
@@ -96,8 +114,8 @@ internal object StreamResolver {
                 }
             }
 
-            // The DASH manifest contains the adaptive tracks used by the exact quality selector.
-            if ((!dataSaver || preferredHeight != null) && info.dashMpdUrl.isNotBlank()) {
+            // Automatic mode may use the adaptive manifest when available.
+            if (!dataSaver && info.dashMpdUrl.isNotBlank()) {
                 return@withContext ResolvedMedia(info.dashMpdUrl, MimeTypes.APPLICATION_MPD)
             }
 
@@ -159,13 +177,21 @@ internal object StreamResolver {
             val audioStreams = info.audioStreams
                 .filter { it.isUrl && it.content.isNotBlank() }
 
-            val heights = (progressive.asSequence() + adaptiveVideo.asSequence())
+            val allHeights = (progressive.asSequence() + adaptiveVideo.asSequence())
                 .map { it.height }
                 .distinct()
                 .sortedDescending()
                 .toList()
+            // If no DASH manifest exists, only expose progressive qualities that can really
+            // be played with audio. This prevents a visible option that silently falls back.
+            val playableHeights = if (info.dashMpdUrl.isNotBlank()) {
+                allHeights
+            } else {
+                progressive.map { it.height }.distinct().sortedDescending()
+            }
 
-            val qualities = heights.map { height -> StreamQualityOption(height, "${height}p") }
+            val qualities = playableHeights.map { height -> StreamQualityOption(height, "${height}p") }
+            val heights = allHeights
 
             val downloads = heights.mapNotNull { height ->
                 val direct = progressive
@@ -273,6 +299,19 @@ internal object StreamResolver {
                 }
             }
     }
+
+
+    private fun selectExactProgressive(
+        streams: List<VideoStream>,
+        height: Int
+    ): VideoStream? = streams
+        .asSequence()
+        .filter { it.isUrl && !it.isVideoOnly && it.content.isNotBlank() && it.height == height }
+        .sortedWith(
+            compareByDescending<VideoStream> { if (isMp4(it.format?.mimeType)) 1 else 0 }
+                .thenByDescending { it.bitrate }
+        )
+        .firstOrNull()
 
     private fun selectProgressive(
         streams: List<VideoStream>,

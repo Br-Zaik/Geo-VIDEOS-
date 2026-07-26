@@ -400,7 +400,7 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
                     val subscriptionFeedRaw: List<VideoItem> = subscriptionWindow
                         .map { channel ->
                             async {
-                                runCatching { api.channelActivities(token, channel.id, 3) }
+                                runCatching { api.channelActivities(token, channel.id, 6) }
                                     .getOrDefault(emptyList())
                             }
                         }
@@ -422,22 +422,31 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
                     }.getOrDefault(shortsDeferred.await() to shortsQuery)
                     val shortsPage = loadedShortsPage
                     shortsQuery = loadedShortsQuery
-                    // Shorts are sourced only from the dedicated short-video search.
-                    // Do not mix history or ordinary subscription uploads into this feed.
                     val shortsRaw = shortsPage.items.distinctBy { it.id }.take(30)
                     val notificationsRaw = activitiesDeferred.await()
                     val activityVideosRaw = notificationsRaw.mapNotNull { it.video }
+                    // Build the Shorts feed from the user's own activity first: subscribed
+                    // channels, likes and history. Search results are only discovery/fallback.
+                    val personalShortsRaw = mergeUniqueVideos(
+                        subscriptionFeedRaw,
+                        activityVideosRaw,
+                        likedRaw,
+                        previous.localLikedVideos,
+                        previous.history.take(35),
+                        previous.personalized.take(35)
+                    ).take(80)
 
                     val allRaw = mergeUniqueVideos(
                         subscriptionFeedRaw,
                         activityVideosRaw,
                         uploadsPage.items,
                         likedRaw,
-                        previous.history.take(20),
+                        previous.history.take(35),
                         popularPage.items,
                         livePage.items,
                         gamingPage.items,
                         musicPage.items,
+                        personalShortsRaw,
                         shortsRaw
                     )
                     val enrichedById = enrichVideosWithCache(token, allRaw)
@@ -449,14 +458,17 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
                     val live = enriched(livePage.items)
                     val gaming = enriched(gamingPage.items).filterNot(::looksLikeShort)
                     val music = enriched(musicPage.items).filterNot(::looksLikeShort)
-                    val enrichedShortCandidates = enriched(shortsRaw)
-                    val verifiedShorts = verifyRealShorts(enrichedShortCandidates)
-                    val shorts = verifiedShorts.ifEmpty {
-                        mergeUniqueVideos(
-                            enrichedShortCandidates.filter(::looksLikeStrongShort),
-                            previous.shorts.filter(::looksLikeStrongShort)
-                        ).take(24)
-                    }
+                    val personalShortCandidates = enriched(personalShortsRaw)
+                        .filter(::looksLikeShort)
+                    val personalizedShorts = verifyRealShorts(personalShortCandidates)
+                    val discoveredShortCandidates = enriched(shortsRaw)
+                    val discoveredShorts = verifyRealShorts(discoveredShortCandidates)
+                    val shorts = mergeUniqueVideos(
+                        personalizedShorts,
+                        discoveredShorts,
+                        personalShortCandidates.filter(::looksLikeStrongShort),
+                        discoveredShortCandidates.filter(::looksLikeStrongShort)
+                    ).take(30)
                     val liked = enriched(likedRaw)
                     val subscriptionFeed = enriched(subscriptionFeedRaw)
                     val normalSubscriptionFeed = subscriptionFeed.filterNot(::looksLikeShort)
@@ -651,24 +663,28 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
         _uiState.update { it.copy(shortsLoadingMore = true, shortsCanLoadMore = true) }
         viewModelScope.launch {
             try {
-                val (page, usedQuery) = loadShortsSearchPage(
-                    token = token,
-                    preferredQuery = shortsQuery,
-                    maxResults = 30
-                )
+                val personalizedDeferred = async {
+                    loadPersonalizedShorts(token, state)
+                }
+                val searchDeferred = async {
+                    loadShortsSearchPage(
+                        token = token,
+                        preferredQuery = shortsQuery,
+                        maxResults = 30
+                    )
+                }
+                val personalized = personalizedDeferred.await()
+                val (page, usedQuery) = searchDeferred.await()
                 shortsQuery = usedQuery
                 shortsNextToken = page.nextPageToken
                 val candidates = enrichVideosWithCache(token, page.items)
                 val verified = verifyRealShorts(candidates)
-                val usable = verified.ifEmpty {
+                val discovered = verified.ifEmpty {
                     candidates.filter(::looksLikeStrongShort).take(24)
                 }
+                val usable = mergeUniqueVideos(personalized, discovered).take(MAX_HOME_ITEMS)
                 _uiState.update { current ->
-                    val merged = if (usable.isEmpty()) {
-                        current.shorts
-                    } else {
-                        mergeUniqueVideos(usable, current.shorts).take(MAX_HOME_ITEMS)
-                    }
+                    val merged = if (usable.isEmpty()) current.shorts else usable
                     current.copy(
                         shorts = merged,
                         shortsLoadingMore = false,
@@ -813,7 +829,7 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
             supervisorScope {
                 nextChannels.map { channel ->
                     async {
-                        runCatching { api.channelActivities(token, channel.id, 3) }
+                        runCatching { api.channelActivities(token, channel.id, 6) }
                             .getOrDefault(emptyList())
                     }
                 }.awaitAll().flatten()
@@ -1462,14 +1478,41 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
             .sortedByDescending { it.value }
             .take(5)
             .map { it.key }
-        val channelHints = subscriptions.take(3)
-            .map { it.title.split(' ').firstOrNull().orEmpty() }
+        val channelHints = subscriptions.take(4)
+            .map { it.title.trim() }
             .filter { it.length >= 3 }
-        return (interestWords + channelHints + listOf("#shorts", "vertical"))
-            .distinct()
-            .take(8)
+        val interests = interestWords.take(4).joinToString(" ")
+        val channel = channelHints.firstOrNull().orEmpty()
+        return listOf(channel, interests, "shorts")
+            .filter { it.isNotBlank() }
             .joinToString(" ")
-            .ifBlank { "shorts" }
+            .ifBlank { "shorts de mis suscripciones" }
+    }
+
+    private suspend fun loadPersonalizedShorts(
+        token: String,
+        state: GeoVideosUiState
+    ): List<VideoItem> = supervisorScope {
+        val subscriptionVideos = state.subscriptions
+            .take(14)
+            .map { channel ->
+                async {
+                    runCatching { api.channelActivities(token, channel.id, 8) }
+                        .getOrDefault(emptyList())
+                }
+            }
+            .awaitAll()
+            .flatten()
+        val raw = mergeUniqueVideos(
+            subscriptionVideos,
+            state.localLikedVideos,
+            state.liked,
+            state.history.take(40),
+            state.personalized.take(35)
+        ).take(100)
+        val enriched = enrichVideosWithCache(token, raw)
+            .filter(::looksLikeShort)
+        verifyRealShorts(enriched).take(30)
     }
 
     private suspend fun verifyRealShorts(videos: List<VideoItem>): List<VideoItem> = supervisorScope {
@@ -1508,9 +1551,9 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
         maxResults: Int
     ): Pair<VideoPage, String> {
         val queries = listOf(
-            "#shorts",
             preferredQuery,
-            "shorts español",
+            "shorts de mis suscripciones",
+            "#shorts español",
             "youtube shorts"
         ).map { it.trim() }
             .filter { it.isNotBlank() }
