@@ -763,7 +763,7 @@ private class PlayerHeaderView(context: Context) : LinearLayout(context) {
             overScrollMode = View.OVER_SCROLL_NEVER
         }
         val actions = LinearLayout(context).apply { orientation = HORIZONTAL }
-        listOf(like, dislike, download, quality, watchLater, share).forEach { item ->
+        listOf(like, dislike, download, watchLater, share).forEach { item ->
             actions.addView(item, LinearLayout.LayoutParams(dp(context, 82), dp(context, 72)))
         }
         scroll.addView(actions)

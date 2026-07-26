@@ -251,13 +251,15 @@ class GeoPlayerConnection private constructor(context: Context) {
                         .setMimeType(resolved.mimeType)
                         .setMediaMetadata(metadata)
                         .build()
-                    val maxHeight = preferredHeight?.takeIf { it > 0 } ?: Int.MAX_VALUE
-                    controller.setTrackSelectionParameters(
-                        controller.trackSelectionParameters
-                            .buildUpon()
-                            .setMaxVideoSize(Int.MAX_VALUE, maxHeight)
-                            .build()
-                    )
+                    val trackBuilder = controller.trackSelectionParameters
+                        .buildUpon()
+                        .clearVideoSizeConstraints()
+                    preferredHeight?.takeIf { it > 0 }?.let { exactHeight ->
+                        trackBuilder
+                            .setMinVideoSize(0, exactHeight)
+                            .setMaxVideoSize(Int.MAX_VALUE, exactHeight)
+                    }
+                    controller.setTrackSelectionParameters(trackBuilder.build())
                     controller.repeatMode = if (repeat) Player.REPEAT_MODE_ONE else Player.REPEAT_MODE_OFF
                     controller.setMediaItem(item, video.resumePositionMs.coerceAtLeast(0L))
                     controller.prepare()
@@ -305,13 +307,15 @@ class GeoPlayerConnection private constructor(context: Context) {
     fun setMuted(muted: Boolean) = withController { it.volume = if (muted) 0f else 1f }
     fun setSpeed(speed: Float) = withController { it.setPlaybackSpeed(speed.coerceIn(0.25f, 2f)) }
     fun setMaxVideoHeight(height: Int) = withController { controller ->
-        val maxHeight = if (height <= 0) Int.MAX_VALUE else height
-        controller.setTrackSelectionParameters(
-            controller.trackSelectionParameters
-                .buildUpon()
-                .setMaxVideoSize(Int.MAX_VALUE, maxHeight)
-                .build()
-        )
+        val builder = controller.trackSelectionParameters
+            .buildUpon()
+            .clearVideoSizeConstraints()
+        if (height > 0) {
+            builder
+                .setMinVideoSize(0, height)
+                .setMaxVideoSize(Int.MAX_VALUE, height)
+        }
+        controller.setTrackSelectionParameters(builder.build())
     }
     fun preload(videos: List<VideoItem>, dataSaver: Boolean) {
         if (videos.isEmpty()) return

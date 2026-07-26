@@ -8,6 +8,7 @@ import kotlinx.coroutines.withContext
 import org.schabi.newpipe.extractor.NewPipe
 import org.schabi.newpipe.extractor.localization.ContentCountry
 import org.schabi.newpipe.extractor.localization.Localization
+import org.schabi.newpipe.extractor.stream.AudioStream
 import org.schabi.newpipe.extractor.stream.StreamInfo
 import org.schabi.newpipe.extractor.stream.VideoStream
 import java.util.concurrent.ConcurrentHashMap
@@ -29,8 +30,13 @@ internal data class DownloadStreamOption(
     val height: Int,
     val uri: String,
     val mimeType: String?,
-    val extension: String
-)
+    val extension: String,
+    val audioUri: String? = null,
+    val audioMimeType: String? = null,
+    val audioExtension: String? = null
+) {
+    val requiresMux: Boolean get() = !audioUri.isNullOrBlank()
+}
 
 internal data class StreamOptions(
     val qualities: List<StreamQualityOption> = emptyList(),
@@ -73,8 +79,7 @@ internal object StreamResolver {
                 return@withContext ResolvedMedia(info.hlsUrl, MimeTypes.APPLICATION_M3U8)
             }
 
-            // DASH allows Media3 to switch between the real qualities contained in the manifest.
-            // It is used for Automatic and every explicit quality whenever it is available.
+            // The DASH manifest contains the adaptive tracks used by the exact quality selector.
             if ((!dataSaver || preferredHeight != null) && info.dashMpdUrl.isNotBlank()) {
                 return@withContext ResolvedMedia(info.dashMpdUrl, MimeTypes.APPLICATION_MPD)
             }
@@ -127,43 +132,77 @@ internal object StreamResolver {
 
         return withContext(Dispatchers.IO) {
             val info = streamInfo(video.id)
-            val allVideoStreams = buildList {
-                addAll(info.videoStreams)
+            val progressive = info.videoStreams
+                .filter { it.isUrl && !it.isVideoOnly && it.content.isNotBlank() && it.height > 0 }
+            val adaptiveVideo = buildList {
                 addAll(info.videoOnlyStreams)
+                addAll(info.videoStreams.filter { it.isVideoOnly })
             }
                 .filter { it.isUrl && it.content.isNotBlank() && it.height > 0 }
+            val audioStreams = info.audioStreams
+                .filter { it.isUrl && it.content.isNotBlank() }
 
-            val qualities = allVideoStreams
+            val heights = (progressive.asSequence() + adaptiveVideo.asSequence())
                 .map { it.height }
                 .distinct()
                 .sortedDescending()
-                .map { height -> StreamQualityOption(height, "${height}p") }
+                .toList()
 
-            // Android DownloadManager can save a single progressive file. Therefore only
-            // streams that already contain video + audio are offered here; no fake 1080p item
-            // is shown when it would require muxing a separate audio stream.
-            val progressive = info.videoStreams
-                .filter { it.isUrl && !it.isVideoOnly && it.content.isNotBlank() && it.height > 0 }
-                .sortedWith(
-                    compareByDescending<VideoStream> { it.height }
-                        .thenByDescending { it.format?.mimeType?.contains("mp4", ignoreCase = true) == true }
-                )
-                .distinctBy { it.height }
-                .map { stream ->
-                    val mime = stream.format?.mimeType
-                    DownloadStreamOption(
-                        id = "${stream.height}:${stream.content.hashCode()}",
-                        label = "Video ${stream.height}p",
-                        height = stream.height,
-                        uri = stream.content,
+            val qualities = heights.map { height -> StreamQualityOption(height, "${height}p") }
+
+            val downloads = heights.mapNotNull { height ->
+                val direct = progressive
+                    .filter { it.height == height }
+                    .sortedWith(
+                        compareByDescending<VideoStream> { if (isMp4(it.format?.mimeType)) 1 else 0 }
+                            .thenByDescending { it.bitrate }
+                    )
+                    .firstOrNull()
+                if (direct != null) {
+                    val mime = direct.format?.mimeType
+                    return@mapNotNull DownloadStreamOption(
+                        id = "direct:${height}:${direct.content.hashCode()}",
+                        label = "Video ${height}p",
+                        height = height,
+                        uri = direct.content,
                         mimeType = mime,
-                        extension = extensionFrom(mime, stream.content)
+                        extension = extensionFrom(mime, direct.content)
                     )
                 }
 
+                val preferMp4 = height <= 1080
+                val videoOnly = adaptiveVideo
+                    .filter { it.height == height }
+                    .sortedWith(
+                        compareByDescending<VideoStream> {
+                            if (isMp4(it.format?.mimeType) == preferMp4) 1 else 0
+                        }.thenByDescending { it.bitrate }
+                    )
+                    .firstOrNull()
+                    ?: return@mapNotNull null
+
+                val videoMime = videoOnly.format?.mimeType
+                val family = containerFamily(videoMime)
+                val audio = chooseAudio(audioStreams, family) ?: return@mapNotNull null
+                val audioMime = audio.format?.mimeType
+                val extension = if (family == FAMILY_WEBM) "webm" else "mp4"
+
+                DownloadStreamOption(
+                    id = "mux:${height}:${videoOnly.content.hashCode()}:${audio.content.hashCode()}",
+                    label = "Video ${height}p",
+                    height = height,
+                    uri = videoOnly.content,
+                    mimeType = videoMime,
+                    extension = extension,
+                    audioUri = audio.content,
+                    audioMimeType = audioMime,
+                    audioExtension = extensionFrom(audioMime, audio.content)
+                )
+            }
+
             StreamOptions(
                 qualities = qualities,
-                downloads = progressive,
+                downloads = downloads,
                 isLive = video.isLive
             )
         }
@@ -207,6 +246,17 @@ internal object StreamResolver {
         }
     }
 
+    private fun chooseAudio(streams: List<AudioStream>, family: String): AudioStream? {
+        val compatible = streams.filter { containerFamily(it.format?.mimeType) == family }
+        return compatible.maxByOrNull { stream ->
+                when {
+                    stream.averageBitrate > 0 -> stream.averageBitrate
+                    stream.bitrate > 0 -> stream.bitrate
+                    else -> 0
+                }
+            }
+    }
+
     private fun selectProgressive(
         streams: List<VideoStream>,
         dataSaver: Boolean,
@@ -221,10 +271,19 @@ internal object StreamResolver {
             ?: playable.minByOrNull { abs(it.height - targetHeight) }
     }
 
+    private fun containerFamily(mimeType: String?): String = when {
+        mimeType?.contains("webm", ignoreCase = true) == true -> FAMILY_WEBM
+        else -> FAMILY_MP4
+    }
+
+    private fun isMp4(mimeType: String?): Boolean =
+        mimeType?.contains("mp4", ignoreCase = true) == true
+
     private fun extensionFrom(mimeType: String?, uri: String): String {
         return when {
             mimeType?.contains("webm", ignoreCase = true) == true -> "webm"
             mimeType?.contains("mp4", ignoreCase = true) == true -> "mp4"
+            mimeType?.contains("m4a", ignoreCase = true) == true -> "m4a"
             else -> uri.substringBefore('?')
                 .substringAfterLast('.', "mp4")
                 .lowercase()
@@ -266,6 +325,8 @@ internal object StreamResolver {
         initialized = true
     }
 
+    private const val FAMILY_MP4 = "mp4"
+    private const val FAMILY_WEBM = "webm"
     private const val CACHE_TTL_MS = 20L * 60L * 1000L
     private const val INFO_CACHE_TTL_MS = 12L * 60L * 1000L
     private const val MAX_CACHE_ENTRIES = 30

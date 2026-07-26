@@ -1,0 +1,20 @@
+Geo Videos V35 - calidad dentro del reproductor y descargas multicalidad
+
+Cambios realizados:
+- El engranaje del PlayerView abre un menu dentro del area del video.
+- El menu interno incluye Calidad, Velocidad y Audio.
+- Calidad muestra Automatica y solo las resoluciones detectadas para el video.
+- La calidad elegida aplica restricciones minimas y maximas a Media3 para fijar la altura seleccionada.
+- Se retiro el acceso de Calidad de la fila inferior del detalle del video.
+- Descargar permanece como accion independiente.
+- El selector de descarga incluye streams progresivos y streams adaptativos.
+- Para calidades adaptativas se descarga video y audio por separado y se unen con MediaMuxer.
+- El archivo final se guarda en Peliculas/GeoVideos y se registra en Coleccion > Descargas.
+- Para 1440p/2160p se prioriza WebM; para 1080p o menos se prioriza MP4.
+- Google OAuth, applicationId, firma y AndroidManifest no fueron modificados.
+
+Comprobaciones locales:
+- Estructura de llaves y parentesis revisada.
+- XML del proyecto validado.
+- Prueba de integridad ZIP pendiente al empaquetar.
+- La compilacion Gradle no pudo ejecutarse en este entorno porque services.gradle.org no resolvio DNS.

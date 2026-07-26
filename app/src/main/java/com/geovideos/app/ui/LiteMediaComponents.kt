@@ -6,6 +6,7 @@ import android.content.ContextWrapper
 import android.content.Intent
 import android.graphics.Color as AndroidColor
 import android.view.LayoutInflater
+import android.view.View
 import androidx.annotation.OptIn
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
@@ -31,6 +32,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.session.MediaController
 import androidx.media3.ui.PlayerView
+import androidx.media3.ui.R as Media3UiR
 import coil.compose.AsyncImage
 import coil.request.CachePolicy
 import coil.request.ImageRequest
@@ -46,7 +48,8 @@ internal fun LitePlayerView(
     modifier: Modifier = Modifier,
     useController: Boolean,
     resizeMode: Int = androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_FIT,
-    useTextureView: Boolean = false
+    useTextureView: Boolean = false,
+    onSettingsClick: (() -> Unit)? = null
 ) {
     val attachedView = remember { arrayOfNulls<PlayerView>(1) }
     DisposableEffect(controller) {
@@ -78,6 +81,9 @@ internal fun LitePlayerView(
                 setShowRewindButton(true)
                 setShowFastForwardButton(true)
                 this.resizeMode = resizeMode
+                findViewById<View>(Media3UiR.id.exo_settings)?.setOnClickListener {
+                    onSettingsClick?.invoke()
+                }
             }
         },
         update = { view ->
@@ -86,6 +92,9 @@ internal fun LitePlayerView(
             view.useController = useController
             view.controllerAutoShow = useController
             view.resizeMode = resizeMode
+            view.findViewById<View>(Media3UiR.id.exo_settings)?.setOnClickListener {
+                onSettingsClick?.invoke()
+            }
         }
     )
 }

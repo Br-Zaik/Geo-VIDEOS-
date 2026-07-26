@@ -1,0 +1,17 @@
+Geo Videos V35.1 - Correccion de compilacion
+
+Correccion aplicada:
+- UnifiedPlayerOverlay.kt: se captura maxHeight del BoxWithConstraints en availableMaxHeight antes de entrar a scopes anidados.
+- Se reemplaza la referencia ambigua maxHeight por availableMaxHeight en el panel de ajustes del reproductor.
+- Esto corrige el error Kotlin: "val maxHeight: Dp cannot be called in this context with an implicit receiver".
+
+Sin cambios en:
+- OAuth / inicio de sesion de Google
+- package name
+- manifiesto
+- firma
+- selector de calidad dentro del reproductor
+- descarga multicalidad
+- Shorts
+
+Version: 35.1.0 (351)
