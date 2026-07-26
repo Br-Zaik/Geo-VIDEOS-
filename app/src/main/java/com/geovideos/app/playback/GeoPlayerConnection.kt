@@ -236,7 +236,12 @@ class GeoPlayerConnection private constructor(context: Context) {
 
         resolveJob = scope.launch {
             try {
-                val resolved = StreamResolver.resolve(video, dataSaver, preferredHeight)
+                val resolved = StreamResolver.resolve(
+                    video = video,
+                    dataSaver = dataSaver,
+                    preferredHeight = preferredHeight,
+                    preferProgressive = repeat && preferredHeight == null
+                )
                 if (requestId != requestSerial || currentVideo?.id != video.id) return@launch
                 withController { controller ->
                     if (requestId != requestSerial || currentVideo?.id != video.id) return@withController
@@ -297,6 +302,18 @@ class GeoPlayerConnection private constructor(context: Context) {
             dataSaver = dataSaver,
             repeat = repeat,
             preferredHeight = height,
+            forceReload = true
+        )
+    }
+
+
+    fun retryShort(video: VideoItem, dataSaver: Boolean) {
+        openInternal(
+            video = video.copy(resumePositionMs = 0L),
+            autoplay = true,
+            dataSaver = dataSaver,
+            repeat = true,
+            preferredHeight = null,
             forceReload = true
         )
     }

@@ -17,8 +17,12 @@ import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.TextView
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -31,6 +35,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.media3.common.PlaybackException
+import androidx.media3.common.Player
 import androidx.media3.session.MediaController
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
@@ -57,6 +63,7 @@ internal fun RecyclerShortsScreen(
     dataSaver: Boolean,
     playerConnection: GeoPlayerConnection,
     onLoadMore: () -> Unit,
+    onRetry: () -> Unit,
     onPreview: (VideoItem) -> Unit,
     onOpenVideo: (VideoItem) -> Unit,
     onWatchLater: (VideoItem) -> Unit,
@@ -74,11 +81,15 @@ internal fun RecyclerShortsScreen(
             if (loading) {
                 CircularProgressIndicator()
             } else {
-                Text(
-                    "No se encontraron Shorts reales. Actualiza para buscar nuevos.",
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(24.dp)
-                )
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text(
+                        "No se pudieron cargar Shorts.",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(horizontal = 24.dp)
+                    )
+                    Spacer(Modifier.height(14.dp))
+                    Button(onClick = onRetry) { Text("Reintentar") }
+                }
             }
         }
         return
@@ -92,7 +103,9 @@ internal fun RecyclerShortsScreen(
             onLike = onLike,
             onDislike = onDislike,
             onTogglePlayback = { video ->
-                if (playback.currentVideoId == video.id) {
+                if (playback.currentVideoId == video.id && playback.error != null) {
+                    playerConnection.retryShort(video, dataSaver)
+                } else if (playback.currentVideoId == video.id) {
                     if (playback.isPlaying) playerConnection.pause() else playerConnection.play()
                 } else onPreview(video)
             }
@@ -150,7 +163,9 @@ internal fun RecyclerShortsScreen(
         },
         update = { recyclerView ->
             adapter.updateCallbacks(onPreview, onOpenVideo, onWatchLater, onLike, onDislike) { video ->
-                if (playback.currentVideoId == video.id) {
+                if (playback.currentVideoId == video.id && playback.error != null) {
+                    playerConnection.retryShort(video, dataSaver)
+                } else if (playback.currentVideoId == video.id) {
                     if (playback.isPlaying) playerConnection.pause() else playerConnection.play()
                 } else onPreview(video)
             }
@@ -166,7 +181,8 @@ internal fun RecyclerShortsScreen(
                 liked = localLikedIds,
                 disliked = localDislikedIds,
                 controller = controller,
-                connecting = loading || playback.connecting || playback.resolving
+                connecting = loading || playback.connecting || playback.resolving,
+                error = playback.error
             )
             if (selectedVideoId.isNotBlank()) {
                 val index = shortVideos.indexOfFirst { it.id == selectedVideoId }
@@ -207,6 +223,7 @@ private class NativeShortsAdapter(
     private var dislikedIds: Set<String> = emptySet()
     private var controller: MediaController? = null
     private var connecting = false
+    private var playbackError: String? = null
     var pageHeight: Int = 0
 
     init { setHasStableIds(true) }
@@ -234,7 +251,8 @@ private class NativeShortsAdapter(
         liked: Set<String>,
         disliked: Set<String>,
         controller: MediaController?,
-        connecting: Boolean
+        connecting: Boolean,
+        error: String?
     ) {
         val previous = activeId
         activeId = selectedVideoId
@@ -242,6 +260,7 @@ private class NativeShortsAdapter(
         dislikedIds = disliked
         this.controller = controller
         this.connecting = connecting
+        this.playbackError = error
         listOf(previous, activeId).filter { it.isNotBlank() }.distinct().forEach { id ->
             currentList.indexOfFirst { it.id == id }.takeIf { it >= 0 }?.let(::notifyItemChanged)
         }
@@ -293,6 +312,7 @@ private class NativeShortsAdapter(
             disliked = video.id in dislikedIds,
             controller = controller,
             connecting = connecting,
+            error = playbackError,
             onToggle = onTogglePlayback,
             onComments = onOpenComments,
             onLater = onWatchLater,
@@ -332,12 +352,14 @@ private class NativeShortHolder(private val page: ShortPageView) : RecyclerView.
         disliked: Boolean,
         controller: MediaController?,
         connecting: Boolean,
+        error: String?,
         onToggle: (VideoItem) -> Unit,
         onComments: (VideoItem) -> Unit,
         onLater: (VideoItem) -> Unit,
         onLike: (VideoItem) -> Unit,
         onDislike: (VideoItem) -> Unit
     ) {
+        page.bindVideo(video.id)
         page.channel.text = video.channelTitle.ifBlank { "Canal" }
         page.title.text = video.title
         loadShortAvatar(page.channelAvatar, video.channelThumbnailUrl)
@@ -350,12 +372,15 @@ private class NativeShortHolder(private val page: ShortPageView) : RecyclerView.
         page.save.setOnClickListener { onLater(video) }
         page.share.setOnClickListener { shareShort(page.context, video) }
         loadShortImage(page.thumbnail, video.thumbnailUrl)
-        if (active && controller != null && controller.currentMediaItem?.mediaId == video.id && !connecting) {
-            page.attach(controller)
+        if (active && controller != null && controller.currentMediaItem?.mediaId == video.id) {
+            page.attach(controller, video.id)
         } else {
             page.detach()
         }
-        page.progress.visibility = if (active && connecting) View.VISIBLE else View.GONE
+        page.setPlaybackStatus(
+            loading = active && connecting,
+            error = error.takeIf { active }
+        )
     }
 
     fun recycle() {
@@ -378,28 +403,76 @@ private class ShortPageView(context: Context) : FrameLayout(context) {
     val comments = ShortActionView(context, R.drawable.ic_short_comment, "Comentarios")
     val share = ShortActionView(context, R.drawable.ic_short_share, "Compartir")
     val save = ShortActionView(context, R.drawable.ic_short_save, "Guardar")
+    private val errorText = TextView(context)
+    private var boundVideoId: String = ""
+    private var renderedVideoId: String = ""
+    private var attachedVideoId: String = ""
+    private var externalLoading: Boolean = false
+    private var attachedController: MediaController? = null
+    private var internalPlaybackState: Int = Player.STATE_IDLE
     private val playerView = (LayoutInflater.from(context).inflate(R.layout.geo_player_texture, null, false) as PlayerView).apply {
         useController = false
         resizeMode = AspectRatioFrameLayout.RESIZE_MODE_ZOOM
         setShowBuffering(PlayerView.SHOW_BUFFERING_NEVER)
         setShutterBackgroundColor(Color.TRANSPARENT)
         setKeepContentOnPlayerReset(true)
+        setBackgroundColor(Color.TRANSPARENT)
+    }
+    private val playerListener = object : Player.Listener {
+        override fun onRenderedFirstFrame() {
+            renderedVideoId = attachedVideoId
+            hideThumbnailAfterFirstFrame()
+            updateProgress()
+        }
+
+        override fun onPlaybackStateChanged(playbackState: Int) {
+            internalPlaybackState = playbackState
+            updateProgress()
+        }
+
+        override fun onPlayerError(error: PlaybackException) {
+            showThumbnail()
+            errorText.text = "No se pudo reproducir. Toca para reintentar."
+            errorText.visibility = View.VISIBLE
+            updateProgress()
+        }
     }
 
     init {
         setBackgroundColor(Color.BLACK)
         isClickable = true
         isFocusable = true
-        thumbnail.scaleType = ImageView.ScaleType.CENTER_CROP
-        addView(thumbnail, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+
+        playerContainer.setBackgroundColor(Color.BLACK)
+        playerContainer.addView(
+            playerView,
+            LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
+        )
         addView(playerContainer, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+
+        thumbnail.scaleType = ImageView.ScaleType.CENTER_CROP
+        thumbnail.setBackgroundColor(Color.BLACK)
+        addView(thumbnail, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+
         addView(View(context).apply {
             background = GradientDrawable(
                 GradientDrawable.Orientation.TOP_BOTTOM,
                 intArrayOf(0x22000000, 0x00000000, 0x00000000, 0xD9000000.toInt())
             )
         }, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+
         addView(progress, LayoutParams(dpShort(context, 38), dpShort(context, 38), Gravity.CENTER))
+
+        errorText.setTextColor(Color.WHITE)
+        errorText.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
+        errorText.gravity = Gravity.CENTER
+        errorText.setPadding(dpShort(context, 16), dpShort(context, 10), dpShort(context, 16), dpShort(context, 10))
+        errorText.background = GradientDrawable().apply {
+            cornerRadius = dpShort(context, 16).toFloat()
+            setColor(0xB8000000.toInt())
+        }
+        errorText.visibility = View.GONE
+        addView(errorText, LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.CENTER))
 
         val info = LinearLayout(context).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -444,20 +517,98 @@ private class ShortPageView(context: Context) : FrameLayout(context) {
         })
     }
 
-    fun attach(controller: MediaController) {
-        if (playerView.parent !== playerContainer) {
-            (playerView.parent as? ViewGroup)?.removeView(playerView)
-            playerContainer.removeAllViews()
-            playerContainer.addView(playerView, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+    fun bindVideo(videoId: String) {
+        if (boundVideoId == videoId) return
+        boundVideoId = videoId
+        renderedVideoId = ""
+        attachedVideoId = ""
+        errorText.visibility = View.GONE
+        showThumbnail()
+    }
+
+    fun attach(controller: MediaController, videoId: String) {
+        attachedVideoId = videoId
+        if (attachedController !== controller) {
+            attachedController?.removeListener(playerListener)
+            playerView.player = null
+            attachedController = controller
+            controller.addListener(playerListener)
+            playerView.player = controller
         }
-        playerView.player = controller
         playerContainer.visibility = View.VISIBLE
+        internalPlaybackState = controller.playbackState
+        if (renderedVideoId == videoId) {
+            thumbnail.visibility = View.GONE
+            thumbnail.alpha = 0f
+        } else {
+            showThumbnail()
+            // When a ready player is attached to a fresh TextureView, the first-frame callback
+            // normally fires immediately. This fallback prevents a permanent black page on
+            // devices that do not dispatch it after reattachment.
+            postDelayed({
+                if (
+                    attachedController === controller &&
+                    attachedVideoId == videoId &&
+                    controller.playbackState == Player.STATE_READY &&
+                    controller.videoSize.width > 0
+                ) {
+                    renderedVideoId = videoId
+                    hideThumbnailAfterFirstFrame()
+                }
+            }, 900L)
+        }
+        updateProgress()
+    }
+
+    fun setPlaybackStatus(loading: Boolean, error: String?) {
+        externalLoading = loading
+        if (error.isNullOrBlank()) {
+            errorText.visibility = View.GONE
+        } else {
+            showThumbnail()
+            errorText.text = "No se pudo reproducir. Toca para reintentar."
+            errorText.visibility = View.VISIBLE
+        }
+        updateProgress()
     }
 
     fun detach() {
+        attachedController?.removeListener(playerListener)
+        attachedController = null
         playerView.player = null
-        playerContainer.removeAllViews()
+        renderedVideoId = ""
+        attachedVideoId = ""
         playerContainer.visibility = View.GONE
+        externalLoading = false
+        internalPlaybackState = Player.STATE_IDLE
+        errorText.visibility = View.GONE
+        showThumbnail()
+        updateProgress()
+    }
+
+    private fun hideThumbnailAfterFirstFrame() {
+        if (thumbnail.visibility != View.VISIBLE) return
+        thumbnail.animate().cancel()
+        thumbnail.animate()
+            .alpha(0f)
+            .setDuration(120L)
+            .withEndAction { thumbnail.visibility = View.GONE }
+            .start()
+    }
+
+    private fun showThumbnail() {
+        thumbnail.animate().cancel()
+        thumbnail.alpha = 1f
+        thumbnail.visibility = View.VISIBLE
+    }
+
+    private fun updateProgress() {
+        val buffering = attachedController != null && internalPlaybackState == Player.STATE_BUFFERING
+        progress.visibility = if ((externalLoading || buffering) && errorText.visibility != View.VISIBLE) {
+            View.VISIBLE
+        } else {
+            View.GONE
+        }
     }
 }
 

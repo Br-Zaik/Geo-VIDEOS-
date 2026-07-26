@@ -174,7 +174,9 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
         if (cachedShorts.isNotEmpty()) {
             viewModelScope.launch {
                 val verified = verifyRealShorts(cachedShorts)
-                _uiState.update { state -> state.copy(shorts = verified) }
+                _uiState.update { state ->
+                    state.copy(shorts = verified.ifEmpty { state.shorts })
+                }
             }
         }
     }
@@ -415,14 +417,11 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
                         liked = likedRaw,
                         subscriptions = subscriptions
                     )
-                    val shortsPage = runCatching {
-                        api.searchVideosPage(
-                            token = token,
-                            query = shortsQuery,
-                            shortOnly = true,
-                            maxResults = 18
-                        )
-                    }.getOrDefault(shortsDeferred.await())
+                    val (loadedShortsPage, loadedShortsQuery) = runCatching {
+                        loadShortsSearchPage(token, shortsQuery, maxResults = 24)
+                    }.getOrDefault(shortsDeferred.await() to shortsQuery)
+                    val shortsPage = loadedShortsPage
+                    shortsQuery = loadedShortsQuery
                     // Shorts are sourced only from the dedicated short-video search.
                     // Do not mix history or ordinary subscription uploads into this feed.
                     val shortsRaw = shortsPage.items.distinctBy { it.id }.take(30)
@@ -453,10 +452,10 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
                     val enrichedShortCandidates = enriched(shortsRaw)
                     val verifiedShorts = verifyRealShorts(enrichedShortCandidates)
                     val shorts = verifiedShorts.ifEmpty {
-                        // The extractor may temporarily fail or be rate-limited. These items
-                        // already came from the dedicated #shorts search, so keep them instead
-                        // of leaving the complete Shorts tab empty.
-                        enrichedShortCandidates.take(18)
+                        mergeUniqueVideos(
+                            enrichedShortCandidates.filter(::looksLikeStrongShort),
+                            previous.shorts.filter(::looksLikeStrongShort)
+                        ).take(24)
                     }
                     val liked = enriched(likedRaw)
                     val subscriptionFeed = enriched(subscriptionFeedRaw)
@@ -641,30 +640,44 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
-    private fun reloadShortsForSection() {
+    fun refreshShorts() {
+        reloadShortsForSection(force = true)
+    }
+
+    private fun reloadShortsForSection(force: Boolean = false) {
         val token = accessToken ?: return
         val state = _uiState.value
-        if (state.shortsLoadingMore || state.refreshing) return
+        if (!force && (state.shortsLoadingMore || state.refreshing)) return
         _uiState.update { it.copy(shortsLoadingMore = true, shortsCanLoadMore = true) }
         viewModelScope.launch {
             try {
-                val query = shortsQuery.ifBlank { "#shorts vertical" }
-                val page = api.searchVideosPage(
+                val (page, usedQuery) = loadShortsSearchPage(
                     token = token,
-                    query = query,
-                    shortOnly = true,
-                    maxResults = 24
+                    preferredQuery = shortsQuery,
+                    maxResults = 30
                 )
+                shortsQuery = usedQuery
                 shortsNextToken = page.nextPageToken
                 val candidates = enrichVideosWithCache(token, page.items)
                 val verified = verifyRealShorts(candidates)
-                val usable = verified.ifEmpty { candidates.take(24) }
+                val usable = verified.ifEmpty {
+                    candidates.filter(::looksLikeStrongShort).take(24)
+                }
                 _uiState.update { current ->
+                    val merged = if (usable.isEmpty()) {
+                        current.shorts
+                    } else {
+                        mergeUniqueVideos(usable, current.shorts).take(MAX_HOME_ITEMS)
+                    }
                     current.copy(
-                        shorts = mergeUniqueVideos(usable, current.shorts).take(MAX_HOME_ITEMS),
+                        shorts = merged,
                         shortsLoadingMore = false,
                         shortsCanLoadMore = page.nextPageToken.isNotBlank(),
-                        message = if (usable.isEmpty()) "No se encontraron Shorts en este intento. Pulsa actualizar para reintentar." else current.message
+                        message = if (merged.isEmpty()) {
+                            "No se pudieron cargar Shorts. Pulsa Reintentar."
+                        } else {
+                            current.message
+                        }
                     )
                 }
                 persistCurrentSnapshot()
@@ -672,7 +685,11 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
                 _uiState.update {
                     it.copy(
                         shortsLoadingMore = false,
-                        message = "No se pudieron cargar Shorts. Revisa la conexión y vuelve a intentar."
+                        message = if (it.shorts.isEmpty()) {
+                            "No se pudieron cargar Shorts. Pulsa Reintentar."
+                        } else {
+                            it.message
+                        }
                     )
                 }
             }
@@ -696,7 +713,9 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
                 shortsNextToken = page.nextPageToken
                 val candidates = enrichVideosWithCache(token, page.items)
                 val verified = verifyRealShorts(candidates)
-                val enriched = verified.ifEmpty { candidates.take(18) }
+                val enriched = verified.ifEmpty {
+                    candidates.filter(::looksLikeStrongShort).take(18)
+                }
                 _uiState.update {
                     it.copy(
                         shorts = mergeUniqueVideos(it.shorts, enriched).take(MAX_HOME_ITEMS),
@@ -1461,7 +1480,8 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
             val results = batch.map { video ->
                 async { video to runCatching { StreamResolver.isVerifiedShort(video) }.getOrDefault(false) }
             }.awaitAll()
-            results.filter { it.second || looksLikeShort(it.first) }.mapTo(verified) { it.first }
+            results.filter { it.second || looksLikeStrongShort(it.first) }
+                .mapTo(verified) { it.first }
         }
         verified
     }
@@ -1472,6 +1492,48 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
             "#shorts", " shorts", "short ", "tiktok", "reel", "vertical", "status video"
         ).any { it in text }
         return taggedAsShort || video.durationMs in 1..180_000L
+    }
+
+    private fun looksLikeStrongShort(video: VideoItem): Boolean {
+        val text = (video.title + " " + video.description + " " + video.source).lowercase()
+        val tagged = listOf(
+            "/shorts/", "#shorts", "#short ", " youtube shorts", "tiktok", "reel", "vertical"
+        ).any { it in text }
+        return tagged || video.durationMs in 1L..60_000L
+    }
+
+    private suspend fun loadShortsSearchPage(
+        token: String,
+        preferredQuery: String,
+        maxResults: Int
+    ): Pair<VideoPage, String> {
+        val queries = listOf(
+            "#shorts",
+            preferredQuery,
+            "shorts español",
+            "youtube shorts"
+        ).map { it.trim() }
+            .filter { it.isNotBlank() }
+            .distinct()
+
+        var fallback = VideoPage(emptyList())
+        var fallbackQuery = queries.firstOrNull().orEmpty().ifBlank { "#shorts" }
+        for (query in queries) {
+            val page = runCatching {
+                api.searchVideosPage(
+                    token = token,
+                    query = query,
+                    shortOnly = true,
+                    maxResults = maxResults
+                )
+            }.getOrNull() ?: continue
+            if (fallback.items.isEmpty()) {
+                fallback = page
+                fallbackQuery = query
+            }
+            if (page.items.isNotEmpty()) return page to query
+        }
+        return fallback to fallbackQuery
     }
 
     private fun handleApiError(error: YouTubeApiException) {

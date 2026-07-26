@@ -1,0 +1,9 @@
+Geo Videos V36
+
+Correcciones:
+- Shorts usan inicio rapido con stream progresivo antes de DASH.
+- La miniatura permanece visible hasta el primer fotograma para evitar pantalla negra.
+- PlayerView ya no se elimina y recrea al cambiar de Short.
+- Reintento visible y reintento de reproduccion al tocar una pagina con error.
+- Busqueda de Shorts con consultas de respaldo y sin vaciar el contenido anterior.
+- No se modificaron OAuth, package, firma ni manifiesto.

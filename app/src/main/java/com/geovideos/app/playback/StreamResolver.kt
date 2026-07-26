@@ -65,10 +65,11 @@ internal object StreamResolver {
     suspend fun resolve(
         video: VideoItem,
         dataSaver: Boolean,
-        preferredHeight: Int? = null
+        preferredHeight: Int? = null,
+        preferProgressive: Boolean = false
     ): ResolvedMedia {
         if (video.mediaKind != MediaKind.YOUTUBE) return ResolvedMedia(video.source)
-        val key = cacheKey(video.id, dataSaver, preferredHeight)
+        val key = cacheKey(video.id, dataSaver, preferredHeight, preferProgressive)
         val now = System.currentTimeMillis()
         resolvedCache[key]?.takeIf { it.expiresAtMs > now }?.let { return it.media }
 
@@ -77,6 +78,22 @@ internal object StreamResolver {
 
             if (video.isLive && info.hlsUrl.isNotBlank()) {
                 return@withContext ResolvedMedia(info.hlsUrl, MimeTypes.APPLICATION_M3U8)
+            }
+
+            // Shorts start faster and more reliably with a progressive stream.
+            // It avoids recreating adaptive video/audio tracks every time the vertical page changes.
+            if (preferProgressive) {
+                val fastStart = selectProgressive(
+                    streams = info.videoStreams,
+                    dataSaver = dataSaver,
+                    preferredHeight = preferredHeight ?: if (dataSaver) 360 else 720
+                )
+                if (fastStart != null) {
+                    return@withContext ResolvedMedia(
+                        fastStart.content,
+                        fastStart.format?.mimeType
+                    )
+                }
             }
 
             // The DASH manifest contains the adaptive tracks used by the exact quality selector.
@@ -314,8 +331,13 @@ internal object StreamResolver {
         }
     }
 
-    private fun cacheKey(videoId: String, dataSaver: Boolean, preferredHeight: Int?): String =
-        "$videoId:${if (dataSaver) "save" else "auto"}:${preferredHeight ?: 0}"
+    private fun cacheKey(
+        videoId: String,
+        dataSaver: Boolean,
+        preferredHeight: Int?,
+        preferProgressive: Boolean
+    ): String =
+        "$videoId:${if (dataSaver) "save" else "auto"}:${preferredHeight ?: 0}:${if (preferProgressive) "fast" else "adaptive"}"
 
     @Synchronized
     private fun ensureInitialized() {
