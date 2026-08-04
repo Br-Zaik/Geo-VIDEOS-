@@ -32,7 +32,8 @@ data class VideoItem(
     val source: String = id,
     val resumePositionMs: Long = 0L,
     val durationMs: Long = 0L,
-    val downloadId: Long = -1L
+    val downloadId: Long = -1L,
+    val watchedAtMs: Long = 0L
 )
 
 @Immutable
@@ -40,7 +41,12 @@ data class ChannelItem(
     val id: String,
     val title: String,
     val thumbnailUrl: String,
-    val description: String = ""
+    val description: String = "",
+    val bannerUrl: String = "",
+    val handle: String = "",
+    val subscriberCount: Long = 0L,
+    val videoCount: Long = 0L,
+    val isSubscribed: Boolean = false
 )
 
 @Immutable

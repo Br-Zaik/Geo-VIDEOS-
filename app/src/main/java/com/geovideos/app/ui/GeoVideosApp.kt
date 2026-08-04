@@ -231,6 +231,22 @@ fun GeoVideosApp(
         }
     }
 
+    LaunchedEffect(playerConnection) {
+        playerConnection.mediaTransitionEvents.collect { videoId ->
+            viewModel.onPlayerTransition(videoId)
+        }
+    }
+
+    LaunchedEffect(selectedVideo?.id, state.relatedVideos, state.dataSaver) {
+        selectedVideo?.let { current ->
+            playerConnection.updateQueue(
+                current = current,
+                candidates = state.relatedVideos,
+                dataSaver = state.dataSaver
+            )
+        }
+    }
+
     LaunchedEffect(state.autoplay, selectedVideo?.id) {
         playerConnection.endedEvents.collect { endedVideoId ->
             val current = selectedVideo
@@ -291,6 +307,7 @@ fun GeoVideosApp(
                         onClearData = viewModel::clearLocalData,
                         onRegisterDownload = viewModel::registerDownload,
                         onRemoveDownload = viewModel::removeDownload,
+                        onRemoveHistory = viewModel::removeHistory,
                         onAutoplayChange = viewModel::setAutoplay,
                         onDataSaverChange = viewModel::setDataSaver,
                         onNotificationsChange = viewModel::setNotificationsEnabled,
@@ -310,6 +327,7 @@ fun GeoVideosApp(
                         isDisliked = selectedVideo.id in state.localDislikedIds,
                         autoplay = state.autoplay,
                         dataSaver = state.dataSaver,
+                        onAutoplayChange = viewModel::setAutoplay,
                         details = state.playerDetails,
                         detailsLoading = state.playerDetailsLoading,
                         relatedVideos = state.relatedVideos,
@@ -467,6 +485,7 @@ private fun MainShell(
     onClearData: () -> Unit,
     onRegisterDownload: (String, String, Long) -> Unit,
     onRemoveDownload: (Long) -> Unit,
+    onRemoveHistory: (String) -> Unit,
     onAutoplayChange: (Boolean) -> Unit,
     onDataSaverChange: (Boolean) -> Unit,
     onNotificationsChange: (Boolean) -> Unit,
@@ -517,14 +536,16 @@ private fun MainShell(
         return
     }
 
-    if (state.selectedChannelTitle.isNotBlank()) {
+    state.selectedChannel?.let { channel ->
         ChannelScreen(
-            title = state.selectedChannelTitle,
+            channel = channel,
             videos = state.channelVideos,
+            playlists = state.channelPlaylists,
             loading = state.loading,
             onBack = onCloseChannel,
             onPlay = onPlay,
-            onWatchLater = onWatchLater
+            onWatchLater = onWatchLater,
+            onMessage = onMessage
         )
         return
     }
@@ -542,6 +563,15 @@ private fun MainShell(
                     }
                 },
                 actions = {
+                    if (state.section == MainSection.HOME) {
+                        IconButton(onClick = onRefresh, enabled = !state.refreshing) {
+                            if (state.refreshing) {
+                                CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+                            } else {
+                                Icon(Icons.Default.Refresh, contentDescription = "Actualizar inicio")
+                            }
+                        }
+                    }
                     IconButton(onClick = { showNotifications = true }) {
                         BadgedBox(badge = {
                             if (state.notifications.isNotEmpty()) Badge { Text(state.notifications.size.coerceAtMost(99).toString()) }
@@ -706,7 +736,8 @@ private fun MainShell(
                         },
                         onBack = { libraryDestination = LibraryDestination.ROOT },
                         onPlay = onPlay,
-                        onWatchLater = onWatchLater
+                        onWatchLater = onWatchLater,
+                        onRemoveHistory = onRemoveHistory
                     )
                 }
             }
@@ -1439,35 +1470,189 @@ private fun NotificationsScreen(
     }
 }
 
+private enum class ChannelTab(val label: String) {
+    HOME("Principal"), VIDEOS("Videos"), SHORTS("Shorts"), PLAYLISTS("Playlists")
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun ChannelScreen(
-    title: String,
+    channel: ChannelItem,
     videos: List<VideoItem>,
+    playlists: List<PlaylistItem>,
     loading: Boolean,
     onBack: () -> Unit,
     onPlay: (VideoItem) -> Unit,
-    onWatchLater: (VideoItem) -> Unit
+    onWatchLater: (VideoItem) -> Unit,
+    onMessage: (String) -> Unit
 ) {
     BackHandler(onBack = onBack)
+    var tab by rememberSaveable(channel.id) { mutableStateOf(ChannelTab.HOME) }
+    var descriptionExpanded by rememberSaveable(channel.id) { mutableStateOf(false) }
+    val normalVideos = remember(videos) { videos.filterNot { it.isShortForChannel() } }
+    val shorts = remember(videos) { videos.filter { it.isShortForChannel() } }
+    val visibleVideos = when (tab) {
+        ChannelTab.HOME -> normalVideos.take(12)
+        ChannelTab.VIDEOS -> normalVideos
+        ChannelTab.SHORTS -> shorts
+        ChannelTab.PLAYLISTS -> emptyList()
+    }
+
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text(title, maxLines = 1, overflow = TextOverflow.Ellipsis) },
-                navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, "Volver") } }
+                title = { Text(channel.title, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, "Volver") } },
+                actions = {
+                    IconButton(onClick = { onMessage("Usa Buscar para encontrar videos dentro de Geo Videos.") }) {
+                        Icon(Icons.Default.Search, contentDescription = "Buscar")
+                    }
+                    IconButton(onClick = { onMessage("Canal cargado desde tu cuenta de YouTube.") }) {
+                        Icon(Icons.Default.MoreVert, contentDescription = "Opciones")
+                    }
+                }
             )
         }
     ) { padding ->
-        NativeVideoList(
+        LazyColumn(
             modifier = Modifier.padding(padding).fillMaxSize().background(Color.Black),
-            videos = videos,
-            loading = loading,
-            mode = NativeVideoListMode.COMPACT,
-            emptyMessage = "No se encontraron publicaciones reproducibles de este canal.",
-            onPlay = onPlay,
-            onSave = onWatchLater
-        )
+            contentPadding = PaddingValues(bottom = 24.dp)
+        ) {
+            item(key = "channel-banner-${channel.id}") {
+                Box(modifier = Modifier.fillMaxWidth().aspectRatio(16f / 4.6f).background(Color(0xFF251A2F))) {
+                    if (channel.bannerUrl.isNotBlank()) {
+                        AsyncImage(
+                            model = channel.bannerUrl,
+                            contentDescription = "Portada de ${channel.title}",
+                            modifier = Modifier.fillMaxSize(),
+                            contentScale = ContentScale.Crop
+                        )
+                    }
+                }
+            }
+            item(key = "channel-header-${channel.id}") {
+                Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 16.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        ChannelAvatar(channel.thumbnailUrl, channel.title, 78.dp)
+                        Column(modifier = Modifier.weight(1f).padding(start = 16.dp)) {
+                            Text(channel.title, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.ExtraBold)
+                            if (channel.handle.isNotBlank()) {
+                                Text(channel.handle, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 2.dp))
+                            }
+                            Text(
+                                buildString {
+                                    if (channel.subscriberCount > 0L) append("${formatCompactNumber(channel.subscriberCount)} suscriptores")
+                                    if (channel.videoCount > 0L) {
+                                        if (isNotEmpty()) append(" · ")
+                                        append("${formatCompactNumber(channel.videoCount)} videos")
+                                    }
+                                }.ifBlank { "Canal de YouTube" },
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                style = MaterialTheme.typography.bodySmall,
+                                modifier = Modifier.padding(top = 3.dp)
+                            )
+                        }
+                    }
+                    if (channel.description.isNotBlank()) {
+                        Text(
+                            channel.description,
+                            maxLines = if (descriptionExpanded) 12 else 2,
+                            overflow = TextOverflow.Ellipsis,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.fillMaxWidth().clickable { descriptionExpanded = !descriptionExpanded }.padding(top = 12.dp)
+                        )
+                    }
+                    Button(
+                        onClick = {
+                            if (channel.isSubscribed) onMessage("Ya estás suscrito a este canal.")
+                            else onMessage("Para suscribirte en YouTube se necesita permiso adicional de la cuenta.")
+                        },
+                        modifier = Modifier.fillMaxWidth().padding(top = 14.dp),
+                        shape = RoundedCornerShape(22.dp)
+                    ) {
+                        Text(if (channel.isSubscribed) "Suscrito" else "Suscribirse")
+                    }
+                }
+            }
+            item(key = "channel-tabs-${channel.id}") {
+                LazyRow(
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    items(ChannelTab.entries, key = { it.name }) { option ->
+                        FilterChip(
+                            selected = tab == option,
+                            onClick = { tab = option },
+                            label = { Text(option.label) }
+                        )
+                    }
+                }
+                HorizontalDivider()
+            }
+            if (loading) {
+                item(key = "channel-loading") {
+                    Box(modifier = Modifier.fillMaxWidth().height(180.dp), contentAlignment = Alignment.Center) {
+                        CircularProgressIndicator()
+                    }
+                }
+            } else if (tab == ChannelTab.PLAYLISTS) {
+                if (playlists.isEmpty()) {
+                    item(key = "channel-playlists-empty") {
+                        Text(
+                            "Este canal no tiene playlists públicas disponibles.",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(24.dp)
+                        )
+                    }
+                } else {
+                    items(playlists, key = { "channel-playlist-${it.id}" }) { playlist ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Thumbnail(
+                                playlist.thumbnailUrl,
+                                Modifier.width(168.dp).aspectRatio(16f / 9f).clip(RoundedCornerShape(9.dp)),
+                                contentScale = ContentScale.Crop
+                            )
+                            Column(modifier = Modifier.weight(1f).padding(start = 12.dp)) {
+                                Text(playlist.title, maxLines = 2, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.Bold)
+                                Text("${playlist.itemCount} videos", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall)
+                            }
+                        }
+                    }
+                }
+            } else if (visibleVideos.isEmpty()) {
+                item(key = "channel-videos-empty-${tab.name}") {
+                    Text(
+                        if (tab == ChannelTab.SHORTS) "No se encontraron Shorts recientes." else "No se encontraron videos recientes.",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(24.dp)
+                    )
+                }
+            } else {
+                if (tab == ChannelTab.HOME) {
+                    item(key = "channel-recent-title") {
+                        Text("Videos recientes", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, modifier = Modifier.padding(16.dp))
+                    }
+                }
+                items(visibleVideos, key = { "channel-video-${tab.name}-${it.id}" }) { video ->
+                    VideoCard(
+                        video = video,
+                        isWatchLater = false,
+                        onPlay = { onPlay(video) },
+                        onWatchLater = { onWatchLater(video) }
+                    )
+                }
+            }
+        }
     }
+}
+
+private fun VideoItem.isShortForChannel(): Boolean {
+    if (durationMs in 1L..180_000L) return true
+    val text = "$title $description $source".lowercase()
+    return "/shorts/" in text || "#shorts" in text || "#short " in text
 }
 
 private fun formatDuration(milliseconds: Long): String {

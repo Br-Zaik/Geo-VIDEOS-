@@ -387,6 +387,51 @@ class YouTubeApi {
         }
     }
 
+    suspend fun channelInfo(token: String, channelId: String): ChannelItem = withContext(Dispatchers.IO) {
+        if (channelId.isBlank()) return@withContext ChannelItem("", "Canal", "")
+        val json = requestJson(
+            "https://www.googleapis.com/youtube/v3/channels?part=snippet,brandingSettings,statistics&id=${encode(channelId)}&maxResults=1",
+            token
+        )
+        val item = json.optJSONArray("items")?.optJSONObject(0)
+        val snippet = item?.optJSONObject("snippet")
+        val statistics = item?.optJSONObject("statistics")
+        val branding = item?.optJSONObject("brandingSettings")?.optJSONObject("image")
+        ChannelItem(
+            id = item?.optString("id").orEmpty().ifBlank { channelId },
+            title = snippet?.optString("title", "Canal").orEmpty().decodeHtml().ifBlank { "Canal" },
+            thumbnailUrl = bestThumbnail(snippet),
+            description = snippet?.optString("description").orEmpty().decodeHtml(),
+            bannerUrl = branding?.optString("bannerExternalUrl").orEmpty(),
+            handle = snippet?.optString("customUrl").orEmpty(),
+            subscriberCount = statistics?.optString("subscriberCount")?.toLongOrNull() ?: 0L,
+            videoCount = statistics?.optString("videoCount")?.toLongOrNull() ?: 0L
+        )
+    }
+
+    suspend fun channelPlaylists(token: String, channelId: String): List<PlaylistItem> = withContext(Dispatchers.IO) {
+        if (channelId.isBlank()) return@withContext emptyList()
+        val json = requestJson(
+            "https://www.googleapis.com/youtube/v3/playlists?part=snippet,contentDetails&channelId=${encode(channelId)}&maxResults=25",
+            token
+        )
+        val items = json.optJSONArray("items") ?: return@withContext emptyList()
+        buildList {
+            for (index in 0 until items.length()) {
+                val item = items.optJSONObject(index) ?: continue
+                val snippet = item.optJSONObject("snippet") ?: continue
+                add(
+                    PlaylistItem(
+                        id = item.optString("id"),
+                        title = snippet.optString("title", "Lista").decodeHtml(),
+                        thumbnailUrl = bestThumbnail(snippet),
+                        itemCount = item.optJSONObject("contentDetails")?.optInt("itemCount") ?: 0
+                    )
+                )
+            }
+        }
+    }
+
     suspend fun channelVideos(token: String, channelId: String): List<VideoItem> = withContext(Dispatchers.IO) {
         if (channelId.isBlank()) return@withContext emptyList()
         val json = requestJson(

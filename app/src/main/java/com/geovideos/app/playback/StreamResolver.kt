@@ -168,6 +168,29 @@ internal object StreamResolver {
         return media
     }
 
+    suspend fun resolveAudio(video: VideoItem): ResolvedMedia {
+        if (video.mediaKind != MediaKind.YOUTUBE) {
+            return ResolvedMedia(video.source)
+        }
+        val key = "${video.id}:audio-only"
+        val now = System.currentTimeMillis()
+        resolvedCache[key]?.takeIf { it.expiresAtMs > now }?.let { return it.media }
+
+        val media = withContext(Dispatchers.IO) {
+            val info = streamInfo(video.id)
+            val audio = chooseBestAudio(
+                info.audioStreams.filter { it.isUrl && it.content.isNotBlank() }
+            ) ?: error("No se encontró una pista de audio compatible para este video.")
+            ResolvedMedia(
+                uri = audio.content,
+                mimeType = audio.format?.mimeType
+            )
+        }
+        resolvedCache[key] = CachedStream(media, now + CACHE_TTL_MS)
+        trimCache(now)
+        return media
+    }
+
     suspend fun options(video: VideoItem, includeDownloadSizes: Boolean = true): StreamOptions {
         if (video.mediaKind != MediaKind.YOUTUBE) {
             val direct = video.source.takeIf { it.startsWith("http://") || it.startsWith("https://") }
@@ -327,19 +350,21 @@ internal object StreamResolver {
 
     private fun chooseAudio(streams: List<AudioStream>, family: String): AudioStream? {
         val compatible = streams.filter { containerFamily(it.format?.mimeType) == family }
-        return compatible.maxByOrNull { stream ->
-            val bitrate = when {
-                stream.averageBitrate > 0 -> stream.averageBitrate
-                stream.bitrate > 0 -> stream.bitrate
-                else -> 0
-            }
-            val codecBonus = when {
-                stream.codec.orEmpty().contains("mp4a", ignoreCase = true) -> 2_000_000
-                stream.codec.orEmpty().contains("opus", ignoreCase = true) -> 1_000_000
-                else -> 0
-            }
-            codecBonus + bitrate
+        return chooseBestAudio(compatible)
+    }
+
+    private fun chooseBestAudio(streams: List<AudioStream>): AudioStream? = streams.maxByOrNull { stream ->
+        val bitrate = when {
+            stream.averageBitrate > 0 -> stream.averageBitrate
+            stream.bitrate > 0 -> stream.bitrate
+            else -> 0
         }
+        val codecBonus = when {
+            stream.codec.orEmpty().contains("mp4a", ignoreCase = true) -> 2_000_000
+            stream.codec.orEmpty().contains("opus", ignoreCase = true) -> 1_000_000
+            else -> 0
+        }
+        codecBonus + bitrate
     }
 
     private fun selectExactProgressive(

@@ -86,6 +86,12 @@ class GeoPlayerConnection private constructor(context: Context) {
     )
     val preferredQualityHeight: StateFlow<Int?> = _preferredQualityHeight.asStateFlow()
 
+    private val _audioOnlyMode = MutableStateFlow(
+        playerPreferences.getBoolean(KEY_AUDIO_ONLY_MODE, false)
+    )
+    val audioOnlyMode: StateFlow<Boolean> = _audioOnlyMode.asStateFlow()
+    private var activeAudioOnly: Boolean = _audioOnlyMode.value
+
     private val _state = MutableStateFlow(PlaybackUiState())
     val state: StateFlow<PlaybackUiState> = _state.asStateFlow()
 
@@ -121,13 +127,24 @@ class GeoPlayerConnection private constructor(context: Context) {
     private val _endedEvents = MutableSharedFlow<String>(extraBufferCapacity = 1)
     val endedEvents: SharedFlow<String> = _endedEvents.asSharedFlow()
 
+    private val _mediaTransitionEvents = MutableSharedFlow<String>(extraBufferCapacity = 4)
+    val mediaTransitionEvents: SharedFlow<String> = _mediaTransitionEvents.asSharedFlow()
+
     private var currentVideo: VideoItem? = null
     private var resolveJob: Job? = null
+    private var queueJob: Job? = null
+    private var pendingQueue: List<VideoItem> = emptyList()
+    private var pendingQueueDataSaver: Boolean = false
     private var requestSerial: Long = 0L
     private val pendingControllerActions = ArrayList<(MediaController) -> Unit>()
 
     private val listener = object : Player.Listener {
         override fun onEvents(player: Player, events: Player.Events) = updateFrom(player)
+
+        override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+            mediaItem?.mediaId?.takeIf { it.isNotBlank() }?.let { _mediaTransitionEvents.tryEmit(it) }
+            _controller.value?.let(::updateFrom)
+        }
 
         override fun onPlaybackStateChanged(playbackState: Int) {
             val player = _controller.value ?: return
@@ -195,7 +212,8 @@ class GeoPlayerConnection private constructor(context: Context) {
             dataSaver = dataSaver,
             repeat = repeat,
             preferredHeight = _preferredQualityHeight.value,
-            forceReload = false
+            forceReload = false,
+            audioOnly = _audioOnlyMode.value
         )
     }
 
@@ -205,15 +223,17 @@ class GeoPlayerConnection private constructor(context: Context) {
         dataSaver: Boolean,
         repeat: Boolean,
         preferredHeight: Int?,
-        forceReload: Boolean
+        forceReload: Boolean,
+        audioOnly: Boolean
     ) {
         val controllerNow = _controller.value
         if (
             !forceReload &&
-            currentVideo?.id == video.id &&
             controllerNow?.currentMediaItem?.mediaId == video.id &&
-            controllerNow.mediaItemCount > 0
+            controllerNow.mediaItemCount > 0 &&
+            activeAudioOnly == audioOnly
         ) {
+            currentVideo = video
             controllerNow.repeatMode = if (repeat) Player.REPEAT_MODE_ONE else Player.REPEAT_MODE_OFF
             if (autoplay && controllerNow.playbackState == Player.STATE_IDLE) controllerNow.prepare()
             if (autoplay && controllerNow.playbackState == Player.STATE_ENDED) {
@@ -225,6 +245,9 @@ class GeoPlayerConnection private constructor(context: Context) {
 
         controllerNow?.pause()
         currentVideo = video
+        activeAudioOnly = audioOnly
+        _audioOnlyMode.value = audioOnly
+        playerPreferences.edit().putBoolean(KEY_AUDIO_ONLY_MODE, audioOnly).apply()
         _preferredQualityHeight.value = preferredHeight
         playerPreferences.edit().putInt(KEY_PREFERRED_QUALITY, preferredHeight ?: 0).apply()
         resolveJob?.cancel()
@@ -240,12 +263,16 @@ class GeoPlayerConnection private constructor(context: Context) {
 
         resolveJob = scope.launch {
             try {
-                val resolved = StreamResolver.resolve(
-                    video = video,
-                    dataSaver = dataSaver,
-                    preferredHeight = preferredHeight,
-                    preferProgressive = repeat && preferredHeight == null
-                )
+                val resolved = if (audioOnly) {
+                    StreamResolver.resolveAudio(video)
+                } else {
+                    StreamResolver.resolve(
+                        video = video,
+                        dataSaver = dataSaver,
+                        preferredHeight = preferredHeight,
+                        preferProgressive = repeat && preferredHeight == null
+                    )
+                }
                 if (requestId != requestSerial || currentVideo?.id != video.id) return@launch
                 withController { controller ->
                     if (requestId != requestSerial || currentVideo?.id != video.id) return@withController
@@ -257,7 +284,7 @@ class GeoPlayerConnection private constructor(context: Context) {
                     val trackBuilder = controller.trackSelectionParameters
                         .buildUpon()
                         .clearVideoSizeConstraints()
-                    if (!resolved.hasSeparateAudio) {
+                    if (!audioOnly && !resolved.hasSeparateAudio) {
                         preferredHeight?.takeIf { it > 0 }?.let { exactHeight ->
                             trackBuilder
                                 .setMinVideoSize(0, exactHeight)
@@ -291,6 +318,7 @@ class GeoPlayerConnection private constructor(context: Context) {
                         controller.playWhenReady = autoplay
                     }
                     _state.update { it.copy(resolving = false, error = null) }
+                    appendPendingQueue(video.id)
                 }
             } catch (cancelled: CancellationException) {
                 throw cancelled
@@ -301,6 +329,77 @@ class GeoPlayerConnection private constructor(context: Context) {
                         resolving = false,
                         error = friendlyPlaybackError(error.message)
                     )
+                }
+            }
+        }
+    }
+
+    fun updateQueue(current: VideoItem, candidates: List<VideoItem>, dataSaver: Boolean) {
+        pendingQueue = candidates
+            .asSequence()
+            .filterNot { it.id == current.id }
+            .filter { it.id.isNotBlank() }
+            .distinctBy { it.id }
+            .take(20)
+            .toList()
+        pendingQueueDataSaver = dataSaver
+        if (_controller.value?.currentMediaItem?.mediaId == current.id) {
+            appendPendingQueue(current.id)
+        }
+    }
+
+    private fun appendPendingQueue(currentId: String) {
+        queueJob?.cancel()
+        val upcoming = pendingQueue
+        if (upcoming.isEmpty()) return
+        queueJob = scope.launch {
+            for (video in upcoming) {
+                val controllerNow = _controller.value ?: break
+                val queuedIds = (0 until controllerNow.mediaItemCount)
+                    .map { index -> controllerNow.getMediaItemAt(index).mediaId }
+                    .toHashSet()
+                if (video.id in queuedIds) continue
+                val activeIds = queuedIds + controllerNow.currentMediaItem?.mediaId.orEmpty()
+                if (currentId !in activeIds && controllerNow.currentMediaItem?.mediaId != currentId) break
+                val resolved = runCatching {
+                    if (_audioOnlyMode.value) {
+                        StreamResolver.resolveAudio(video)
+                    } else {
+                        StreamResolver.resolve(
+                            video = video,
+                            dataSaver = pendingQueueDataSaver,
+                            preferredHeight = _preferredQualityHeight.value,
+                            preferProgressive = false
+                        )
+                    }
+                }.getOrNull() ?: continue
+                if (resolved.hasSeparateAudio) {
+                    PlaybackService.appendResolved(
+                        context = appContext,
+                        videoId = video.id,
+                        title = video.title,
+                        artist = video.channelTitle,
+                        artwork = video.thumbnailUrl,
+                        resolved = resolved
+                    )
+                    delay(120L)
+                } else {
+                    val metadata = MediaMetadata.Builder()
+                        .setTitle(video.title)
+                        .setArtist(video.channelTitle)
+                        .setArtworkUri(video.thumbnailUrl.takeIf { it.isNotBlank() }?.let(Uri::parse))
+                        .build()
+                    val item = MediaItem.Builder()
+                        .setMediaId(video.id)
+                        .setUri(resolved.uri)
+                        .setMimeType(resolved.mimeType)
+                        .setMediaMetadata(metadata)
+                        .build()
+                    withController { controller ->
+                        val exists = (0 until controller.mediaItemCount)
+                            .any { index -> controller.getMediaItemAt(index).mediaId == video.id }
+                        if (!exists) controller.addMediaItem(item)
+                    }
                 }
             }
         }
@@ -326,10 +425,38 @@ class GeoPlayerConnection private constructor(context: Context) {
             dataSaver = dataSaver,
             repeat = repeat,
             preferredHeight = height,
-            forceReload = true
+            forceReload = true,
+            audioOnly = false
         )
     }
 
+
+    fun setAudioOnly(video: VideoItem, enabled: Boolean, autoplay: Boolean, dataSaver: Boolean) {
+        val controllerNow = _controller.value
+        val position = controllerNow?.currentPosition
+            ?.takeIf { it >= 0L }
+            ?: video.resumePositionMs
+        val shouldPlay = controllerNow?.playWhenReady ?: autoplay
+        val repeat = controllerNow?.repeatMode == Player.REPEAT_MODE_ONE
+        openInternal(
+            video = video.copy(resumePositionMs = position),
+            autoplay = shouldPlay,
+            dataSaver = dataSaver,
+            repeat = repeat,
+            preferredHeight = _preferredQualityHeight.value,
+            forceReload = true,
+            audioOnly = enabled
+        )
+    }
+
+    fun playNext() = withController { controller ->
+        if (controller.hasNextMediaItem()) controller.seekToNextMediaItem()
+    }
+
+    fun playPrevious() = withController { controller ->
+        if (controller.hasPreviousMediaItem()) controller.seekToPreviousMediaItem()
+        else controller.seekTo(0L)
+    }
 
     fun retryShort(video: VideoItem, dataSaver: Boolean) {
         openInternal(
@@ -338,7 +465,8 @@ class GeoPlayerConnection private constructor(context: Context) {
             dataSaver = dataSaver,
             repeat = true,
             preferredHeight = _preferredQualityHeight.value,
-            forceReload = true
+            forceReload = true,
+            audioOnly = false
         )
     }
 
@@ -369,6 +497,8 @@ class GeoPlayerConnection private constructor(context: Context) {
     fun stop() {
         requestSerial += 1L
         resolveJob?.cancel()
+        queueJob?.cancel()
+        pendingQueue = emptyList()
         currentVideo = null
         // Keep the user's quality preference when closing or leaving Shorts.
         // The next video reuses it, matching DayliTube/YouTube behavior.
@@ -422,6 +552,7 @@ class GeoPlayerConnection private constructor(context: Context) {
 
     private fun release() {
         resolveJob?.cancel()
+        queueJob?.cancel()
         _controller.value?.removeListener(listener)
         MediaController.releaseFuture(controllerFuture)
         scope.cancel()
@@ -429,6 +560,7 @@ class GeoPlayerConnection private constructor(context: Context) {
 
     companion object {
         private const val KEY_PREFERRED_QUALITY = "preferred_quality_height"
+        private const val KEY_AUDIO_ONLY_MODE = "audio_only_mode"
 
         @Volatile
         private var instance: GeoPlayerConnection? = null

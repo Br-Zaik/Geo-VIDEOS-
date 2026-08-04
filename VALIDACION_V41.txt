@@ -1,0 +1,25 @@
+Geo Videos V41 - Musica, Geo Mix, autoplay e historial
+
+Cambios incluidos sobre V40:
+- Boton visible Reproducir musica / Modo musica.
+- Resolucion de una pista de audio compatible para ahorrar datos durante el modo musica.
+- Continuidad en segundo plano y con pantalla apagada mediante el servicio multimedia existente.
+- Regreso de audio a video conservando la posicion.
+- Geo Mix visible con cola de hasta 20 videos relacionados.
+- Reproduccion automatica ON/OFF disponible dentro del reproductor.
+- Cola compatible con Anterior / Reproducir-Pausar / Siguiente en la notificacion.
+- Picture-in-Picture se mantiene para video; el modo musica no fuerza una ventana de video.
+- Historial ordenado por reproduccion mas reciente, buscador siempre visible, filtros, fechas, progreso y eliminacion individual.
+- El historial registra lo visto en Geo Videos; no importa el historial privado de YouTube.
+- No se modificaron los archivos de inicio de sesion, Google, huella ni sesion respecto de V40.
+
+Validacion realizada:
+- Comparacion V40 -> V41: solo cambiaron reproductor, resolucion de streams, pantalla de historial, controles del reproductor, version y dos iconos nuevos.
+- Revision de delimitadores en 20 archivos Kotlin: sin errores estructurales.
+- Analisis sintactico con kotlinc: no se detectaron errores de tipo expecting, unclosed o unexpected tokens; las referencias Android no pueden resolverse sin el classpath de Gradle.
+- Parseo de 26 archivos XML: sin errores.
+- Revision de referencias entre UnifiedPlayerOverlay, NativePlayerDetailsList y GeoPlayerConnection.
+
+Limitacion del entorno:
+- No fue posible compilar el APK localmente porque el entorno no pudo resolver services.gradle.org para descargar Gradle 8.13.
+- La compilacion definitiva debe ejecutarse en GitHub Actions y probarse en un telefono Android.

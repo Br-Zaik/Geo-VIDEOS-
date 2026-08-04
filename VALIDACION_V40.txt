@@ -1,0 +1,23 @@
+Geo Videos V40 - Reproductor, cola, canales, Shorts e historial
+
+Cambios incluidos:
+- Flecha visible para actualizar Principal sin cerrar la app.
+- Feed de Shorts mezclado con descubrimiento, tendencias, historial e intereses; no queda limitado a suscripciones.
+- Cola real de videos relacionados para Anterior / Pausa-Reproducir / Siguiente en el reproductor y la notificacion.
+- Reproduccion continua en segundo plano mediante MediaSessionService.
+- Minirreproductor flotante dentro de la app y Picture-in-Picture sobre otras aplicaciones.
+- Controles de texto Llenar, Ventana y Ampliar retirados; reemplazados por iconos discretos.
+- Pantalla completa bloqueada en horizontal, con solo el video, barras del sistema ocultas y regreso limpio a vertical.
+- Pagina de canal con portada, avatar, datos, descripcion y pestañas Principal, Videos, Shorts y Playlists.
+- Historial con filtros Todo, Videos, Shorts, Podcasts y Musica; fechas, progreso y eliminacion individual.
+- Se conservan calidades reales, seleccion persistente y descargas HD con union de video y audio.
+- No se modificaron OAuth, inicio de sesion, huella, paquete ni firma.
+
+Validacion realizada:
+- Revision estructural de Kotlin y XML.
+- Revision de referencias y consistencia de parametros entre pantallas.
+- Integridad del ZIP final.
+
+Limitacion del entorno:
+- No fue posible compilar el APK localmente porque el entorno no pudo resolver services.gradle.org para descargar Gradle 8.13.
+- La compilacion definitiva debe ejecutarse en GitHub Actions y probarse en un telefono Android.

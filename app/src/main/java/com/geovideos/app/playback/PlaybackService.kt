@@ -105,54 +105,19 @@ class PlaybackService : MediaSessionService() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val result = super.onStartCommand(intent, flags, startId)
-        if (intent?.action == ACTION_PLAY_RESOLVED) {
-            playResolved(intent)
+        when (intent?.action) {
+            ACTION_PLAY_RESOLVED -> playResolved(intent)
+            ACTION_APPEND_RESOLVED -> appendResolved(intent)
         }
         return result
     }
 
     private fun playResolved(intent: Intent) {
         val player = exoPlayer ?: return
-        val dataSourceFactory = cacheDataSourceFactory ?: return
-        val videoUrl = intent.getStringExtra(EXTRA_VIDEO_URL).orEmpty()
-        if (videoUrl.isBlank()) return
-
-        val mediaId = intent.getStringExtra(EXTRA_MEDIA_ID).orEmpty()
-        val title = intent.getStringExtra(EXTRA_TITLE).orEmpty()
-        val artist = intent.getStringExtra(EXTRA_ARTIST).orEmpty()
-        val artwork = intent.getStringExtra(EXTRA_ARTWORK).orEmpty()
-        val videoMime = intent.getStringExtra(EXTRA_VIDEO_MIME)
-        val audioUrl = intent.getStringExtra(EXTRA_AUDIO_URL).orEmpty()
-        val audioMime = intent.getStringExtra(EXTRA_AUDIO_MIME)
+        val source = createResolvedSource(intent) ?: return
         val startPositionMs = intent.getLongExtra(EXTRA_POSITION_MS, 0L).coerceAtLeast(0L)
         val autoplay = intent.getBooleanExtra(EXTRA_AUTOPLAY, true)
         val repeat = intent.getBooleanExtra(EXTRA_REPEAT, false)
-
-        val metadata = MediaMetadata.Builder()
-            .setTitle(title)
-            .setArtist(artist)
-            .setArtworkUri(artwork.takeIf { it.isNotBlank() }?.let(Uri::parse))
-            .build()
-
-        val videoItem = MediaItem.Builder()
-            .setMediaId(mediaId)
-            .setUri(videoUrl)
-            .setMimeType(videoMime)
-            .setMediaMetadata(metadata)
-            .build()
-        val progressiveFactory = ProgressiveMediaSource.Factory(dataSourceFactory)
-        val videoSource = progressiveFactory.createMediaSource(videoItem)
-        val finalSource = if (audioUrl.isNotBlank()) {
-            val audioItem = MediaItem.Builder()
-                .setMediaId("$mediaId-audio")
-                .setUri(audioUrl)
-                .setMimeType(audioMime)
-                .build()
-            val audioSource = progressiveFactory.createMediaSource(audioItem)
-            MergingMediaSource(videoSource, audioSource)
-        } else {
-            videoSource
-        }
 
         player.setTrackSelectionParameters(
             player.trackSelectionParameters
@@ -161,9 +126,53 @@ class PlaybackService : MediaSessionService() {
                 .build()
         )
         player.repeatMode = if (repeat) Player.REPEAT_MODE_ONE else Player.REPEAT_MODE_OFF
-        player.setMediaSource(finalSource, startPositionMs)
+        player.setMediaSource(source, startPositionMs)
         player.prepare()
         player.playWhenReady = autoplay
+    }
+
+    private fun appendResolved(intent: Intent) {
+        val player = exoPlayer ?: return
+        val mediaId = intent.getStringExtra(EXTRA_MEDIA_ID).orEmpty()
+        if (mediaId.isBlank()) return
+        val alreadyQueued = (0 until player.mediaItemCount)
+            .any { index -> player.getMediaItemAt(index).mediaId == mediaId }
+        if (alreadyQueued) return
+        val source = createResolvedSource(intent) ?: return
+        player.addMediaSource(source)
+    }
+
+    private fun createResolvedSource(intent: Intent): androidx.media3.exoplayer.source.MediaSource? {
+        val dataSourceFactory = cacheDataSourceFactory ?: return null
+        val videoUrl = intent.getStringExtra(EXTRA_VIDEO_URL).orEmpty()
+        if (videoUrl.isBlank()) return null
+        val mediaId = intent.getStringExtra(EXTRA_MEDIA_ID).orEmpty()
+        val title = intent.getStringExtra(EXTRA_TITLE).orEmpty()
+        val artist = intent.getStringExtra(EXTRA_ARTIST).orEmpty()
+        val artwork = intent.getStringExtra(EXTRA_ARTWORK).orEmpty()
+        val videoMime = intent.getStringExtra(EXTRA_VIDEO_MIME)
+        val audioUrl = intent.getStringExtra(EXTRA_AUDIO_URL).orEmpty()
+        val audioMime = intent.getStringExtra(EXTRA_AUDIO_MIME)
+        val metadata = MediaMetadata.Builder()
+            .setTitle(title)
+            .setArtist(artist)
+            .setArtworkUri(artwork.takeIf { it.isNotBlank() }?.let(Uri::parse))
+            .build()
+        val videoItem = MediaItem.Builder()
+            .setMediaId(mediaId)
+            .setUri(videoUrl)
+            .setMimeType(videoMime)
+            .setMediaMetadata(metadata)
+            .build()
+        val progressiveFactory = ProgressiveMediaSource.Factory(dataSourceFactory)
+        val videoSource = progressiveFactory.createMediaSource(videoItem)
+        if (audioUrl.isBlank()) return videoSource
+        val audioItem = MediaItem.Builder()
+            .setMediaId("$mediaId-audio")
+            .setUri(audioUrl)
+            .setMimeType(audioMime)
+            .build()
+        return MergingMediaSource(videoSource, progressiveFactory.createMediaSource(audioItem))
     }
 
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? = mediaSession
@@ -183,6 +192,7 @@ class PlaybackService : MediaSessionService() {
 
     companion object {
         private const val ACTION_PLAY_RESOLVED = "com.geovideos.app.action.PLAY_RESOLVED"
+        private const val ACTION_APPEND_RESOLVED = "com.geovideos.app.action.APPEND_RESOLVED"
         private const val EXTRA_MEDIA_ID = "media_id"
         private const val EXTRA_TITLE = "title"
         private const val EXTRA_ARTIST = "artist"
@@ -219,6 +229,28 @@ class PlaybackService : MediaSessionService() {
                 putExtra(EXTRA_POSITION_MS, positionMs.coerceAtLeast(0L))
                 putExtra(EXTRA_AUTOPLAY, autoplay)
                 putExtra(EXTRA_REPEAT, repeat)
+            }
+            runCatching { context.startService(intent) }
+        }
+
+        internal fun appendResolved(
+            context: Context,
+            videoId: String,
+            title: String,
+            artist: String,
+            artwork: String,
+            resolved: ResolvedMedia
+        ) {
+            val intent = Intent(context, PlaybackService::class.java).apply {
+                action = ACTION_APPEND_RESOLVED
+                putExtra(EXTRA_MEDIA_ID, videoId)
+                putExtra(EXTRA_TITLE, title)
+                putExtra(EXTRA_ARTIST, artist)
+                putExtra(EXTRA_ARTWORK, artwork)
+                putExtra(EXTRA_VIDEO_URL, resolved.uri)
+                putExtra(EXTRA_VIDEO_MIME, resolved.mimeType)
+                putExtra(EXTRA_AUDIO_URL, resolved.audioUri)
+                putExtra(EXTRA_AUDIO_MIME, resolved.audioMimeType)
             }
             runCatching { context.startService(intent) }
         }

@@ -14,6 +14,7 @@ import android.widget.HorizontalScrollView
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ProgressBar
+import android.widget.Switch
 import android.widget.TextView
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
@@ -136,7 +137,10 @@ internal data class PlayerHeaderData(
     val description: String,
     val channelAvatar: String,
     val publishedAt: String,
-    val qualityLabel: String = "Calidad"
+    val qualityLabel: String = "Calidad",
+    val audioOnly: Boolean = false,
+    val mixEnabled: Boolean = false,
+    val autoplay: Boolean = true
 )
 
 @Composable
@@ -153,6 +157,9 @@ internal fun NativePlayerDetailsList(
     onShare: () -> Unit,
     onQuality: () -> Unit,
     onDownload: () -> Unit,
+    onToggleAudioOnly: () -> Unit,
+    onToggleMix: () -> Unit,
+    onAutoplayChange: (Boolean) -> Unit,
     onOpenChannel: (ChannelItem) -> Unit,
     onPlayRelated: (VideoItem) -> Unit,
     onSaveRelated: (VideoItem) -> Unit,
@@ -166,6 +173,9 @@ internal fun NativePlayerDetailsList(
             onShare = onShare,
             onQuality = onQuality,
             onDownload = onDownload,
+            onToggleAudioOnly = onToggleAudioOnly,
+            onToggleMix = onToggleMix,
+            onAutoplayChange = onAutoplayChange,
             onOpenChannel = onOpenChannel,
             onPlayRelated = onPlayRelated,
             onSaveRelated = onSaveRelated,
@@ -200,6 +210,7 @@ internal fun NativePlayerDetailsList(
             val current = recyclerView.adapter as NativePlayerAdapter
             current.updateCallbacks(
                 onLike, onDislike, onWatchLater, onShare, onQuality, onDownload,
+                onToggleAudioOnly, onToggleMix, onAutoplayChange,
                 onOpenChannel, onPlayRelated, onSaveRelated, onLoadMore
             )
             current.canLoadMore = relatedCanLoadMore
@@ -548,9 +559,10 @@ private class ChannelCardView(context: Context) : LinearLayout(context) {
 private sealed interface PlayerRow {
     val id: Long
     data class Header(val data: PlayerHeaderData) : PlayerRow { override val id = Long.MIN_VALUE + 301 }
+    data class Mix(val item: VideoItem, val active: Boolean) : PlayerRow { override val id = Long.MIN_VALUE + 302 }
     data class Related(val item: VideoItem) : PlayerRow { override val id = item.id.hashCode().toLong() }
-    data object Loading : PlayerRow { override val id = Long.MIN_VALUE + 302 }
-    data object More : PlayerRow { override val id = Long.MIN_VALUE + 303 }
+    data object Loading : PlayerRow { override val id = Long.MIN_VALUE + 303 }
+    data object More : PlayerRow { override val id = Long.MIN_VALUE + 304 }
 }
 
 private object PlayerRowDiff : DiffUtil.ItemCallback<PlayerRow>() {
@@ -565,6 +577,9 @@ private class NativePlayerAdapter(
     private var onShare: () -> Unit,
     private var onQuality: () -> Unit,
     private var onDownload: () -> Unit,
+    private var onToggleAudioOnly: () -> Unit,
+    private var onToggleMix: () -> Unit,
+    private var onAutoplayChange: (Boolean) -> Unit,
     private var onOpenChannel: (ChannelItem) -> Unit,
     private var onPlayRelated: (VideoItem) -> Unit,
     private var onSaveRelated: (VideoItem) -> Unit,
@@ -577,11 +592,13 @@ private class NativePlayerAdapter(
     fun updateCallbacks(
         like: () -> Unit, dislike: () -> Unit, later: () -> Unit, share: () -> Unit,
         quality: () -> Unit, download: () -> Unit,
+        audioOnly: () -> Unit, mix: () -> Unit, autoplay: (Boolean) -> Unit,
         channel: (ChannelItem) -> Unit, play: (VideoItem) -> Unit,
         save: (VideoItem) -> Unit, load: () -> Unit
     ) {
         onLike = like; onDislike = dislike; onWatchLater = later; onShare = share
         onQuality = quality; onDownload = download
+        onToggleAudioOnly = audioOnly; onToggleMix = mix; onAutoplayChange = autoplay
         onOpenChannel = channel; onPlayRelated = play; onSaveRelated = save; onLoadMore = load
     }
 
@@ -590,6 +607,7 @@ private class NativePlayerAdapter(
         this.canLoadMore = canLoadMore
         submitList(buildList {
             add(PlayerRow.Header(header))
+            related.firstOrNull()?.let { add(PlayerRow.Mix(it, header.mixEnabled)) }
             related.forEach { add(PlayerRow.Related(it)) }
             if (loading || loadingMore) add(PlayerRow.Loading)
             else if (canLoadMore) add(PlayerRow.More)
@@ -599,12 +617,14 @@ private class NativePlayerAdapter(
     override fun getItemId(position: Int) = getItem(position).id
     override fun getItemViewType(position: Int): Int = when (getItem(position)) {
         is PlayerRow.Header -> TYPE_HEADER
+        is PlayerRow.Mix -> TYPE_MIX
         is PlayerRow.Related -> TYPE_RELATED
         PlayerRow.Loading -> TYPE_LOADING
         PlayerRow.More -> TYPE_MORE
     }
     override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): RecyclerView.ViewHolder = when (viewType) {
         TYPE_HEADER -> PlayerHeaderHolder(parent.context)
+        TYPE_MIX -> FullVideoHolder(parent.context)
         TYPE_RELATED -> FullVideoHolder(parent.context)
         TYPE_LOADING -> LoadingRowHolder(parent.context)
         else -> MoreRowHolder(parent.context)
@@ -613,7 +633,16 @@ private class NativePlayerAdapter(
         when (val row = getItem(position)) {
             is PlayerRow.Header -> (holder as PlayerHeaderHolder).bind(
                 row.data, onLike, onDislike, onWatchLater, onShare,
-                onQuality, onDownload, onOpenChannel
+                onQuality, onDownload, onToggleAudioOnly, onToggleMix,
+                onAutoplayChange, onOpenChannel
+            )
+            is PlayerRow.Mix -> (holder as FullVideoHolder).bind(
+                row.item.copy(
+                    title = if (row.active) "Geo Mix activo" else "Geo Mix: ${row.item.title}",
+                    channelTitle = "Reproducción continua de videos relacionados"
+                ),
+                onPlay = { onToggleMix() },
+                onSave = { }
             )
             is PlayerRow.Related -> (holder as FullVideoHolder).bind(row.item, onPlayRelated, onSaveRelated)
             PlayerRow.More -> (holder as MoreRowHolder).bind(onLoadMore)
@@ -622,9 +651,10 @@ private class NativePlayerAdapter(
     }
     companion object {
         const val TYPE_HEADER = 40
-        const val TYPE_RELATED = 41
-        const val TYPE_LOADING = 42
-        const val TYPE_MORE = 43
+        const val TYPE_MIX = 41
+        const val TYPE_RELATED = 42
+        const val TYPE_LOADING = 43
+        const val TYPE_MORE = 44
     }
 }
 
@@ -638,6 +668,9 @@ private class PlayerHeaderHolder(context: Context) : RecyclerView.ViewHolder(Pla
         onShare: () -> Unit,
         onQuality: () -> Unit,
         onDownload: () -> Unit,
+        onToggleAudioOnly: () -> Unit,
+        onToggleMix: () -> Unit,
+        onAutoplayChange: (Boolean) -> Unit,
         onOpenChannel: (ChannelItem) -> Unit
     ) {
         val video = data.video
@@ -654,9 +687,20 @@ private class PlayerHeaderHolder(context: Context) : RecyclerView.ViewHolder(Pla
         view.share.setLabel("Compartir")
         view.quality.setLabel(data.qualityLabel)
         view.download.setLabel("Descargar")
+        view.music.setLabel(if (data.audioOnly) "Modo música" else "Reproducir música")
+        view.mix.setLabel(if (data.mixEnabled) "Geo Mix activo" else "Geo Mix")
         setActionSelected(view.like, data.isLiked)
         setActionSelected(view.dislike, data.isDisliked)
         setActionSelected(view.watchLater, data.isWatchLater)
+        setActionSelected(view.music, data.audioOnly)
+        setActionSelected(view.mix, data.mixEnabled)
+        view.autoplaySwitch.setOnCheckedChangeListener(null)
+        view.autoplaySwitch.isChecked = data.autoplay
+        view.autoplaySwitch.text = if (data.autoplay) "ON" else "OFF"
+        view.autoplaySwitch.setOnCheckedChangeListener { _, enabled ->
+            view.autoplaySwitch.text = if (enabled) "ON" else "OFF"
+            onAutoplayChange(enabled)
+        }
         val commentCount = data.details?.commentCount ?: 0L
         view.commentsTitle.text = if (commentCount > 0L) {
             "Comentarios ${compactNumber(commentCount)}"
@@ -686,6 +730,8 @@ private class PlayerHeaderHolder(context: Context) : RecyclerView.ViewHolder(Pla
         view.share.setOnClickListener { onShare() }
         view.quality.setOnClickListener { onQuality() }
         view.download.setOnClickListener { onDownload() }
+        view.music.setOnClickListener { onToggleAudioOnly() }
+        view.mix.setOnClickListener { onToggleMix() }
         view.channelButton.visibility = if (video.channelId.isBlank()) View.GONE else View.VISIBLE
         view.channelButton.text = "Ver canal"
         val openChannel = View.OnClickListener {
@@ -714,6 +760,10 @@ private class PlayerHeaderView(context: Context) : LinearLayout(context) {
     val share = PlayerActionView(context, com.geovideos.app.R.drawable.ic_short_share, "Compartir")
     val quality = PlayerActionView(context, com.geovideos.app.R.drawable.ic_player_quality, "Calidad")
     val download = PlayerActionView(context, com.geovideos.app.R.drawable.ic_player_download, "Descargar")
+    val music = PlayerActionView(context, com.geovideos.app.R.drawable.ic_player_music, "Reproducir música")
+    val mix = PlayerActionView(context, com.geovideos.app.R.drawable.ic_player_mix, "Geo Mix")
+    val autoplayRow = LinearLayout(context)
+    val autoplaySwitch = Switch(context)
     val commentsRow = LinearLayout(context)
     val commentsTitle = TextView(context)
     val commentsHint = TextView(context)
@@ -763,11 +813,28 @@ private class PlayerHeaderView(context: Context) : LinearLayout(context) {
             overScrollMode = View.OVER_SCROLL_NEVER
         }
         val actions = LinearLayout(context).apply { orientation = HORIZONTAL }
-        listOf(like, dislike, download, watchLater, share).forEach { item ->
-            actions.addView(item, LinearLayout.LayoutParams(dp(context, 82), dp(context, 72)))
+        listOf(like, dislike, download, music, mix, watchLater, share).forEach { item ->
+            actions.addView(item, LinearLayout.LayoutParams(dp(context, 88), dp(context, 72)))
         }
         scroll.addView(actions)
         addView(scroll, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(context, 78)).apply { topMargin = dp(context, 8) })
+
+        autoplayRow.orientation = HORIZONTAL
+        autoplayRow.gravity = Gravity.CENTER_VERTICAL
+        autoplayRow.setPadding(dp(context, 14), dp(context, 10), dp(context, 10), dp(context, 10))
+        autoplayRow.background = roundedDrawable(0xFF1D1B22.toInt(), 12f, context)
+        autoplayRow.addView(TextView(context).apply {
+            text = "Reproducción automática"
+            setTextColor(Color.WHITE)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
+            setTypeface(typeface, android.graphics.Typeface.BOLD)
+        }, LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        autoplaySwitch.setTextColor(0xFFB9B5C0.toInt())
+        autoplaySwitch.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+        autoplayRow.addView(autoplaySwitch, LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        addView(autoplayRow, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+            topMargin = dp(context, 8)
+        })
 
         commentsRow.orientation = HORIZONTAL
         commentsRow.gravity = Gravity.CENTER_VERTICAL

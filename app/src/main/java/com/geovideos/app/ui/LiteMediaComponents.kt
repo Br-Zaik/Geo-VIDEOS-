@@ -77,8 +77,8 @@ internal fun LitePlayerView(
                 setKeepContentOnPlayerReset(true)
                 setShutterBackgroundColor(AndroidColor.TRANSPARENT)
                 setShowBuffering(PlayerView.SHOW_BUFFERING_WHEN_PLAYING)
-                setShowPreviousButton(false)
-                setShowNextButton(false)
+                setShowPreviousButton(true)
+                setShowNextButton(true)
                 setShowRewindButton(true)
                 setShowFastForwardButton(true)
                 this.resizeMode = resizeMode

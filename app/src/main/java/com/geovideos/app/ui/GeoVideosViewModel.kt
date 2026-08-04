@@ -95,7 +95,9 @@ data class GeoVideosUiState(
     val relatedLoadingMore: Boolean = false,
     val relatedCanLoadMore: Boolean = true,
     val selectedChannelTitle: String = "",
+    val selectedChannel: ChannelItem? = null,
     val channelVideos: List<VideoItem> = emptyList(),
+    val channelPlaylists: List<PlaylistItem> = emptyList(),
     val autoplay: Boolean = true,
     val dataSaver: Boolean = false,
     val notificationsEnabled: Boolean = true,
@@ -463,11 +465,11 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
                     val personalizedShorts = verifyRealShorts(personalShortCandidates)
                     val discoveredShortCandidates = enriched(shortsRaw)
                     val discoveredShorts = verifyRealShorts(discoveredShortCandidates)
-                    val shorts = mergeUniqueVideos(
-                        personalizedShorts,
+                    val shorts = roundRobinVideos(
                         discoveredShorts,
-                        personalShortCandidates.filter(::looksLikeStrongShort),
-                        discoveredShortCandidates.filter(::looksLikeStrongShort)
+                        personalizedShorts,
+                        discoveredShortCandidates.filter(::looksLikeStrongShort),
+                        personalShortCandidates.filter(::looksLikeStrongShort)
                     ).take(30)
                     val liked = enriched(likedRaw)
                     val subscriptionFeed = enriched(subscriptionFeedRaw)
@@ -682,7 +684,7 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
                 val discovered = verified.ifEmpty {
                     candidates.filter(::looksLikeStrongShort).take(24)
                 }
-                val usable = mergeUniqueVideos(personalized, discovered).take(MAX_HOME_ITEMS)
+                val usable = roundRobinVideos(discovered, personalized).take(MAX_HOME_ITEMS)
                 _uiState.update { current ->
                     val merged = if (usable.isEmpty()) current.shorts else usable
                     current.copy(
@@ -988,7 +990,9 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
                         selectedVideo = null,
                         playerExpanded = false,
                         selectedChannelTitle = "",
-                        channelVideos = emptyList()
+                        selectedChannel = null,
+                        channelVideos = emptyList(),
+                        channelPlaylists = emptyList()
                     )
                 }
                 reloadShortsForSection()
@@ -1003,7 +1007,9 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
                 selectedVideo = if (leavingShorts) null else it.selectedVideo,
                 playerExpanded = if (leavingShorts) false else it.playerExpanded,
                 selectedChannelTitle = "",
-                channelVideos = emptyList()
+                selectedChannel = null,
+                channelVideos = emptyList(),
+                channelPlaylists = emptyList()
             )
         }
     }
@@ -1404,20 +1410,89 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
             _uiState.update { it.copy(message = "Renueva el acceso de Google para abrir el canal.") }
             return
         }
-        _uiState.update { it.copy(loading = true, selectedChannelTitle = channel.title, channelVideos = emptyList()) }
+        val subscribed = _uiState.value.subscriptions.any { it.id == channel.id }
+        val initialChannel = channel.copy(isSubscribed = subscribed)
+        _uiState.update {
+            it.copy(
+                loading = true,
+                selectedChannelTitle = channel.title,
+                selectedChannel = initialChannel,
+                channelVideos = emptyList(),
+                channelPlaylists = emptyList()
+            )
+        }
         viewModelScope.launch {
             try {
-                val raw = api.channelVideos(token, channel.id)
-                val videos = enrichVideosWithCache(token, raw)
-                _uiState.update { it.copy(loading = false, channelVideos = videos) }
+                supervisorScope {
+                    val infoDeferred = async { runCatching { api.channelInfo(token, channel.id) }.getOrNull() }
+                    val videosDeferred = async { runCatching { api.channelVideos(token, channel.id) }.getOrDefault(emptyList()) }
+                    val playlistsDeferred = async { runCatching { api.channelPlaylists(token, channel.id) }.getOrDefault(emptyList()) }
+                    val info = infoDeferred.await()?.copy(isSubscribed = subscribed) ?: initialChannel
+                    val rawVideos = videosDeferred.await()
+                    val videos = enrichVideosWithCache(token, rawVideos)
+                    val playlists = playlistsDeferred.await()
+                    _uiState.update { current ->
+                        if (current.selectedChannel?.id != channel.id) current else current.copy(
+                            loading = false,
+                            selectedChannelTitle = info.title,
+                            selectedChannel = info,
+                            channelVideos = videos,
+                            channelPlaylists = playlists
+                        )
+                    }
+                }
             } catch (error: Exception) {
-                _uiState.update { it.copy(loading = false, message = error.message ?: "No se pudo abrir el canal.") }
+                _uiState.update { current ->
+                    if (current.selectedChannel?.id != channel.id) current else current.copy(
+                        loading = false,
+                        message = error.message ?: "No se pudo abrir el canal."
+                    )
+                }
             }
         }
     }
 
     fun closeChannel() {
-        _uiState.update { it.copy(selectedChannelTitle = "", channelVideos = emptyList()) }
+        _uiState.update {
+            it.copy(
+                selectedChannelTitle = "",
+                selectedChannel = null,
+                channelVideos = emptyList(),
+                channelPlaylists = emptyList()
+            )
+        }
+    }
+
+    fun removeHistory(videoId: String) {
+        val history = repository.removeFromHistory(videoId)
+        _uiState.update { it.copy(history = history, message = "Video eliminado del historial.") }
+    }
+
+    fun onPlayerTransition(videoId: String) {
+        if (videoId.isBlank() || _uiState.value.selectedVideo?.id == videoId) return
+        val state = _uiState.value
+        val video = sequenceOf(
+            state.relatedVideos, state.personalized, state.popular, state.music, state.gaming,
+            state.live, state.history, state.watchLater, state.liked, state.localLikedVideos
+        ).flatten().firstOrNull { it.id == videoId } ?: return
+        val playable = video.copy(resumePositionMs = 0L)
+        val history = repository.addToHistory(playable)
+        relatedNextToken = ""
+        relatedVideoId = playable.id
+        _uiState.update { current ->
+            current.copy(
+                selectedVideo = playable,
+                playerExpanded = current.playerExpanded,
+                history = history,
+                playerDetails = null,
+                playerDetailsLoading = true,
+                relatedVideos = emptyList(),
+                relatedLoading = true,
+                relatedLoadingMore = false,
+                relatedCanLoadMore = true
+            )
+        }
+        loadPlayerContext(playable)
     }
 
     fun registerDownload(title: String, url: String, downloadId: Long) {
@@ -1478,15 +1553,11 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
             .sortedByDescending { it.value }
             .take(5)
             .map { it.key }
-        val channelHints = subscriptions.take(4)
-            .map { it.title.trim() }
-            .filter { it.length >= 3 }
-        val interests = interestWords.take(4).joinToString(" ")
-        val channel = channelHints.firstOrNull().orEmpty()
-        return listOf(channel, interests, "shorts")
+        val interests = interestWords.take(5).joinToString(" ")
+        return listOf(interests, "shorts tendencias")
             .filter { it.isNotBlank() }
             .joinToString(" ")
-            .ifBlank { "shorts de mis suscripciones" }
+            .ifBlank { "shorts tendencias Perú" }
     }
 
     private suspend fun loadPersonalizedShorts(
@@ -1494,7 +1565,7 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
         state: GeoVideosUiState
     ): List<VideoItem> = supervisorScope {
         val subscriptionVideos = state.subscriptions
-            .take(14)
+            .take(5)
             .map { channel ->
                 async {
                     runCatching { api.channelActivities(token, channel.id, 8) }
@@ -1503,12 +1574,13 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
             }
             .awaitAll()
             .flatten()
-        val raw = mergeUniqueVideos(
-            subscriptionVideos,
-            state.localLikedVideos,
-            state.liked,
-            state.history.take(40),
-            state.personalized.take(35)
+        val raw = roundRobinVideos(
+            state.history.take(35),
+            state.localLikedVideos.take(20),
+            state.liked.take(20),
+            state.personalized.take(35),
+            subscriptionVideos.take(20),
+            state.popular.take(20)
         ).take(100)
         val enriched = enrichVideosWithCache(token, raw)
             .filter(::looksLikeShort)
@@ -1552,8 +1624,9 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
     ): Pair<VideoPage, String> {
         val queries = listOf(
             preferredQuery,
-            "shorts de mis suscripciones",
-            "#shorts español",
+            "#shorts tendencias Perú",
+            "shorts virales español",
+            "shorts música gaming anime",
             "youtube shorts"
         ).map { it.trim() }
             .filter { it.isNotBlank() }
@@ -1577,6 +1650,27 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
             if (page.items.isNotEmpty()) return page to query
         }
         return fallback to fallbackQuery
+    }
+
+    private fun roundRobinVideos(vararg groups: List<VideoItem>): List<VideoItem> {
+        val result = ArrayList<VideoItem>()
+        val seen = HashSet<String>()
+        val positions = IntArray(groups.size)
+        var added: Boolean
+        do {
+            added = false
+            groups.forEachIndexed { index, group ->
+                while (positions[index] < group.size) {
+                    val item = group[positions[index]++]
+                    if (item.id.isNotBlank() && seen.add(item.id)) {
+                        result += item
+                        added = true
+                        break
+                    }
+                }
+            }
+        } while (added)
+        return result
     }
 
     private fun handleApiError(error: YouTubeApiException) {

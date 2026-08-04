@@ -131,7 +131,8 @@ class GeoVideosRepository(context: Context) {
         val previous = loadHistory().firstOrNull { it.id == video.id }
         val merged = video.copy(
             resumePositionMs = if (video.resumePositionMs > 0L) video.resumePositionMs else previous?.resumePositionMs ?: 0L,
-            durationMs = if (video.durationMs > 0L) video.durationMs else previous?.durationMs ?: 0L
+            durationMs = if (video.durationMs > 0L) video.durationMs else previous?.durationMs ?: 0L,
+            watchedAtMs = System.currentTimeMillis()
         )
         val updated = loadHistory().filterNot { it.id == video.id }.toMutableList()
         updated.add(0, merged)
@@ -147,10 +148,17 @@ class GeoVideosRepository(context: Context) {
             0,
             video.copy(
                 resumePositionMs = normalizedPosition,
-                durationMs = safeDuration
+                durationMs = safeDuration,
+                watchedAtMs = System.currentTimeMillis()
             )
         )
         return current.take(80).also { saveVideos(KEY_HISTORY, it) }
+    }
+
+    fun removeFromHistory(videoId: String): List<VideoItem> {
+        val updated = loadHistory().filterNot { it.id == videoId }
+        saveVideos(KEY_HISTORY, updated)
+        return updated
     }
 
     fun toggleWatchLater(video: VideoItem): List<VideoItem> {
@@ -283,6 +291,7 @@ class GeoVideosRepository(context: Context) {
                     .put("resumePositionMs", video.resumePositionMs)
                     .put("durationMs", video.durationMs)
                     .put("downloadId", video.downloadId)
+                    .put("watchedAtMs", video.watchedAtMs)
             )
         }
         return array
@@ -310,7 +319,8 @@ class GeoVideosRepository(context: Context) {
                         source = item.optString("source", item.optString("id")),
                         resumePositionMs = item.optLong("resumePositionMs", 0L),
                         durationMs = item.optLong("durationMs", 0L),
-                        downloadId = item.optLong("downloadId", -1L)
+                        downloadId = item.optLong("downloadId", -1L),
+                        watchedAtMs = item.optLong("watchedAtMs", 0L)
                     )
                 )
             }
@@ -326,6 +336,11 @@ class GeoVideosRepository(context: Context) {
                     .put("title", it.title)
                     .put("thumbnailUrl", it.thumbnailUrl)
                     .put("description", it.description)
+                    .put("bannerUrl", it.bannerUrl)
+                    .put("handle", it.handle)
+                    .put("subscriberCount", it.subscriberCount)
+                    .put("videoCount", it.videoCount)
+                    .put("isSubscribed", it.isSubscribed)
             )
         }
         return array
@@ -341,7 +356,12 @@ class GeoVideosRepository(context: Context) {
                         id = item.optString("id"),
                         title = item.optString("title"),
                         thumbnailUrl = item.optString("thumbnailUrl"),
-                        description = item.optString("description")
+                        description = item.optString("description"),
+                        bannerUrl = item.optString("bannerUrl"),
+                        handle = item.optString("handle"),
+                        subscriberCount = item.optLong("subscriberCount", 0L),
+                        videoCount = item.optLong("videoCount", 0L),
+                        isSubscribed = item.optBoolean("isSubscribed", false)
                     )
                 )
             }

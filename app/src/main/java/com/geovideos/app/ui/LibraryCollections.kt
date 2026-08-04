@@ -10,26 +10,36 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Shuffle
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
@@ -50,6 +60,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import java.util.Calendar
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import com.geovideos.app.data.ChannelItem
@@ -84,8 +95,20 @@ internal fun LibraryCollectionScreen(
     onLoadMore: (() -> Unit)? = null,
     onBack: () -> Unit,
     onPlay: (VideoItem) -> Unit,
-    onWatchLater: (VideoItem) -> Unit
+    onWatchLater: (VideoItem) -> Unit,
+    onRemoveHistory: (String) -> Unit = {}
 ) {
+    if (destination == LibraryDestination.HISTORY) {
+        HistoryCollectionScreen(
+            modifier = modifier,
+            videos = videos,
+            onBack = onBack,
+            onPlay = onPlay,
+            onRemove = onRemoveHistory
+        )
+        return
+    }
+
     Column(modifier = modifier.fillMaxSize().background(Color.Black)) {
         TopAppBar(
             title = { Text(destination.title(), fontWeight = FontWeight.Bold) },
@@ -143,6 +166,211 @@ internal fun LibraryCollectionScreen(
             onSave = onWatchLater
         )
     }
+}
+
+private enum class HistoryMediaFilter(val label: String) {
+    ALL("Todo"), VIDEOS("Videos"), SHORTS("Shorts"), PODCASTS("Podcasts"), MUSIC("Música")
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun HistoryCollectionScreen(
+    modifier: Modifier,
+    videos: List<VideoItem>,
+    onBack: () -> Unit,
+    onPlay: (VideoItem) -> Unit,
+    onRemove: (String) -> Unit
+) {
+    var filter by rememberSaveable { mutableStateOf(HistoryMediaFilter.ALL) }
+    var query by rememberSaveable { mutableStateOf("") }
+    val filtered = remember(videos, filter, query) {
+        videos.asSequence()
+            .sortedByDescending { it.watchedAtMs }
+            .distinctBy { it.id }
+            .filter { video ->
+                when (filter) {
+                    HistoryMediaFilter.ALL -> true
+                    HistoryMediaFilter.VIDEOS -> !video.looksLikeShortForLibrary()
+                    HistoryMediaFilter.SHORTS -> video.looksLikeShortForLibrary()
+                    HistoryMediaFilter.PODCASTS -> video.looksLikePodcastForLibrary()
+                    HistoryMediaFilter.MUSIC -> video.looksLikeMusicForLibrary()
+                }
+            }
+            .filter { video ->
+                query.isBlank() || video.title.contains(query, true) || video.channelTitle.contains(query, true)
+            }
+            .toList()
+    }
+    val grouped = remember(filtered) {
+        filtered.groupBy(::historyDayLabel).entries.toList()
+    }
+
+    Column(modifier = modifier.fillMaxSize().background(Color.Black)) {
+        TopAppBar(
+            title = { Text("Historial", fontWeight = FontWeight.Bold) },
+            navigationIcon = {
+                IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, contentDescription = "Volver") }
+            }
+        )
+        OutlinedTextField(
+            value = query,
+            onValueChange = { query = it },
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 6.dp),
+            singleLine = true,
+            placeholder = { Text("Buscar en el historial") },
+            leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
+            trailingIcon = {
+                if (query.isNotBlank()) {
+                    IconButton(onClick = { query = "" }) {
+                        Icon(Icons.Default.Close, contentDescription = "Limpiar búsqueda")
+                    }
+                }
+            }
+        )
+        LazyRow(
+            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            items(HistoryMediaFilter.entries, key = { it.name }) { option ->
+                FilterChip(
+                    selected = filter == option,
+                    onClick = { filter = option },
+                    label = { Text(option.label) }
+                )
+            }
+        }
+        HorizontalDivider()
+        if (filtered.isEmpty()) {
+            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Text(
+                    if (query.isBlank()) "Todavía no hay videos en esta categoría." else "No se encontraron coincidencias.",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(24.dp)
+                )
+            }
+        } else {
+            LazyColumn(
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(bottom = 18.dp)
+            ) {
+                grouped.forEach { (label, group) ->
+                    item(key = "history-label-$label") {
+                        Text(
+                            label,
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)
+                        )
+                    }
+                    items(group, key = { "history-row-${it.id}" }) { video ->
+                        HistoryVideoRow(video, onPlay = { onPlay(video) }, onRemove = { onRemove(video.id) })
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun HistoryVideoRow(
+    video: VideoItem,
+    onPlay: () -> Unit,
+    onRemove: () -> Unit
+) {
+    var menu by remember { mutableStateOf(false) }
+    Row(
+        modifier = Modifier.fillMaxWidth().clickable(onClick = onPlay).padding(horizontal = 12.dp, vertical = 7.dp),
+        verticalAlignment = Alignment.Top
+    ) {
+        Box(
+            modifier = Modifier.width(150.dp).aspectRatio(16f / 9f).clip(RoundedCornerShape(8.dp)).background(Color(0xFF202024))
+        ) {
+            LiteThumbnail(
+                url = video.thumbnailUrl,
+                description = video.title,
+                modifier = Modifier.fillMaxSize(),
+                widthPx = 480,
+                heightPx = 270,
+                contentScale = ContentScale.Crop
+            )
+            if (video.durationMs > 0L) {
+                Text(
+                    historyDuration(video.durationMs),
+                    color = Color.White,
+                    style = MaterialTheme.typography.labelSmall,
+                    modifier = Modifier.align(Alignment.BottomEnd).padding(5.dp).background(Color.Black.copy(alpha = 0.8f), RoundedCornerShape(4.dp)).padding(horizontal = 4.dp, vertical = 2.dp)
+                )
+            }
+            if (video.durationMs > 0L && video.resumePositionMs > 0L) {
+                LinearProgressIndicator(
+                    progress = { (video.resumePositionMs.toFloat() / video.durationMs.toFloat()).coerceIn(0f, 1f) },
+                    modifier = Modifier.align(Alignment.BottomCenter).fillMaxWidth().height(3.dp)
+                )
+            }
+        }
+        Column(modifier = Modifier.weight(1f).padding(start = 12.dp)) {
+            Text(video.title, maxLines = 3, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.SemiBold)
+            Text(
+                video.channelTitle,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.padding(top = 4.dp)
+            )
+            if (video.resumePositionMs > 0L) {
+                Text(
+                    "Continuar en ${historyDuration(video.resumePositionMs)}",
+                    color = MaterialTheme.colorScheme.primary,
+                    style = MaterialTheme.typography.labelMedium,
+                    modifier = Modifier.padding(top = 5.dp)
+                )
+            }
+        }
+        Box {
+            IconButton(onClick = { menu = true }) { Icon(Icons.Default.MoreVert, contentDescription = "Opciones") }
+            DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                DropdownMenuItem(
+                    text = { Text("Eliminar del historial") },
+                    leadingIcon = { Icon(Icons.Default.Delete, contentDescription = null) },
+                    onClick = { menu = false; onRemove() }
+                )
+            }
+        }
+    }
+}
+
+private fun historyDayLabel(video: VideoItem): String {
+    val time = video.watchedAtMs
+    if (time <= 0L) return "Anteriores"
+    val now = Calendar.getInstance()
+    val watched = Calendar.getInstance().apply { timeInMillis = time }
+    val nowDay = now.get(Calendar.DAY_OF_YEAR)
+    val watchedDay = watched.get(Calendar.DAY_OF_YEAR)
+    val sameYear = now.get(Calendar.YEAR) == watched.get(Calendar.YEAR)
+    return when {
+        sameYear && nowDay == watchedDay -> "Hoy"
+        sameYear && nowDay - watchedDay == 1 -> "Ayer"
+        else -> "Anteriores"
+    }
+}
+
+private fun historyDuration(milliseconds: Long): String {
+    val total = milliseconds.coerceAtLeast(0L) / 1000L
+    val hours = total / 3600L
+    val minutes = (total % 3600L) / 60L
+    val seconds = total % 60L
+    return if (hours > 0L) "%d:%02d:%02d".format(hours, minutes, seconds) else "%d:%02d".format(minutes, seconds)
+}
+
+private fun VideoItem.looksLikePodcastForLibrary(): Boolean {
+    val text = "$title $description $channelTitle".lowercase()
+    return listOf("podcast", "entrevista", "episodio", "conversación", "conversacion").any { it in text }
+}
+
+private fun VideoItem.looksLikeMusicForLibrary(): Boolean {
+    val text = "$title $description $channelTitle".lowercase()
+    return listOf("music", "música", "musica", "song", "lyrics", "audio", "rap", "mix", "nightcore").any { it in text }
 }
 
 private enum class SubscriptionMediaFilter { ALL, VIDEOS, SHORTS }

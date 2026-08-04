@@ -1,34 +1,46 @@
-# Geo Videos V21 — reconstrucción ligera
+# Geo Videos V41
 
-Esta versión reemplaza en tiempo de ejecución las tres pantallas que más carga producían: Principal, Shorts y Reproductor.
+Versión centrada en música en segundo plano, Geo Mix, reproducción automática e historial, conservando las mejoras del reproductor V40.
 
-## Cambios de rendimiento
+## Música y reproducción continua
 
-- Principal nuevo y más simple, con un máximo visible controlado y carga manual por páginas.
-- Carrusel de Shorts limitado y miniaturas solicitadas al tamaño real.
-- Shorts con una sola superficie de video activa; las páginas vecinas muestran solo miniatura.
-- Sin barra de progreso Compose en Shorts.
-- Sin precarga automática de múltiples transmisiones.
-- Reproductor nuevo y más pequeño, basado en controles nativos de Media3.
-- La pantalla anterior deja de dibujarse detrás del reproductor expandido.
-- Arrastrar el área del video hacia abajo minimiza el reproductor.
-- Relacionados limitados a 12 elementos visibles y carga manual.
-- El estado del progreso se consulta con menor frecuencia.
-- Máximo de elementos remotos en memoria reducido de 50 a 24.
-- Lotes iniciales de suscripciones reducidos para no saturar red, CPU ni memoria.
-- Código antiguo de Home, Shorts y reproductor retirado de `GeoVideosApp.kt` para reducir el tamaño de la clase principal.
+- Botón visible **Reproducir música** dentro del reproductor.
+- En modo música se solicita una pista de audio compatible, evitando mantener el video activo innecesariamente.
+- El audio continúa mediante el servicio multimedia al salir de Geo Videos o apagar la pantalla.
+- La notificación conserva los controles Anterior, Reproducir/Pausar y Siguiente cuando existe una cola disponible.
+- Al volver a modo video se conserva la posición de reproducción.
+
+## Geo Mix y reproducción automática
+
+- Acción **Geo Mix** y tarjeta visible antes de los videos relacionados.
+- Cola de hasta 20 contenidos relacionados, sin duplicar el video actual.
+- Geo Mix activa la reproducción continua y desactiva la repetición del mismo video.
+- Interruptor **Reproducción automática ON/OFF** dentro de la página del reproductor.
+- El botón Siguiente funciona con la misma cola en el reproductor y en la notificación.
+
+## Ventanas de reproducción
+
+- Minirreproductor dentro de Geo Videos.
+- Picture-in-Picture sobre otras aplicaciones durante la reproducción de video, en Android compatible.
+- El modo música continúa en segundo plano sin forzar una ventana flotante de video.
+- Pantalla completa horizontal estable y controles mediante iconos.
+
+## Historial
+
+- Buscador visible permanentemente.
+- Filtros Todo, Videos, Shorts, Podcasts y Música.
+- Orden por reproducción más reciente, agrupación por fecha, progreso y eliminación individual.
+- El historial se llena con lo reproducido dentro de Geo Videos; no importa automáticamente el historial privado de YouTube.
 
 ## Funciones conservadas
 
-- inicio de sesión y OAuth
-- paquete y firma
-- Media3 en servicio
-- Principal, Shorts, Buscar, Colección y Cuenta
-- Me gusta local, No me gusta local, Compartir y Ver después
-- videos relacionados
+- Calidades reales disponibles y preferencia persistente.
+- Descargas HD con tamaño aproximado y unión de video y audio en un único archivo final.
+- Principal actualizable, feed variado de Shorts, canales completos, reproducción en segundo plano y cola multimedia.
+- No se modificaron el acceso de Google, la sesión guardada, la huella, el paquete ni la firma de la aplicación respecto de V40.
 
 ## Compilación
 
-El workflow de GitHub compila la variante `release`.
+El workflow de GitHub Actions compila la variante `release`.
 
-No fue posible ejecutar una compilación Android completa en este entorno porque no puede descargar Gradle ni dependencias externas. La validación definitiva debe realizarse en GitHub Actions y en el teléfono.
+No fue posible ejecutar la compilación Android completa en este entorno porque no pudo resolverse `services.gradle.org` para descargar Gradle 8.13. La validación definitiva debe realizarse en GitHub Actions y en un teléfono Android.

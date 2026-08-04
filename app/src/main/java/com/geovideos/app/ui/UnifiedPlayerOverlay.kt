@@ -35,6 +35,11 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.AspectRatio
+import androidx.compose.material.icons.filled.Fullscreen
+import androidx.compose.material.icons.filled.FullscreenExit
+import androidx.compose.material.icons.filled.MusicNote
+import androidx.compose.material.icons.filled.PictureInPictureAlt
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.ErrorOutline
@@ -70,6 +75,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.zIndex
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
@@ -116,6 +122,7 @@ internal fun UnifiedPlayerOverlay(
     isDisliked: Boolean,
     autoplay: Boolean,
     dataSaver: Boolean,
+    onAutoplayChange: (Boolean) -> Unit,
     details: VideoDetails?,
     detailsLoading: Boolean,
     relatedVideos: List<VideoItem>,
@@ -144,6 +151,7 @@ internal fun UnifiedPlayerOverlay(
     val scope = rememberCoroutineScope()
     val density = LocalDensity.current
     val preferredQuality by playerConnection.preferredQualityHeight.collectAsStateWithLifecycle()
+    val audioOnly by playerConnection.audioOnlyMode.collectAsStateWithLifecycle()
 
     var fullscreen by rememberSaveable(video.id) { mutableStateOf(false) }
     var fillVideo by rememberSaveable(video.id) { mutableStateOf(false) }
@@ -161,6 +169,7 @@ internal fun UnifiedPlayerOverlay(
     var transition by remember(video.id) { mutableFloatStateOf(if (expanded) 0f else 1f) }
     var dragging by remember(video.id) { mutableStateOf(false) }
     var settling by remember(video.id) { mutableStateOf(false) }
+    var mixEnabled by rememberSaveable { mutableStateOf(false) }
 
     val description = details?.description.orEmpty().ifBlank { video.description }
     val channelAvatar = details?.channelThumbnailUrl.orEmpty().ifBlank { video.channelThumbnailUrl }
@@ -168,9 +177,9 @@ internal fun UnifiedPlayerOverlay(
     val related = remember(video.id, relatedVideos) { relatedVideos.distinctBy { it.id }.take(30) }
     val mainActivity = activity as? MainActivity
 
-    LaunchedEffect(playback.isPlaying, playback.currentVideoId, video.id) {
+    LaunchedEffect(playback.isPlaying, playback.currentVideoId, video.id, audioOnly) {
         mainActivity?.setVideoPictureInPictureEnabled(
-            playback.isPlaying && playback.currentVideoId == video.id
+            playback.isPlaying && playback.currentVideoId == video.id && !audioOnly
         )
     }
     DisposableEffect(mainActivity, video.id) {
@@ -200,6 +209,21 @@ internal fun UnifiedPlayerOverlay(
                     heightPx = 360,
                     contentScale = ContentScale.Fit
                 )
+            }
+            if (audioOnly) {
+                Surface(
+                    modifier = Modifier.align(Alignment.Center),
+                    color = Color.Black.copy(alpha = 0.72f),
+                    shape = RoundedCornerShape(24.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(Icons.Default.MusicNote, contentDescription = null, tint = Color.White)
+                        Text("Modo música", color = Color.White, modifier = Modifier.padding(start = 8.dp))
+                    }
+                }
             }
         }
         return
@@ -370,6 +394,10 @@ internal fun UnifiedPlayerOverlay(
         val current = activity ?: return@LaunchedEffect
         val insets = WindowInsetsControllerCompat(current.window, current.window.decorView)
         if (fullscreen) {
+            transition = 0f
+            dragging = false
+            settling = false
+            onExpand()
             current.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
             WindowCompat.setDecorFitsSystemWindows(current.window, false)
             insets.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
@@ -400,10 +428,12 @@ internal fun UnifiedPlayerOverlay(
         val screenWidthPx = with(density) { maxWidth.toPx() }
         val screenHeightPx = with(density) { availableMaxHeight.toPx() }
         val fullPlayerHeightPx = screenWidthPx * 9f / 16f
-        val miniWidthPx = with(density) { 128.dp.toPx() }
+        val miniWidthPx = minOf(screenWidthPx * 0.50f, with(density) { 210.dp.toPx() })
         val miniHeightPx = miniWidthPx * 9f / 16f
-        val miniBottomClearancePx = with(density) { 78.dp.toPx() }
-        val miniTopPx = (screenHeightPx - miniBottomClearancePx - miniHeightPx).coerceAtLeast(1f)
+        val miniBottomClearancePx = with(density) { 84.dp.toPx() }
+        val miniMarginPx = with(density) { 10.dp.toPx() }
+        val miniLeftPx = (screenWidthPx - miniWidthPx - miniMarginPx).coerceAtLeast(0f)
+        val miniTopPx = (screenHeightPx - miniBottomClearancePx - miniHeightPx - miniMarginPx).coerceAtLeast(1f)
         val miniScale = (miniWidthPx / screenWidthPx).coerceIn(0.18f, 1f)
         val velocityThresholdPx = with(density) { 920.dp.toPx() }
         val p = transition.coerceIn(0f, 1f)
@@ -454,7 +484,10 @@ internal fun UnifiedPlayerOverlay(
                         description = description,
                         channelAvatar = channelAvatar,
                         publishedAt = published,
-                        qualityLabel = preferredQuality?.let { "${it}p" } ?: "Calidad"
+                        qualityLabel = preferredQuality?.let { "${it}p" } ?: "Calidad",
+                        audioOnly = audioOnly,
+                        mixEnabled = mixEnabled,
+                        autoplay = autoplay
                     ),
                     related = related,
                     relatedLoading = relatedLoading || detailsLoading,
@@ -469,6 +502,33 @@ internal fun UnifiedPlayerOverlay(
                         showPlayerSettings = true
                     },
                     onDownload = { showDownloadSheet = true },
+                    onToggleAudioOnly = {
+                        playerConnection.setAudioOnly(
+                            video = video,
+                            enabled = !audioOnly,
+                            autoplay = autoplay,
+                            dataSaver = dataSaver
+                        )
+                        onMessage(
+                            if (audioOnly) "Modo video activado." else "Modo música activado. El audio seguirá en segundo plano."
+                        )
+                    },
+                    onToggleMix = {
+                        mixEnabled = !mixEnabled
+                        if (mixEnabled) {
+                            if (!autoplay) onAutoplayChange(true)
+                            playerConnection.setRepeat(false)
+                            playerConnection.updateQueue(video, related, dataSaver)
+                            onMessage("Geo Mix activado con videos relacionados.")
+                        } else {
+                            if (autoplay) onAutoplayChange(false)
+                            onMessage("Geo Mix desactivado.")
+                        }
+                    },
+                    onAutoplayChange = { enabled ->
+                        if (!enabled) mixEnabled = false
+                        onAutoplayChange(enabled)
+                    },
                     onOpenChannel = onOpenChannel,
                     onPlayRelated = onPlayRelated,
                     onSaveRelated = onWatchLaterRelated,
@@ -479,91 +539,73 @@ internal fun UnifiedPlayerOverlay(
 
         val miniVisible = !fullscreen && (p > 0.82f || (!expanded && !dragging))
         if (miniVisible) {
-            Surface(
+            Box(
                 modifier = Modifier
-                    .offset { IntOffset(0, miniTopPx.roundToInt()) }
-                    .fillMaxWidth()
+                    .offset { IntOffset(miniLeftPx.roundToInt(), miniTopPx.roundToInt()) }
+                    .width(with(density) { miniWidthPx.toDp() })
                     .height(with(density) { miniHeightPx.toDp() })
+                    .zIndex(70f)
                     .graphicsLayer {
                         alpha = ((p - 0.82f) / 0.18f).coerceIn(0f, 1f)
                     }
-                    .then(dragModifier),
-                color = MaterialTheme.colorScheme.surface,
-                tonalElevation = 6.dp,
-                shadowElevation = 6.dp
+                    .then(dragModifier)
+                    .clickable { settle(0f, fast = true) }
             ) {
-                Row(
+                Surface(
                     modifier = Modifier.fillMaxSize(),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Spacer(Modifier.width(with(density) { miniWidthPx.toDp() }))
-                    Column(
-                        modifier = Modifier
-                            .weight(1f)
-                            .clickable { settle(0f, fast = true) }
-                            .padding(horizontal = 10.dp),
-                        verticalArrangement = Arrangement.Center
-                    ) {
-                        Text(
-                            video.title,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            fontWeight = FontWeight.SemiBold
-                        )
-                        Text(
-                            video.channelTitle,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                    IconButton(onClick = {
+                    color = Color.Transparent,
+                    shape = RoundedCornerShape(8.dp),
+                    shadowElevation = 8.dp
+                ) {}
+                IconButton(
+                    onClick = {
                         if (playback.isPlaying) playerConnection.pause() else playerConnection.play()
-                    }) {
-                        Icon(
-                            if (playback.isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
-                            if (playback.isPlaying) "Pausar" else "Reproducir"
-                        )
-                    }
-                    IconButton(onClick = {
-                        saveProgress()
-                        onClose()
-                    }) {
-                        Icon(Icons.Default.Close, "Cerrar")
-                    }
-                }
-            }
-
-            if (progressState.durationMs > 0L) {
-                LinearProgressIndicator(
-                    progress = {
-                        (progressState.positionMs.toFloat() / progressState.durationMs.toFloat())
-                            .coerceIn(0f, 1f)
                     },
                     modifier = Modifier
-                        .offset {
-                            IntOffset(
-                                0,
-                                (miniTopPx + miniHeightPx - with(density) { 3.dp.toPx() }).roundToInt()
-                            )
-                        }
-                        .fillMaxWidth()
-                        .height(3.dp)
-                        .graphicsLayer {
-                            alpha = ((p - 0.82f) / 0.18f).coerceIn(0f, 1f)
-                        }
-                )
+                        .align(Alignment.TopStart)
+                        .padding(2.dp)
+                        .size(38.dp)
+                        .background(Color.Black.copy(alpha = 0.58f), CircleShape)
+                ) {
+                    Icon(
+                        if (playback.isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
+                        contentDescription = if (playback.isPlaying) "Pausar" else "Reproducir",
+                        tint = Color.White
+                    )
+                }
+                IconButton(
+                    onClick = {
+                        saveProgress()
+                        onClose()
+                    },
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(2.dp)
+                        .size(38.dp)
+                        .background(Color.Black.copy(alpha = 0.58f), CircleShape)
+                ) {
+                    Icon(Icons.Default.Close, contentDescription = "Cerrar", tint = Color.White)
+                }
+                if (progressState.durationMs > 0L) {
+                    LinearProgressIndicator(
+                        progress = {
+                            (progressState.positionMs.toFloat() / progressState.durationMs.toFloat())
+                                .coerceIn(0f, 1f)
+                        },
+                        modifier = Modifier.align(Alignment.BottomCenter).fillMaxWidth().height(3.dp)
+                    )
+                }
             }
         }
 
         val playerLayerModifier = if (fullscreen) {
-            Modifier.fillMaxSize()
+            Modifier.fillMaxSize().zIndex(50f)
         } else {
             Modifier
                 .width(maxWidth)
                 .height(with(density) { fullPlayerHeightPx.toDp() })
                 .graphicsLayer {
+                    translationX = miniLeftPx * p
                     translationY = miniTopPx * p
                     scaleX = 1f - ((1f - miniScale) * p)
                     scaleY = 1f - ((1f - miniScale) * p)
@@ -582,7 +624,7 @@ internal fun UnifiedPlayerOverlay(
         Box(
             modifier = playerLayerModifier
                 .background(Color.Black)
-                .then(dragModifier)
+                .then(if (fullscreen) Modifier else dragModifier)
                 .clickable(enabled = !fullscreen && p >= 0.98f && !dragging && !settling) {
                     settle(0f, fast = true)
                 }
@@ -617,44 +659,59 @@ internal fun UnifiedPlayerOverlay(
                     }
                 )
 
+                if (audioOnly && (fullscreen || (p <= 0.01f && !dragging && !settling))) {
+                    Surface(
+                        modifier = Modifier.align(Alignment.TopStart).padding(10.dp),
+                        color = Color.Black.copy(alpha = 0.72f),
+                        shape = RoundedCornerShape(18.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(Icons.Default.MusicNote, contentDescription = null, tint = Color.White, modifier = Modifier.size(18.dp))
+                            Text("Modo música", color = Color.White, modifier = Modifier.padding(start = 7.dp))
+                        }
+                    }
+                }
+
                 if (
                     playerControlsVisible &&
                     (fullscreen || (p <= 0.01f && !dragging && !settling))
                 ) {
                     Row(
                         modifier = Modifier
-                            .align(Alignment.TopEnd)
-                            .padding(6.dp),
-                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                            .align(Alignment.BottomEnd)
+                            .padding(end = 8.dp, bottom = 42.dp),
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Surface(
-                            color = Color.Black.copy(alpha = 0.58f),
-                            shape = RoundedCornerShape(8.dp)
+                        PlayerControlIconButton(
+                            onClick = { fillVideo = !fillVideo },
+                            contentDescription = if (fillVideo) "Ajustar video" else "Llenar pantalla"
                         ) {
-                            TextButton(onClick = { fillVideo = !fillVideo }) {
-                                Text(if (fillVideo) "Ajustar" else "Llenar", color = Color.White)
-                            }
+                            Icon(Icons.Default.AspectRatio, contentDescription = null, tint = Color.White)
                         }
-                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                            Surface(
-                                color = Color.Black.copy(alpha = 0.58f),
-                                shape = RoundedCornerShape(8.dp)
-                            ) {
-                                TextButton(onClick = {
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && !fullscreen && !audioOnly) {
+                            PlayerControlIconButton(
+                                onClick = {
                                     mainActivity?.setVideoPictureInPictureEnabled(true)
                                     mainActivity?.enterVideoPictureInPicture()
-                                }) {
-                                    Text("Ventana", color = Color.White)
-                                }
+                                },
+                                contentDescription = "Ventana flotante"
+                            ) {
+                                Icon(Icons.Default.PictureInPictureAlt, contentDescription = null, tint = Color.White)
                             }
                         }
-                        Surface(
-                            color = Color.Black.copy(alpha = 0.58f),
-                            shape = RoundedCornerShape(8.dp)
+                        PlayerControlIconButton(
+                            onClick = { fullscreen = !fullscreen },
+                            contentDescription = if (fullscreen) "Salir de pantalla completa" else "Pantalla completa"
                         ) {
-                            TextButton(onClick = { fullscreen = !fullscreen }) {
-                                Text(if (fullscreen) "Salir" else "Ampliar", color = Color.White)
-                            }
+                            Icon(
+                                if (fullscreen) Icons.Default.FullscreenExit else Icons.Default.Fullscreen,
+                                contentDescription = null,
+                                tint = Color.White
+                            )
                         }
                     }
                 }
@@ -823,6 +880,24 @@ internal fun UnifiedPlayerOverlay(
         }
     }
 
+}
+
+@Composable
+private fun PlayerControlIconButton(
+    onClick: () -> Unit,
+    contentDescription: String,
+    content: @Composable () -> Unit
+) {
+    Surface(
+        color = Color.Black.copy(alpha = 0.62f),
+        shape = RoundedCornerShape(6.dp)
+    ) {
+        IconButton(onClick = onClick, modifier = Modifier.size(40.dp)) {
+            Box(contentAlignment = Alignment.Center) {
+                content()
+            }
+        }
+    }
 }
 
 @Composable
