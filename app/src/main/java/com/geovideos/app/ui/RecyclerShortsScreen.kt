@@ -9,6 +9,7 @@ import android.graphics.drawable.ColorDrawable
 import android.graphics.drawable.GradientDrawable
 import android.os.Build
 import android.text.TextUtils
+import android.text.format.Formatter
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.LayoutInflater
@@ -119,7 +120,7 @@ internal fun RecyclerShortsScreen(
         qualityError = null
         qualityLoading = true
         scope.launch {
-            runCatching { playerConnection.streamOptions(video) }
+            runCatching { playerConnection.streamOptions(video, includeDownloadSizes = false) }
                 .onSuccess { qualityOptions = it }
                 .onFailure { qualityError = "No se pudieron obtener las calidades de este Short." }
             qualityLoading = false
@@ -153,26 +154,30 @@ internal fun RecyclerShortsScreen(
             context = context,
             video = video,
             option = option,
-            relativeFolder = "GeoVideos/Shorts",
-            onCompleted = { completedId, localUri ->
-                onRegisterDownload("${video.title} (${option.label})", localUri, completedId)
-                onMessage("Short descargado en ${option.height}p.")
-            },
-            onFailed = onMessage
+            relativeFolder = "GeoVideos/Shorts"
         )
-        if (downloadId >= 0L) {
+        if (downloadId < -1L) {
+            onRegisterDownload(
+                "${video.title} (${option.label})",
+                "geo-download://$downloadId",
+                downloadId
+            )
             downloadVideo = null
             onMessage(
                 if (option.requiresMux) {
-                    "Descargando el Short en ${option.height}p y uniendo el audio..."
+                    "Descarga del Short en ${option.height}p iniciada. Se guardará unido con audio."
                 } else {
-                    "Descargando el Short en ${option.height}p..."
+                    "Descarga del Short en ${option.height}p iniciada."
                 }
             )
         } else {
             onMessage("No se pudo iniciar la descarga del Short.")
         }
     }
+
+    val notificationPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { }
 
     val storagePermissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
@@ -187,6 +192,13 @@ internal fun RecyclerShortsScreen(
     }
 
     fun startShortDownload(video: VideoItem, option: DownloadStreamOption) {
+        if (
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) !=
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
         val needsPermission = Build.VERSION.SDK_INT <= Build.VERSION_CODES.P &&
             ContextCompat.checkSelfPermission(
                 context,
@@ -460,6 +472,10 @@ private fun ShortDownloadRow(
     selected: Boolean,
     onClick: () -> Unit
 ) {
+    val context = LocalContext.current
+    val estimatedSize = option.estimatedSizeBytes
+        .takeIf { it > 0L }
+        ?.let { Formatter.formatShortFileSize(context, it) }
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -471,7 +487,10 @@ private fun ShortDownloadRow(
         Column(modifier = Modifier.padding(start = 10.dp)) {
             Text("${option.height}p")
             Text(
-                if (option.requiresMux) "Video HD + audio" else "Video con audio",
+                buildString {
+                    append(if (option.requiresMux) "Video + audio · se unirán" else "Video con audio")
+                    estimatedSize?.let { append(" · aprox. $it") }
+                },
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )

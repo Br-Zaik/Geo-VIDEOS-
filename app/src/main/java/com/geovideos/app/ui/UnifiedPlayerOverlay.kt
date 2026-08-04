@@ -82,6 +82,7 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.media3.ui.AspectRatioFrameLayout
+import com.geovideos.app.MainActivity
 import com.geovideos.app.data.ChannelItem
 import com.geovideos.app.data.VideoDetails
 import com.geovideos.app.data.VideoItem
@@ -109,6 +110,7 @@ internal fun UnifiedPlayerOverlay(
     video: VideoItem,
     expanded: Boolean,
     playerConnection: GeoPlayerConnection,
+    isInPictureInPictureMode: Boolean = false,
     isWatchLater: Boolean,
     isLiked: Boolean,
     isDisliked: Boolean,
@@ -144,11 +146,14 @@ internal fun UnifiedPlayerOverlay(
     val preferredQuality by playerConnection.preferredQualityHeight.collectAsStateWithLifecycle()
 
     var fullscreen by rememberSaveable(video.id) { mutableStateOf(false) }
+    var fillVideo by rememberSaveable(video.id) { mutableStateOf(false) }
+    var playerControlsVisible by remember(video.id) { mutableStateOf(true) }
     var showPlayerSettings by rememberSaveable(video.id) { mutableStateOf(false) }
     var playerSettingsPage by rememberSaveable(video.id) { mutableStateOf(PlayerSettingsPage.ROOT) }
     var selectedSpeed by rememberSaveable(video.id) { mutableStateOf(1f) }
     var showDownloadSheet by rememberSaveable(video.id) { mutableStateOf(false) }
     var streamOptions by remember(video.id) { mutableStateOf<StreamOptions?>(null) }
+    var streamOptionsHaveSizes by remember(video.id) { mutableStateOf(false) }
     var streamOptionsLoading by remember(video.id) { mutableStateOf(false) }
     var streamOptionsError by remember(video.id) { mutableStateOf<String?>(null) }
     var selectedDownloadHeight by rememberSaveable(video.id) { mutableStateOf<Int?>(null) }
@@ -161,28 +166,73 @@ internal fun UnifiedPlayerOverlay(
     val channelAvatar = details?.channelThumbnailUrl.orEmpty().ifBlank { video.channelThumbnailUrl }
     val published = details?.publishedAt.orEmpty().ifBlank { video.publishedAt }
     val related = remember(video.id, relatedVideos) { relatedVideos.distinctBy { it.id }.take(30) }
+    val mainActivity = activity as? MainActivity
+
+    LaunchedEffect(playback.isPlaying, playback.currentVideoId, video.id) {
+        mainActivity?.setVideoPictureInPictureEnabled(
+            playback.isPlaying && playback.currentVideoId == video.id
+        )
+    }
+    DisposableEffect(mainActivity, video.id) {
+        onDispose { mainActivity?.setVideoPictureInPictureEnabled(false) }
+    }
+
+    if (isInPictureInPictureMode) {
+        Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
+            if (controller != null && controller?.currentMediaItem?.mediaId == video.id) {
+                LitePlayerView(
+                    controller = controller!!,
+                    modifier = Modifier.fillMaxSize(),
+                    useController = false,
+                    resizeMode = if (fillVideo) {
+                        AspectRatioFrameLayout.RESIZE_MODE_ZOOM
+                    } else {
+                        AspectRatioFrameLayout.RESIZE_MODE_FIT
+                    },
+                    useTextureView = true
+                )
+            } else {
+                LiteThumbnail(
+                    url = video.thumbnailUrl,
+                    description = video.title,
+                    modifier = Modifier.fillMaxSize(),
+                    widthPx = 640,
+                    heightPx = 360,
+                    contentScale = ContentScale.Fit
+                )
+            }
+        }
+        return
+    }
 
     fun enqueueOption(option: DownloadStreamOption) {
         val downloadId = enqueueResolvedMediaDownload(
             context = context,
             video = video,
-            option = option,
-            onCompleted = { completedId, localUri ->
-                onRegisterDownload("${video.title} (${option.label})", localUri, completedId)
-                onMessage("Descarga completada en ${option.height}p.")
-            },
-            onFailed = { message -> onMessage(message) }
+            option = option
         )
-        if (downloadId >= 0L) {
+        if (downloadId < -1L) {
+            onRegisterDownload(
+                "${video.title} (${option.label})",
+                "geo-download://$downloadId",
+                downloadId
+            )
             showDownloadSheet = false
             onMessage(
-                if (option.requiresMux) "Descargando ${option.height}p y uniendo el audio..."
-                else "Descargando ${option.height}p..."
+                if (option.requiresMux) {
+                    "Descarga ${option.height}p iniciada. Al final recibirás un solo video con audio."
+                } else {
+                    "Descarga ${option.height}p iniciada."
+                }
             )
         } else {
             onMessage("No se pudo iniciar la descarga de esa calidad.")
         }
     }
+
+    val notificationPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { }
 
     val storagePermissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
@@ -197,6 +247,13 @@ internal fun UnifiedPlayerOverlay(
     }
 
     val startDownload: (DownloadStreamOption) -> Unit = { option ->
+        if (
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) !=
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
         val needsPermission = Build.VERSION.SDK_INT <= Build.VERSION_CODES.P &&
             ContextCompat.checkSelfPermission(
                 context,
@@ -211,14 +268,22 @@ internal fun UnifiedPlayerOverlay(
     }
 
     LaunchedEffect(showPlayerSettings, showDownloadSheet, video.id) {
-        if (!(showPlayerSettings || showDownloadSheet) || streamOptions != null || streamOptionsLoading) {
-            return@LaunchedEffect
-        }
+        val dialogOpen = showPlayerSettings || showDownloadSheet
+        val needsDownloadSizes = showDownloadSheet
+        val alreadyLoaded = streamOptions != null && (!needsDownloadSizes || streamOptionsHaveSizes)
+        if (!dialogOpen || alreadyLoaded || streamOptionsLoading) return@LaunchedEffect
+
         streamOptionsLoading = true
         streamOptionsError = null
-        runCatching { playerConnection.streamOptions(video) }
+        runCatching {
+            playerConnection.streamOptions(
+                video = video,
+                includeDownloadSizes = needsDownloadSizes
+            )
+        }
             .onSuccess { options ->
                 streamOptions = options
+                streamOptionsHaveSizes = needsDownloadSizes
                 if (selectedDownloadHeight == null) {
                     selectedDownloadHeight = options.downloads
                         .firstOrNull { it.height == preferredQuality }
@@ -541,13 +606,58 @@ internal fun UnifiedPlayerOverlay(
                     controller = controller!!,
                     modifier = Modifier.fillMaxSize(),
                     useController = fullscreen || (p <= 0.01f && !dragging && !settling),
-                    resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT,
+                    resizeMode = if (fillVideo) AspectRatioFrameLayout.RESIZE_MODE_ZOOM else AspectRatioFrameLayout.RESIZE_MODE_FIT,
                     useTextureView = true,
                     onSettingsClick = {
                         playerSettingsPage = PlayerSettingsPage.ROOT
                         showPlayerSettings = true
+                    },
+                    onControllerVisibilityChanged = { visible ->
+                        playerControlsVisible = visible
                     }
                 )
+
+                if (
+                    playerControlsVisible &&
+                    (fullscreen || (p <= 0.01f && !dragging && !settling))
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .align(Alignment.TopEnd)
+                            .padding(6.dp),
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Surface(
+                            color = Color.Black.copy(alpha = 0.58f),
+                            shape = RoundedCornerShape(8.dp)
+                        ) {
+                            TextButton(onClick = { fillVideo = !fillVideo }) {
+                                Text(if (fillVideo) "Ajustar" else "Llenar", color = Color.White)
+                            }
+                        }
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                            Surface(
+                                color = Color.Black.copy(alpha = 0.58f),
+                                shape = RoundedCornerShape(8.dp)
+                            ) {
+                                TextButton(onClick = {
+                                    mainActivity?.setVideoPictureInPictureEnabled(true)
+                                    mainActivity?.enterVideoPictureInPicture()
+                                }) {
+                                    Text("Ventana", color = Color.White)
+                                }
+                            }
+                        }
+                        Surface(
+                            color = Color.Black.copy(alpha = 0.58f),
+                            shape = RoundedCornerShape(8.dp)
+                        ) {
+                            TextButton(onClick = { fullscreen = !fullscreen }) {
+                                Text(if (fullscreen) "Salir" else "Ampliar", color = Color.White)
+                            }
+                        }
+                    }
+                }
             }
 
             if ((playback.connecting || playback.resolving) && playback.error == null) {
@@ -909,15 +1019,30 @@ private fun DownloadQualityChoiceRow(
         Column(modifier = Modifier.weight(1f).padding(start = 14.dp)) {
             Text(option.label, fontWeight = FontWeight.SemiBold)
             Text(
-                if (option.requiresMux) {
-                    "Video + audio · se unirán · ${option.extension.uppercase()}"
-                } else {
-                    "Audio incluido · ${option.extension.uppercase()}"
+                buildString {
+                    append(
+                        if (option.requiresMux) {
+                            "Video + audio · se unirán · ${option.extension.uppercase()}"
+                        } else {
+                            "Audio incluido · ${option.extension.uppercase()}"
+                        }
+                    )
+                    formatDownloadSize(option.estimatedSizeBytes)?.let { append(" · aprox. $it") }
                 },
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(top = 2.dp)
             )
         }
+    }
+}
+
+private fun formatDownloadSize(bytes: Long): String? {
+    if (bytes <= 0L) return null
+    val mb = bytes.toDouble() / (1024.0 * 1024.0)
+    return if (mb >= 1024.0) {
+        String.format(java.util.Locale.getDefault(), "%.2f GB", mb / 1024.0)
+    } else {
+        String.format(java.util.Locale.getDefault(), "%.1f MB", mb)
     }
 }

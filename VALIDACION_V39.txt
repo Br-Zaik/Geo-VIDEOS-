@@ -1,0 +1,31 @@
+VALIDACION V39 - REPRODUCTOR, CALIDADES Y DESCARGAS
+Fecha: 2026-08-04
+Version de la app: 34.0.0 (versionCode 340)
+
+ALCANCE IMPLEMENTADO
+1. Selector de calidades reales obtenidas de la fuente del video.
+2. Reproduccion exacta de la calidad elegida; para calidades adaptativas se reproducen video y audio juntos mediante Media3.
+3. Persistencia de la calidad preferida entre videos.
+4. Modo automatico, pantalla completa horizontal, ajuste/llenado y ventana Picture-in-Picture.
+5. Reproduccion en segundo plano mediante MediaSessionService, conservando posicion y controles multimedia.
+6. Descarga por calidad con tamano total aproximado cuando la fuente lo informa.
+7. Descarga de video y audio separados y union en un solo archivo final MP4 o WebM.
+8. Servicio de descarga en primer plano con progreso, velocidad, tiempo restante, pausa, continuacion y cancelacion.
+9. Reanudacion HTTP por rangos cuando el servidor mantiene valido el enlace temporal.
+10. Guardado final en Peliculas/GeoVideos y Peliculas/GeoVideos/Shorts.
+11. Eliminacion de archivos temporales despues de publicar el archivo final.
+12. Apertura del archivo descargado desde Coleccion > Descargas.
+
+PROTECCIONES DE ALCANCE
+- No se modificaron los metodos de autorizacion de Google.
+- No se modificaron el inicio de sesion, la huella, la cuenta ni la sesion guardada.
+- Los cambios se limitaron al reproductor, resolucion de streams, PiP y descargas.
+
+VALIDACIONES REALIZADAS EN ESTE ENTORNO
+- XML del proyecto analizado correctamente: sin errores de sintaxis.
+- Fuentes Kotlin revisadas con el compilador en modo de analisis sintactico: sin errores de parseo.
+- Integracion verificada entre Manifest, PlaybackService, servicio de descargas, FileProvider y pantallas Compose.
+- Integridad del ZIP debe verificarse despues de generarlo.
+
+LIMITACION DE LA VALIDACION
+La compilacion Android local no pudo completarse porque este entorno no pudo resolver services.gradle.org para descargar Gradle 8.13. El repositorio conserva el workflow de GitHub Actions que prepara Gradle 8.13 y ejecuta assembleDebug. La compilacion real y la prueba en telefono deben confirmarse con ese workflow antes de publicar la APK.

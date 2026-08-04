@@ -71,6 +71,7 @@ data class PlaybackUiState(
 
 class GeoPlayerConnection private constructor(context: Context) {
     private val appContext = context.applicationContext
+    private val playerPreferences = appContext.getSharedPreferences("geo_player_preferences", Context.MODE_PRIVATE)
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val controllerFuture = MediaController.Builder(
         appContext,
@@ -80,7 +81,9 @@ class GeoPlayerConnection private constructor(context: Context) {
     private val _controller = MutableStateFlow<MediaController?>(null)
     val controller: StateFlow<MediaController?> = _controller.asStateFlow()
 
-    private val _preferredQualityHeight = MutableStateFlow<Int?>(null)
+    private val _preferredQualityHeight = MutableStateFlow<Int?>(
+        playerPreferences.getInt(KEY_PREFERRED_QUALITY, 0).takeIf { it > 0 }
+    )
     val preferredQualityHeight: StateFlow<Int?> = _preferredQualityHeight.asStateFlow()
 
     private val _state = MutableStateFlow(PlaybackUiState())
@@ -223,6 +226,7 @@ class GeoPlayerConnection private constructor(context: Context) {
         controllerNow?.pause()
         currentVideo = video
         _preferredQualityHeight.value = preferredHeight
+        playerPreferences.edit().putInt(KEY_PREFERRED_QUALITY, preferredHeight ?: 0).apply()
         resolveJob?.cancel()
         requestSerial += 1L
         val requestId = requestSerial
@@ -250,25 +254,42 @@ class GeoPlayerConnection private constructor(context: Context) {
                         .setArtist(video.channelTitle)
                         .setArtworkUri(video.thumbnailUrl.takeIf { it.isNotBlank() }?.let(Uri::parse))
                         .build()
-                    val item = MediaItem.Builder()
-                        .setMediaId(video.id)
-                        .setUri(resolved.uri)
-                        .setMimeType(resolved.mimeType)
-                        .setMediaMetadata(metadata)
-                        .build()
                     val trackBuilder = controller.trackSelectionParameters
                         .buildUpon()
                         .clearVideoSizeConstraints()
-                    preferredHeight?.takeIf { it > 0 }?.let { exactHeight ->
-                        trackBuilder
-                            .setMinVideoSize(0, exactHeight)
-                            .setMaxVideoSize(Int.MAX_VALUE, exactHeight)
+                    if (!resolved.hasSeparateAudio) {
+                        preferredHeight?.takeIf { it > 0 }?.let { exactHeight ->
+                            trackBuilder
+                                .setMinVideoSize(0, exactHeight)
+                                .setMaxVideoSize(Int.MAX_VALUE, exactHeight)
+                        }
                     }
                     controller.setTrackSelectionParameters(trackBuilder.build())
                     controller.repeatMode = if (repeat) Player.REPEAT_MODE_ONE else Player.REPEAT_MODE_OFF
-                    controller.setMediaItem(item, video.resumePositionMs.coerceAtLeast(0L))
-                    controller.prepare()
-                    controller.playWhenReady = autoplay
+
+                    if (resolved.hasSeparateAudio) {
+                        PlaybackService.playResolved(
+                            context = appContext,
+                            videoId = video.id,
+                            title = video.title,
+                            artist = video.channelTitle,
+                            artwork = video.thumbnailUrl,
+                            resolved = resolved,
+                            positionMs = video.resumePositionMs,
+                            autoplay = autoplay,
+                            repeat = repeat
+                        )
+                    } else {
+                        val item = MediaItem.Builder()
+                            .setMediaId(video.id)
+                            .setUri(resolved.uri)
+                            .setMimeType(resolved.mimeType)
+                            .setMediaMetadata(metadata)
+                            .build()
+                        controller.setMediaItem(item, video.resumePositionMs.coerceAtLeast(0L))
+                        controller.prepare()
+                        controller.playWhenReady = autoplay
+                    }
                     _state.update { it.copy(resolving = false, error = null) }
                 }
             } catch (cancelled: CancellationException) {
@@ -285,7 +306,10 @@ class GeoPlayerConnection private constructor(context: Context) {
         }
     }
 
-    internal suspend fun streamOptions(video: VideoItem): StreamOptions = StreamResolver.options(video)
+    internal suspend fun streamOptions(
+        video: VideoItem,
+        includeDownloadSizes: Boolean = true
+    ): StreamOptions = StreamResolver.options(video, includeDownloadSizes)
 
     suspend fun isVerifiedShort(video: VideoItem): Boolean = StreamResolver.isVerifiedShort(video)
 
@@ -404,6 +428,8 @@ class GeoPlayerConnection private constructor(context: Context) {
     }
 
     companion object {
+        private const val KEY_PREFERRED_QUALITY = "preferred_quality_height"
+
         @Volatile
         private var instance: GeoPlayerConnection? = null
 

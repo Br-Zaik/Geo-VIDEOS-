@@ -49,7 +49,8 @@ internal fun LitePlayerView(
     useController: Boolean,
     resizeMode: Int = androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_FIT,
     useTextureView: Boolean = false,
-    onSettingsClick: (() -> Unit)? = null
+    onSettingsClick: (() -> Unit)? = null,
+    onControllerVisibilityChanged: ((Boolean) -> Unit)? = null
 ) {
     val attachedView = remember { arrayOfNulls<PlayerView>(1) }
     DisposableEffect(controller) {
@@ -84,6 +85,11 @@ internal fun LitePlayerView(
                 findViewById<View>(Media3UiR.id.exo_settings)?.setOnClickListener {
                     onSettingsClick?.invoke()
                 }
+                setControllerVisibilityListener(
+                    PlayerView.ControllerVisibilityListener { visibility ->
+                        onControllerVisibilityChanged?.invoke(visibility == View.VISIBLE)
+                    }
+                )
             }
         },
         update = { view ->
@@ -95,6 +101,11 @@ internal fun LitePlayerView(
             view.findViewById<View>(Media3UiR.id.exo_settings)?.setOnClickListener {
                 onSettingsClick?.invoke()
             }
+            view.setControllerVisibilityListener(
+                PlayerView.ControllerVisibilityListener { visibility ->
+                    onControllerVisibilityChanged?.invoke(visibility == View.VISIBLE)
+                }
+            )
         }
     )
 }

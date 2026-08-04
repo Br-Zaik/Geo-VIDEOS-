@@ -180,7 +180,13 @@ import com.geovideos.app.data.NotificationItem
 import com.geovideos.app.data.PlaylistItem
 import com.geovideos.app.data.VideoItem
 import com.geovideos.app.data.VideoDetails
+import com.geovideos.app.playback.GeoDownloadStage
 import com.geovideos.app.playback.GeoPlayerConnection
+import com.geovideos.app.playback.cancelResolvedMediaDownload
+import com.geovideos.app.playback.openResolvedMediaDownload
+import com.geovideos.app.playback.pauseResolvedMediaDownload
+import com.geovideos.app.playback.queryResolvedMediaDownload
+import com.geovideos.app.playback.resumeResolvedMediaDownload
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collect
 import kotlin.math.roundToInt
@@ -192,7 +198,8 @@ private const val DEV_SHA1 = "61:39:FF:D0:D5:6B:DC:06:FA:13:AD:3D:7A:88:93:9F:6D
 fun GeoVideosApp(
     viewModel: GeoVideosViewModel,
     onConnectGoogle: () -> Unit,
-    onSwitchGoogleAccount: (String) -> Unit
+    onSwitchGoogleAccount: (String) -> Unit,
+    isInPictureInPictureMode: Boolean = false
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val snackbar = remember { SnackbarHostState() }
@@ -297,6 +304,7 @@ fun GeoVideosApp(
                         video = selectedVideo,
                         expanded = state.playerExpanded,
                         playerConnection = playerConnection,
+                        isInPictureInPictureMode = isInPictureInPictureMode,
                         isWatchLater = state.watchLater.any { it.id == selectedVideo.id },
                         isLiked = selectedVideo.id in state.localLikedIds,
                         isDisliked = selectedVideo.id in state.localDislikedIds,
@@ -1954,7 +1962,9 @@ private data class PendingDownload(
 private data class DownloadStatusInfo(
     val label: String,
     val progress: Float?,
-    val completed: Boolean
+    val completed: Boolean,
+    val active: Boolean = false,
+    val canResume: Boolean = false
 )
 
 @Composable
@@ -1974,7 +1984,15 @@ private fun DownloadStatusCard(
         }
     }
 
-    OutlinedCard(modifier = Modifier.fillMaxWidth().clickable(onClick = onOpen)) {
+    OutlinedCard(
+        modifier = Modifier.fillMaxWidth().clickable {
+            if (video.downloadId < -1L && status.completed) {
+                if (!openResolvedMediaDownload(context, video.downloadId)) onOpen()
+            } else {
+                onOpen()
+            }
+        }
+    ) {
         Row(modifier = Modifier.fillMaxWidth().padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
             Icon(
                 if (status.completed) Icons.Default.DownloadDone else Icons.Default.Download,
@@ -1989,9 +2007,27 @@ private fun DownloadStatusCard(
                     LinearProgressIndicator(progress = { progress }, modifier = Modifier.fillMaxWidth().padding(top = 8.dp))
                 }
             }
+            if (video.downloadId < -1L && (status.active || status.canResume)) {
+                IconButton(onClick = {
+                    if (status.active) {
+                        pauseResolvedMediaDownload(context, video.downloadId)
+                    } else {
+                        resumeResolvedMediaDownload(context, video.downloadId)
+                    }
+                }) {
+                    Icon(
+                        if (status.active) Icons.Default.Pause else Icons.Default.Replay,
+                        if (status.active) "Pausar descarga" else "Continuar descarga"
+                    )
+                }
+            }
             IconButton(onClick = {
-                val manager = context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
-                if (video.downloadId >= 0L) manager.remove(video.downloadId)
+                if (video.downloadId < -1L) {
+                    cancelResolvedMediaDownload(context, video.downloadId, deletePublishedFile = true)
+                } else {
+                    val manager = context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
+                    if (video.downloadId >= 0L) manager.remove(video.downloadId)
+                }
                 onRemove()
             }) {
                 Icon(Icons.Default.Delete, "Eliminar descarga")
@@ -2079,6 +2115,42 @@ private fun enqueueDirectDownload(context: Context, title: String, url: String, 
 }
 
 private fun queryDownloadStatus(context: Context, downloadId: Long): DownloadStatusInfo {
+    if (downloadId < -1L) {
+        val status = queryResolvedMediaDownload(context, downloadId)
+            ?: return DownloadStatusInfo("No encontrada en el teléfono", null, false)
+        val percent = status.progress?.let { " ${(it * 100).toInt()}%" }.orEmpty()
+        val size = if (status.bytesDownloaded > 0L) {
+            val downloaded = formatDownloadBytes(status.bytesDownloaded)
+            val total = status.totalBytes.takeIf { it > 0L }?.let(::formatDownloadBytes)
+            if (total != null) " · $downloaded de $total" else " · $downloaded"
+        } else ""
+        val transfer = buildString {
+            if (status.speedBytesPerSecond > 0L) {
+                append(" · ${formatDownloadBytes(status.speedBytesPerSecond)}/s")
+            }
+            if (status.remainingTimeMs > 0L) {
+                append(" · ${formatRemainingDownloadTime(status.remainingTimeMs)}")
+            }
+        }
+        val label = when (status.stage) {
+            GeoDownloadStage.QUEUED -> "En cola"
+            GeoDownloadStage.VIDEO -> "Descargando video$percent$size$transfer"
+            GeoDownloadStage.AUDIO -> "Descargando audio$percent$size$transfer"
+            GeoDownloadStage.MERGING -> "Uniendo video y audio"
+            GeoDownloadStage.PUBLISHING -> "Guardando el archivo final"
+            GeoDownloadStage.PAUSED -> "Pausada$percent$size"
+            GeoDownloadStage.COMPLETED -> "Completada · toca para reproducir"
+            GeoDownloadStage.FAILED -> status.error ?: "Falló la descarga"
+            GeoDownloadStage.CANCELED -> "Cancelada"
+        }
+        return DownloadStatusInfo(
+            label = label,
+            progress = status.progress,
+            completed = status.stage == GeoDownloadStage.COMPLETED,
+            active = status.isActive,
+            canResume = status.stage == GeoDownloadStage.PAUSED || status.stage == GeoDownloadStage.FAILED
+        )
+    }
     if (downloadId < 0L) return DownloadStatusInfo("Registro antiguo", null, false)
     val manager = context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
     val cursor = runCatching { manager.query(DownloadManager.Query().setFilterById(downloadId)) }.getOrNull()
@@ -2093,7 +2165,7 @@ private fun queryDownloadStatus(context: Context, downloadId: Long): DownloadSta
             DownloadManager.STATUS_PENDING -> DownloadStatusInfo("En cola", progress, false)
             DownloadManager.STATUS_RUNNING -> {
                 val percent = progress?.let { value -> " ${(value * 100).toInt()}%" }.orEmpty()
-                DownloadStatusInfo("Descargando$percent", progress, false)
+                DownloadStatusInfo("Descargando$percent", progress, false, active = true)
             }
             DownloadManager.STATUS_PAUSED -> DownloadStatusInfo("Pausada por el sistema", progress, false)
             DownloadManager.STATUS_SUCCESSFUL -> DownloadStatusInfo("Completada · toca para abrir Descargas", 1f, true)
@@ -2101,6 +2173,22 @@ private fun queryDownloadStatus(context: Context, downloadId: Long): DownloadSta
             else -> DownloadStatusInfo("Estado desconocido", progress, false)
         }
     }
+}
+
+private fun formatDownloadBytes(bytes: Long): String {
+    val mb = bytes.toDouble() / (1024.0 * 1024.0)
+    return if (mb >= 1024.0) {
+        String.format(Locale.getDefault(), "%.2f GB", mb / 1024.0)
+    } else {
+        String.format(Locale.getDefault(), "%.1f MB", mb)
+    }
+}
+
+private fun formatRemainingDownloadTime(milliseconds: Long): String {
+    val seconds = (milliseconds / 1000L).coerceAtLeast(1L)
+    val minutes = seconds / 60L
+    val remainder = seconds % 60L
+    return if (minutes > 0L) "${minutes}m ${remainder}s" else "${remainder}s"
 }
 
 private fun openSystemDownloads(context: Context) {

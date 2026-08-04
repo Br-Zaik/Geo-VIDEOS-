@@ -1,12 +1,17 @@
 package com.geovideos.app
 
 import android.accounts.Account
+import android.app.PictureInPictureParams
+import android.content.res.Configuration
+import android.os.Build
 import android.os.Bundle
+import android.util.Rational
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.IntentSenderRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
+import androidx.compose.runtime.mutableStateOf
 import com.geovideos.app.ui.GeoVideosApp
 import com.geovideos.app.ui.GeoVideosViewModel
 import com.geovideos.app.ui.theme.GeoVideosTheme
@@ -17,6 +22,9 @@ import com.google.android.gms.common.api.ApiException
 import com.google.android.gms.common.api.Scope
 
 class MainActivity : ComponentActivity() {
+    private val inPictureInPictureState = mutableStateOf(false)
+    private var videoPictureInPictureEnabled = false
+
     private val viewModel: GeoVideosViewModel by viewModels()
 
     private val authorizationLauncher = registerForActivityResult(
@@ -42,7 +50,8 @@ class MainActivity : ComponentActivity() {
                 GeoVideosApp(
                     viewModel = viewModel,
                     onConnectGoogle = { requestGoogleAuthorization(allowResolution = true) },
-                    onSwitchGoogleAccount = ::switchGoogleAccount
+                    onSwitchGoogleAccount = ::switchGoogleAccount,
+                    isInPictureInPictureMode = inPictureInPictureState.value
                 )
             }
         }
@@ -53,6 +62,50 @@ class MainActivity : ComponentActivity() {
                 350
             )
         }
+    }
+
+    fun setVideoPictureInPictureEnabled(enabled: Boolean) {
+        videoPictureInPictureEnabled = enabled
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            setPictureInPictureParams(
+                PictureInPictureParams.Builder()
+                    .setAspectRatio(Rational(16, 9))
+                    .setAutoEnterEnabled(enabled)
+                    .setSeamlessResizeEnabled(true)
+                    .build()
+            )
+        }
+    }
+
+    fun enterVideoPictureInPicture(): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O || isInPictureInPictureMode) return false
+        return runCatching {
+            val builder = PictureInPictureParams.Builder()
+                .setAspectRatio(Rational(16, 9))
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                builder.setAutoEnterEnabled(videoPictureInPictureEnabled)
+                    .setSeamlessResizeEnabled(true)
+            }
+            enterPictureInPictureMode(builder.build())
+        }.getOrDefault(false)
+    }
+
+    override fun onUserLeaveHint() {
+        super.onUserLeaveHint()
+        if (
+            videoPictureInPictureEnabled &&
+            Build.VERSION.SDK_INT in Build.VERSION_CODES.O until Build.VERSION_CODES.S
+        ) {
+            enterVideoPictureInPicture()
+        }
+    }
+
+    override fun onPictureInPictureModeChanged(
+        isInPictureInPictureMode: Boolean,
+        newConfig: Configuration
+    ) {
+        super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
+        inPictureInPictureState.value = isInPictureInPictureMode
     }
 
     private fun requestGoogleAuthorization(allowResolution: Boolean) {
