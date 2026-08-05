@@ -183,6 +183,9 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
+    fun hasCachedGoogleAccount(): Boolean =
+        repository.hasConnectedAccount() && _uiState.value.profile != null
+
     fun beginAuthorization() {
         if (_uiState.value.profile == null) {
             _uiState.update { it.copy(authStatus = AuthStatus.CONNECTING, authError = "") }
