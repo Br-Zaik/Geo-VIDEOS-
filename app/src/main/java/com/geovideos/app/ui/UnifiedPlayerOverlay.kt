@@ -444,9 +444,9 @@ internal fun UnifiedPlayerOverlay(
         val screenWidthPx = with(density) { maxWidth.toPx() }
         val screenHeightPx = with(density) { availableMaxHeight.toPx() }
         val fullPlayerHeightPx = screenWidthPx * 9f / 16f
-        val miniWidthPx = with(density) { 132.dp.toPx() }
+        val miniWidthPx = with(density) { 104.dp.toPx() }
         val miniHeightPx = miniWidthPx * 9f / 16f
-        val miniBottomClearancePx = with(density) { 80.dp.toPx() }
+        val miniBottomClearancePx = with(density) { 72.dp.toPx() }
         val miniTopPx = (screenHeightPx - miniBottomClearancePx - miniHeightPx).coerceAtLeast(1f)
         val miniScale = (miniWidthPx / screenWidthPx).coerceIn(0.18f, 1f)
         val velocityThresholdPx = with(density) { 920.dp.toPx() }
@@ -530,7 +530,8 @@ internal fun UnifiedPlayerOverlay(
                         if (mainActivity == null) {
                             onMessage("No se pudo abrir la ventana emergente.")
                         } else if (mainActivity.openFloatingPlayer(video, dataSaver)) {
-                            onMessage("Ventana emergente activa. Puedes moverla, ampliarla y usar otras apps.")
+                            settle(1f, fast = true)
+                            onMessage("Ventana emergente activa. Toca el video para ver controles, muevela o cambia su tamano.")
                         } else {
                             onMessage("Activa Mostrar sobre otras apps. Al regresar, la ventana se abrirá automáticamente.")
                         }

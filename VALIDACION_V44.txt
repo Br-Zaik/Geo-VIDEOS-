@@ -1,0 +1,16 @@
+GEO VIDEOS V44.0.0
+
+Cambios principales:
+- Ventana emergente reconstruida como reproductor flotante compacto 16:9.
+- Tres tamanos de ventana, movimiento libre y posicion/tamano recordados.
+- Controles superpuestos que se ocultan automaticamente.
+- Doble toque +/-10 segundos y zoom dentro del video.
+- Al abrir la ventana emergente el reproductor principal se minimiza.
+- Minirreproductor interno mas compacto, similar a DailyTube.
+- Shorts personalizados con historial, busquedas, Me gusta y descubrimiento publico.
+- Shorts no quedan limitados a Suscripciones y usan busqueda segura estricta.
+- Descargas, inicio de sesion, Google y huella no fueron modificados.
+
+Validacion local:
+- ZIP y XML revisados.
+- Kotlin revisado con parser local; el entorno no contiene Android SDK/Gradle para generar APK.

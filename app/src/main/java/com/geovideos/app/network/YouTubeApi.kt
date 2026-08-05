@@ -199,11 +199,12 @@ class YouTubeApi {
     ): VideoPage = withContext(Dispatchers.IO) {
         val live = if (liveOnly) "&eventType=live" else ""
         val duration = if (shortOnly) "&videoDuration=short" else ""
+        val safeSearch = if (shortOnly) "strict" else "moderate"
         val page = pageToken.takeIf { it.isNotBlank() }
             ?.let { "&pageToken=${encode(it)}" }
             .orEmpty()
         val json = requestJson(
-            "https://www.googleapis.com/youtube/v3/search?part=snippet&type=video&maxResults=${maxResults.coerceIn(1, 50)}&regionCode=PE&relevanceLanguage=es&videoEmbeddable=true&safeSearch=moderate&q=${encode(query)}$live$duration$page",
+            "https://www.googleapis.com/youtube/v3/search?part=snippet&type=video&maxResults=${maxResults.coerceIn(1, 50)}&regionCode=PE&relevanceLanguage=es&videoEmbeddable=true&safeSearch=$safeSearch&q=${encode(query)}$live$duration$page",
             token
         )
         VideoPage(parseSearchItems(json), json.optString("nextPageToken"))

@@ -13,6 +13,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.os.SystemClock
 import android.provider.Settings
 import android.view.GestureDetector
 import android.view.Gravity
@@ -20,6 +21,7 @@ import android.view.LayoutInflater
 import android.view.MotionEvent
 import android.view.ScaleGestureDetector
 import android.view.View
+import android.view.ViewConfiguration
 import android.view.ViewGroup
 import android.view.WindowManager
 import android.widget.FrameLayout
@@ -45,18 +47,21 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.launch
 import kotlin.math.abs
+import kotlin.math.hypot
 import kotlin.math.roundToInt
 
 /**
- * Ventana flotante propia, separada del minirreproductor interno y del PiP del sistema.
- * Mantiene el mismo MediaSession, por lo que no reinicia el video ni pierde el segundo.
+ * Ventana flotante propia, independiente del minirreproductor interno.
+ *
+ * La ventana empieza compacta, se puede mover y alternar entre tres tamanos.
+ * Los controles se superponen sobre el video y se ocultan automaticamente para
+ * no convertir el reproductor en un panel grande dentro de la aplicacion.
  */
 @OptIn(UnstableApi::class)
 class FloatingPlayerService : Service() {
@@ -68,14 +73,16 @@ class FloatingPlayerService : Service() {
     private var overlayRoot: FrameLayout? = null
     private var playerView: PlayerView? = null
     private var windowParams: WindowManager.LayoutParams? = null
+    private var controlsLayer: View? = null
     private var activeController: MediaController? = null
     private var currentVideo: VideoItem? = null
     private var dataSaver: Boolean = false
-    private var expandedWindow = false
     private var zoomScale = 1f
     private var selectedSpeed = 1f
     private var qualityOptions: List<Int?> = listOf(null)
     private var qualityLoadingJob: Job? = null
+    private var controlsVisible = true
+    private var sizeIndex = 0
 
     private var qualityText: TextView? = null
     private var speedText: TextView? = null
@@ -88,6 +95,10 @@ class FloatingPlayerService : Service() {
     private var lastSeekDirection = 0
     private var accumulatedSeekSeconds = 0
     private var lastSeekAtMs = 0L
+
+    private val preferences by lazy {
+        getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+    }
 
     private val controllerListener = object : Player.Listener {
         override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
@@ -111,6 +122,7 @@ class FloatingPlayerService : Service() {
         super.onCreate()
         connection = GeoPlayerConnection.get(applicationContext)
         windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
+        sizeIndex = preferences.getInt(KEY_SIZE_INDEX, 0).coerceIn(0, 2)
         createNotificationChannel()
         startForeground(NOTIFICATION_ID, buildNotification())
         observePlayer()
@@ -123,11 +135,7 @@ class FloatingPlayerService : Service() {
         }
         currentVideo = intent?.toVideoItem() ?: currentVideo
         dataSaver = intent?.getBooleanExtra(EXTRA_DATA_SAVER, false) ?: dataSaver
-        if (currentVideo == null) {
-            stopSelf()
-            return START_NOT_STICKY
-        }
-        if (!canDrawOverlays()) {
+        if (currentVideo == null || !canDrawOverlays()) {
             stopSelf()
             return START_NOT_STICKY
         }
@@ -140,6 +148,7 @@ class FloatingPlayerService : Service() {
 
     override fun onDestroy() {
         qualityLoadingJob?.cancel()
+        handler.removeCallbacksAndMessages(null)
         activeController?.removeListener(controllerListener)
         removeOverlay()
         scope.cancel()
@@ -163,7 +172,8 @@ class FloatingPlayerService : Service() {
         scope.launch {
             connection.coreState.collect { state ->
                 playButton?.setImageResource(
-                    if (state.isPlaying) android.R.drawable.ic_media_pause else android.R.drawable.ic_media_play
+                    if (state.isPlaying) android.R.drawable.ic_media_pause
+                    else android.R.drawable.ic_media_play
                 )
                 updateQualityLabel(state.videoHeight)
             }
@@ -171,31 +181,40 @@ class FloatingPlayerService : Service() {
         scope.launch {
             connection.progressState.collect { progress ->
                 val duration = progress.durationMs.coerceAtLeast(0L)
-                val position = progress.positionMs.coerceIn(0L, duration.takeIf { it > 0L } ?: Long.MAX_VALUE)
+                val position = progress.positionMs.coerceIn(
+                    0L,
+                    duration.takeIf { it > 0L } ?: Long.MAX_VALUE
+                )
                 ignoreSeekCallback = true
                 progressSeek?.progress = if (duration > 0L) {
-                    ((position.toDouble() / duration.toDouble()) * SEEK_MAX).roundToInt().coerceIn(0, SEEK_MAX)
-                } else 0
+                    ((position.toDouble() / duration.toDouble()) * SEEK_MAX)
+                        .roundToInt()
+                        .coerceIn(0, SEEK_MAX)
+                } else {
+                    0
+                }
                 ignoreSeekCallback = false
-                timeText?.text = "${formatTime(position)}  /  ${formatTime(duration)}"
+                timeText?.text = "${formatTime(position)} / ${formatTime(duration)}"
             }
         }
         scope.launch {
-            connection.preferredQualityHeight.collect { updateQualityLabel(connection.coreState.value.videoHeight) }
+            connection.preferredQualityHeight.collect {
+                updateQualityLabel(connection.coreState.value.videoHeight)
+            }
         }
     }
 
     private fun showOrRefreshOverlay() {
         if (overlayRoot == null) createOverlay()
         activeController?.let(::attachController)
+        showControls(autoHide = true)
     }
 
     private fun createOverlay() {
-        val width = dp(350).coerceAtMost(resources.displayMetrics.widthPixels - dp(16))
-        val height = dp(284).coerceAtMost(resources.displayMetrics.heightPixels - dp(96))
+        val (initialWidth, initialHeight) = sizeForIndex(sizeIndex)
         val params = WindowManager.LayoutParams(
-            width,
-            height,
+            initialWidth,
+            initialHeight,
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
             } else {
@@ -203,102 +222,133 @@ class FloatingPlayerService : Service() {
                 WindowManager.LayoutParams.TYPE_PHONE
             },
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
                 WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON,
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.TOP or Gravity.START
-            x = dp(12)
-            y = dp(84)
+            x = preferences.getInt(KEY_X, defaultX(initialWidth))
+            y = preferences.getInt(KEY_Y, defaultY(initialHeight))
+            clampWindowPosition(this)
         }
         windowParams = params
 
         val root = FrameLayout(this).apply {
-            background = roundedBackground(0xFF0C0C0F.toInt(), 12f)
+            background = roundedBackground(Color.BLACK, 10f)
             clipToOutline = true
-            elevation = dp(10).toFloat()
+            elevation = dp(12).toFloat()
         }
         overlayRoot = root
 
-        val vertical = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(8), dp(6), dp(8), dp(7))
-        }
-        root.addView(vertical, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
-
-        val topRow = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-        }
-        val dragTitle = TextView(this).apply {
-            text = "Geo Videos"
-            setTextColor(Color.WHITE)
-            textSize = 12f
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(4), 0, dp(4), 0)
-        }
-        installDragHandle(dragTitle)
-        topRow.addView(dragTitle, LinearLayout.LayoutParams(0, dp(32), 1f))
-
-        qualityText = compactTextButton("Automático") { cycleQuality() }.also {
-            topRow.addView(it, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(32)))
-        }
-        speedText = compactTextButton("1x") { cycleSpeed() }.also {
-            topRow.addView(it, LinearLayout.LayoutParams(dp(48), dp(32)))
-        }
-        topRow.addView(textButton("×", 24f) { closeFloatingAndStopPlayback() }, LinearLayout.LayoutParams(dp(40), dp(32)))
-        vertical.addView(topRow, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(32)))
-
-        val videoFrame = FrameLayout(this).apply { setBackgroundColor(Color.BLACK) }
         val view = (LayoutInflater.from(this)
-            .inflate(R.layout.geo_player_texture, videoFrame, false) as PlayerView).apply {
+            .inflate(R.layout.geo_player_texture, root, false) as PlayerView).apply {
             useController = false
             controllerAutoShow = false
-            resizeMode = AspectRatioFrameLayout.RESIZE_MODE_ZOOM
+            resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
             setShowBuffering(PlayerView.SHOW_BUFFERING_WHEN_PLAYING)
             setKeepContentOnPlayerReset(true)
             setShutterBackgroundColor(Color.TRANSPARENT)
         }
         playerView = view
-        videoFrame.addView(view, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        root.addView(
+            view,
+            FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT
+            )
+        )
 
         feedbackText = TextView(this).apply {
             setTextColor(Color.WHITE)
-            textSize = 14f
+            textSize = 13f
             gravity = Gravity.CENTER
             setPadding(dp(12), dp(7), dp(12), dp(7))
-            background = roundedBackground(0xB3000000.toInt(), 22f)
+            background = roundedBackground(0xC8000000.toInt(), 22f)
             visibility = View.GONE
         }
-        videoFrame.addView(
+        root.addView(
             feedbackText,
-            FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.CENTER)
+            FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                Gravity.CENTER
+            )
         )
+
+        controlsLayer = createControlsLayer().also { layer ->
+            root.addView(
+                layer,
+                FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.MATCH_PARENT
+                )
+            )
+        }
+
         installVideoGestures(view)
-        vertical.addView(videoFrame, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
+
+        runCatching { windowManager.addView(root, params) }
+            .onSuccess { showControls(autoHide = true) }
+            .onFailure { stopSelf() }
+    }
+
+    private fun createControlsLayer(): View {
+        val layer = FrameLayout(this)
+
+        val topRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL or Gravity.END
+            setPadding(dp(6), dp(5), dp(5), 0)
+            background = verticalScrim(top = true)
+        }
+        qualityText = compactTextButton("Auto") { cycleQuality() }
+        speedText = compactTextButton("1x") { cycleSpeed() }
+        topRow.addView(qualityText, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(27)))
+        topRow.addView(speedText, LinearLayout.LayoutParams(dp(40), dp(27)).apply { marginStart = dp(3) })
+        topRow.addView(textButton("×", 19f) { closeFloatingAndStopPlayback() }, LinearLayout.LayoutParams(dp(32), dp(27)).apply { marginStart = dp(2) })
+        layer.addView(
+            topRow,
+            FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                dp(34),
+                Gravity.TOP
+            )
+        )
+
+        val bottomPanel = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.BOTTOM
+            setPadding(dp(5), 0, dp(5), dp(3))
+            background = verticalScrim(top = false)
+        }
 
         val controls = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
         }
-        controls.addView(mediaButton(android.R.drawable.ic_media_previous, "Anterior") { connection.playPrevious() })
+        controls.addView(mediaButton(android.R.drawable.ic_media_previous, "Anterior") {
+            connection.playPrevious()
+            showControls(autoHide = true)
+        })
         playButton = mediaButton(android.R.drawable.ic_media_play, "Reproducir") {
             if (connection.coreState.value.isPlaying) connection.pause() else connection.play()
+            showControls(autoHide = true)
         }.also { controls.addView(it) }
-        controls.addView(mediaButton(android.R.drawable.ic_media_next, "Siguiente") { connection.playNext() })
-        timeText = TextView(this).apply {
-            text = "0:00 / 0:00"
-            setTextColor(0xFFD7D4DD.toInt())
-            textSize = 11f
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(6), 0, dp(4), 0)
+        controls.addView(mediaButton(android.R.drawable.ic_media_next, "Siguiente") {
+            connection.playNext()
+            showControls(autoHide = true)
+        })
+        controls.addView(View(this), LinearLayout.LayoutParams(0, dp(30), 1f))
+        resizeButton = textButton(sizeLabel(), 17f) { toggleWindowSize() }.also {
+            controls.addView(it, LinearLayout.LayoutParams(dp(31), dp(30)))
         }
-        controls.addView(timeText, LinearLayout.LayoutParams(0, dp(38), 1f))
-        resizeButton = textButton(if (expandedWindow) "▣" else "□", 20f) { toggleWindowSize() }.also {
-            controls.addView(it, LinearLayout.LayoutParams(dp(42), dp(38)))
-        }
-        controls.addView(textButton("⛶", 19f) { openFullscreenInApp() }, LinearLayout.LayoutParams(dp(42), dp(38)))
-        vertical.addView(controls, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(38)))
+        controls.addView(
+            textButton("⛶", 17f) { openFullscreenInApp() },
+            LinearLayout.LayoutParams(dp(31), dp(30))
+        )
+        bottomPanel.addView(
+            controls,
+            LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(30))
+        )
 
         progressSeek = SeekBar(this).apply {
             max = SEEK_MAX
@@ -310,28 +360,41 @@ class FloatingPlayerService : Service() {
                     val duration = connection.progressState.value.durationMs
                     if (duration > 0L) {
                         val target = duration * progress / SEEK_MAX
-                        timeText?.text = "${formatTime(target)}  /  ${formatTime(duration)}"
+                        timeText?.text = "${formatTime(target)} / ${formatTime(duration)}"
                     }
                 }
 
-                override fun onStartTrackingTouch(seekBar: SeekBar?) = Unit
+                override fun onStartTrackingTouch(seekBar: SeekBar?) {
+                    handler.removeCallbacks(hideControlsRunnable)
+                }
 
                 override fun onStopTrackingTouch(seekBar: SeekBar?) {
                     val duration = connection.progressState.value.durationMs
                     val progress = seekBar?.progress ?: return
                     if (duration > 0L) connection.seekTo(duration * progress / SEEK_MAX)
+                    showControls(autoHide = true)
                 }
             })
         }
-        vertical.addView(progressSeek, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(24)))
+        bottomPanel.addView(
+            progressSeek,
+            LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(12))
+        )
 
-        runCatching { windowManager.addView(root, params) }
-            .onFailure { stopSelf() }
+        layer.addView(
+            bottomPanel,
+            FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                dp(44),
+                Gravity.BOTTOM
+            )
+        )
+        return layer
     }
 
     private fun attachController(controller: MediaController) {
         selectedSpeed = controller.playbackParameters.speed
-        speedText?.text = if (abs(selectedSpeed - 1f) < 0.01f) "1x" else "${selectedSpeed}x"
+        speedText?.text = speedLabel(selectedSpeed)
         playerView?.let { view ->
             if (view.player !== controller) view.player = controller
         }
@@ -341,7 +404,7 @@ class FloatingPlayerService : Service() {
         val video = currentVideo ?: return
         qualityLoadingJob?.cancel()
         qualityLoadingJob = scope.launch {
-            qualityText?.text = "Calidad…"
+            qualityText?.text = "..."
             val options = runCatching {
                 connection.streamOptions(video, includeDownloadSizes = false)
             }.getOrNull()
@@ -362,7 +425,7 @@ class FloatingPlayerService : Service() {
         val video = currentVideo ?: return
         if (qualityOptions.size <= 1) {
             loadQualityOptions()
-            showFeedback("Buscando calidades…")
+            showFeedback("Buscando calidades")
             return
         }
         val current = connection.preferredQualityHeight.value
@@ -373,70 +436,133 @@ class FloatingPlayerService : Service() {
             height = next,
             dataSaver = dataSaver
         )
-        showFeedback(next?.let { "Calidad ${it}p" } ?: "Calidad automática")
+        showFeedback(next?.let { "Calidad ${it}p" } ?: "Calidad automatica")
+        showControls(autoHide = true)
     }
 
     private fun updateQualityLabel(actualHeight: Int) {
         val preferred = connection.preferredQualityHeight.value
         qualityText?.text = when {
             preferred != null -> "${preferred}p"
-            actualHeight > 0 -> "Auto (${actualHeight}p)"
-            else -> "Automático"
+            actualHeight > 0 -> "A ${actualHeight}p"
+            else -> "Auto"
         }
     }
 
     private fun cycleSpeed() {
         val speeds = floatArrayOf(1f, 1.25f, 1.5f, 2f, 0.75f)
-        val index = speeds.indexOfFirst { abs(it - selectedSpeed) < 0.01f }.takeIf { it >= 0 } ?: 0
+        val index = speeds.indexOfFirst { abs(it - selectedSpeed) < 0.01f }
+            .takeIf { it >= 0 } ?: 0
         selectedSpeed = speeds[(index + 1) % speeds.size]
         connection.setSpeed(selectedSpeed)
-        speedText?.text = if (selectedSpeed == 1f) "1x" else "${selectedSpeed}x"
-        showFeedback("Velocidad ${speedText?.text}")
+        speedText?.text = speedLabel(selectedSpeed)
+        showFeedback("Velocidad ${speedLabel(selectedSpeed)}")
+        showControls(autoHide = true)
     }
 
     private fun installVideoGestures(view: PlayerView) {
-        val scaleDetector = ScaleGestureDetector(this, object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
-            override fun onScale(detector: ScaleGestureDetector): Boolean {
-                zoomScale = (zoomScale * detector.scaleFactor).coerceIn(1f, 3f)
-                applyZoom()
-                showFeedback("Zoom ${(zoomScale * 100f).roundToInt()}%")
-                return true
-            }
+        val touchSlop = ViewConfiguration.get(this).scaledTouchSlop.toFloat()
+        var downRawX = 0f
+        var downRawY = 0f
+        var startWindowX = 0
+        var startWindowY = 0
+        var draggingWindow = false
 
-            override fun onScaleEnd(detector: ScaleGestureDetector) {
-                showFeedback("Zoom ${(zoomScale * 100f).roundToInt()}%")
+        val scaleDetector = ScaleGestureDetector(
+            this,
+            object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
+                override fun onScale(detector: ScaleGestureDetector): Boolean {
+                    zoomScale = (zoomScale * detector.scaleFactor).coerceIn(1f, 3f)
+                    applyZoom()
+                    showFeedback("Zoom ${(zoomScale * 100f).roundToInt()}%")
+                    return true
+                }
             }
-        })
-        val gestureDetector = GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
-            override fun onDown(e: MotionEvent): Boolean = true
+        )
 
-            override fun onDoubleTap(e: MotionEvent): Boolean {
-                val forward = e.x >= view.width / 2f
-                val delta = if (forward) 10_000L else -10_000L
-                val progress = connection.progressState.value
-                connection.seekTo((progress.positionMs + delta).coerceIn(0L, progress.durationMs.takeIf { it > 0L } ?: Long.MAX_VALUE))
-                showAccumulatedSeek(if (forward) 1 else -1)
-                return true
+        val gestureDetector = GestureDetector(
+            this,
+            object : GestureDetector.SimpleOnGestureListener() {
+                override fun onDown(e: MotionEvent): Boolean = true
+
+                override fun onSingleTapConfirmed(e: MotionEvent): Boolean {
+                    if (controlsVisible) hideControls() else showControls(autoHide = true)
+                    return true
+                }
+
+                override fun onDoubleTap(e: MotionEvent): Boolean {
+                    val forward = e.x >= view.width / 2f
+                    val delta = if (forward) 10_000L else -10_000L
+                    val progress = connection.progressState.value
+                    connection.seekTo(
+                        (progress.positionMs + delta).coerceIn(
+                            0L,
+                            progress.durationMs.takeIf { it > 0L } ?: Long.MAX_VALUE
+                        )
+                    )
+                    showAccumulatedSeek(if (forward) 1 else -1)
+                    return true
+                }
             }
-        })
+        )
+
         view.setOnTouchListener { _, event ->
             scaleDetector.onTouchEvent(event)
-            gestureDetector.onTouchEvent(event)
-            false
+            if (!draggingWindow) gestureDetector.onTouchEvent(event)
+            val params = windowParams
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    downRawX = event.rawX
+                    downRawY = event.rawY
+                    startWindowX = params?.x ?: 0
+                    startWindowY = params?.y ?: 0
+                    draggingWindow = false
+                    handler.removeCallbacks(hideControlsRunnable)
+                }
+
+                MotionEvent.ACTION_MOVE -> {
+                    if (event.pointerCount == 1 && !scaleDetector.isInProgress && params != null) {
+                        val dx = event.rawX - downRawX
+                        val dy = event.rawY - downRawY
+                        if (!draggingWindow && hypot(dx.toDouble(), dy.toDouble()) > touchSlop) {
+                            draggingWindow = true
+                            hideControls()
+                        }
+                        if (draggingWindow) {
+                            params.x = startWindowX + dx.roundToInt()
+                            params.y = startWindowY + dy.roundToInt()
+                            clampWindowPosition(params)
+                            overlayRoot?.let {
+                                runCatching { windowManager.updateViewLayout(it, params) }
+                            }
+                        }
+                    }
+                }
+
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    if (draggingWindow) saveWindowState()
+                    draggingWindow = false
+                    if (controlsVisible) scheduleControlsHide()
+                }
+            }
+            true
         }
     }
 
     private fun showAccumulatedSeek(direction: Int) {
-        val now = android.os.SystemClock.uptimeMillis()
-        if (direction == lastSeekDirection && now - lastSeekAtMs <= 1_100L) {
-            accumulatedSeekSeconds += 10
+        val now = SystemClock.uptimeMillis()
+        accumulatedSeekSeconds = if (
+            direction == lastSeekDirection && now - lastSeekAtMs <= 1_100L
+        ) {
+            accumulatedSeekSeconds + 10
         } else {
-            accumulatedSeekSeconds = 10
+            10
         }
         lastSeekDirection = direction
         lastSeekAtMs = now
         showFeedback(
-            if (direction > 0) "+$accumulatedSeekSeconds segundos" else "−$accumulatedSeekSeconds segundos"
+            if (direction > 0) "+$accumulatedSeekSeconds segundos"
+            else "-$accumulatedSeekSeconds segundos"
         )
     }
 
@@ -453,21 +579,108 @@ class FloatingPlayerService : Service() {
             visibility = View.VISIBLE
             alpha = 1f
         }
-        handler.removeCallbacks(hideFeedback)
-        handler.postDelayed(hideFeedback, 950L)
+        handler.removeCallbacks(hideFeedbackRunnable)
+        handler.postDelayed(hideFeedbackRunnable, 950L)
     }
 
-    private val hideFeedback = Runnable { feedbackText?.visibility = View.GONE }
+    private fun showControls(autoHide: Boolean) {
+        controlsVisible = true
+        controlsLayer?.visibility = View.VISIBLE
+        controlsLayer?.animate()?.alpha(1f)?.setDuration(120L)?.start()
+        if (autoHide) scheduleControlsHide()
+    }
+
+    private fun scheduleControlsHide() {
+        handler.removeCallbacks(hideControlsRunnable)
+        handler.postDelayed(hideControlsRunnable, 2_600L)
+    }
+
+    private fun hideControls() {
+        controlsVisible = false
+        handler.removeCallbacks(hideControlsRunnable)
+        controlsLayer?.animate()
+            ?.alpha(0f)
+            ?.setDuration(140L)
+            ?.withEndAction {
+                if (!controlsVisible) controlsLayer?.visibility = View.GONE
+            }
+            ?.start()
+    }
+
+    private val hideFeedbackRunnable = Runnable { feedbackText?.visibility = View.GONE }
+    private val hideControlsRunnable = Runnable { hideControls() }
 
     private fun toggleWindowSize() {
-        expandedWindow = !expandedWindow
+        sizeIndex = (sizeIndex + 1) % 3
         val params = windowParams ?: return
-        params.width = dp(if (expandedWindow) 420 else 350)
-            .coerceAtMost(resources.displayMetrics.widthPixels - dp(12))
-        params.height = dp(if (expandedWindow) 340 else 284)
-            .coerceAtMost(resources.displayMetrics.heightPixels - dp(48))
-        resizeButton?.text = if (expandedWindow) "▣" else "□"
+        val oldCenterX = params.x + params.width / 2
+        val oldCenterY = params.y + params.height / 2
+        val (width, height) = sizeForIndex(sizeIndex)
+        params.width = width
+        params.height = height
+        params.x = oldCenterX - width / 2
+        params.y = oldCenterY - height / 2
+        clampWindowPosition(params)
+        resizeButton?.text = sizeLabel()
         overlayRoot?.let { runCatching { windowManager.updateViewLayout(it, params) } }
+        saveWindowState()
+        showFeedback(
+            when (sizeIndex) {
+                0 -> "Ventana pequena"
+                1 -> "Ventana mediana"
+                else -> "Ventana grande"
+            }
+        )
+        showControls(autoHide = true)
+    }
+
+    private fun sizeForIndex(index: Int): Pair<Int, Int> {
+        val screenWidth = resources.displayMetrics.widthPixels
+        val screenHeight = resources.displayMetrics.heightPixels
+        val fraction = when (index.coerceIn(0, 2)) {
+            0 -> 0.46f
+            1 -> 0.64f
+            else -> 0.84f
+        }
+        val minimum = when (index.coerceIn(0, 2)) {
+            0 -> dp(174)
+            1 -> dp(230)
+            else -> dp(286)
+        }
+        val width = (screenWidth * fraction).roundToInt()
+            .coerceAtLeast(minimum)
+            .coerceAtMost(screenWidth - dp(12))
+        val height = (width * 9f / 16f).roundToInt()
+            .coerceAtMost(screenHeight - dp(48))
+        return width to height
+    }
+
+    private fun sizeLabel(): String = when (sizeIndex) {
+        0 -> "+"
+        1 -> "+"
+        else -> "-"
+    }
+
+    private fun defaultX(width: Int): Int =
+        (resources.displayMetrics.widthPixels - width - dp(10)).coerceAtLeast(0)
+
+    private fun defaultY(height: Int): Int =
+        (resources.displayMetrics.heightPixels - height - dp(110)).coerceAtLeast(dp(24))
+
+    private fun clampWindowPosition(params: WindowManager.LayoutParams) {
+        val maxX = (resources.displayMetrics.widthPixels - params.width).coerceAtLeast(0)
+        val maxY = (resources.displayMetrics.heightPixels - params.height - dp(16)).coerceAtLeast(0)
+        params.x = params.x.coerceIn(0, maxX)
+        params.y = params.y.coerceIn(0, maxY)
+    }
+
+    private fun saveWindowState() {
+        val params = windowParams ?: return
+        preferences.edit()
+            .putInt(KEY_X, params.x)
+            .putInt(KEY_Y, params.y)
+            .putInt(KEY_SIZE_INDEX, sizeIndex)
+            .apply()
     }
 
     private fun closeFloatingAndStopPlayback() {
@@ -476,46 +689,25 @@ class FloatingPlayerService : Service() {
     }
 
     private fun openFullscreenInApp() {
+        saveWindowState()
         val intent = Intent(this, MainActivity::class.java).apply {
-            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or
+                Intent.FLAG_ACTIVITY_SINGLE_TOP or
+                Intent.FLAG_ACTIVITY_CLEAR_TOP
             putExtra(MainActivity.EXTRA_OPEN_FULLSCREEN_PLAYER, true)
         }
         startActivity(intent)
         stopSelf()
     }
 
-    private fun installDragHandle(view: View) {
-        var startX = 0
-        var startY = 0
-        var touchX = 0f
-        var touchY = 0f
-        view.setOnTouchListener { _, event ->
-            val params = windowParams ?: return@setOnTouchListener false
-            when (event.actionMasked) {
-                MotionEvent.ACTION_DOWN -> {
-                    startX = params.x
-                    startY = params.y
-                    touchX = event.rawX
-                    touchY = event.rawY
-                    true
-                }
-                MotionEvent.ACTION_MOVE -> {
-                    params.x = startX + (event.rawX - touchX).roundToInt()
-                    params.y = startY + (event.rawY - touchY).roundToInt()
-                    overlayRoot?.let { runCatching { windowManager.updateViewLayout(it, params) } }
-                    true
-                }
-                else -> false
-            }
-        }
-    }
-
     private fun removeOverlay() {
         val hadOverlay = overlayRoot != null || playerView != null
+        saveWindowState()
         playerView?.player = null
         overlayRoot?.let { runCatching { windowManager.removeView(it) } }
         overlayRoot = null
         playerView = null
+        controlsLayer = null
         feedbackText = null
         resizeButton = null
         windowParams = null
@@ -545,7 +737,11 @@ class FloatingPlayerService : Service() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
         val manager = getSystemService(NotificationManager::class.java)
         manager.createNotificationChannel(
-            NotificationChannel(CHANNEL_ID, "Ventana emergente", NotificationManager.IMPORTANCE_LOW).apply {
+            NotificationChannel(
+                CHANNEL_ID,
+                "Ventana emergente",
+                NotificationManager.IMPORTANCE_LOW
+            ).apply {
                 description = "Mantiene el reproductor flotante de Geo Videos"
                 setSound(null, null)
                 enableVibration(false)
@@ -553,32 +749,45 @@ class FloatingPlayerService : Service() {
         )
     }
 
-    private fun compactTextButton(label: String, onClick: () -> Unit): TextView = TextView(this).apply {
-        text = label
-        setTextColor(Color.WHITE)
-        textSize = 11f
-        gravity = Gravity.CENTER
-        setPadding(dp(7), 0, dp(7), 0)
-        background = roundedBackground(0xFF25252B.toInt(), 8f)
-        setOnClickListener { onClick() }
-    }
+    private fun compactTextButton(label: String, onClick: () -> Unit): TextView =
+        TextView(this).apply {
+            text = label
+            setTextColor(Color.WHITE)
+            textSize = 10.5f
+            gravity = Gravity.CENTER
+            setPadding(dp(7), 0, dp(7), 0)
+            background = roundedBackground(0xC826262C.toInt(), 7f)
+            setOnClickListener {
+                onClick()
+                showControls(autoHide = true)
+            }
+        }
 
-    private fun textButton(label: String, sizeSp: Float, onClick: () -> Unit): TextView = TextView(this).apply {
-        text = label
-        setTextColor(Color.WHITE)
-        textSize = sizeSp
-        gravity = Gravity.CENTER
-        setOnClickListener { onClick() }
-    }
+    private fun textButton(label: String, sizeSp: Float, onClick: () -> Unit): TextView =
+        TextView(this).apply {
+            text = label
+            setTextColor(Color.WHITE)
+            textSize = sizeSp
+            gravity = Gravity.CENTER
+            background = roundedBackground(0x8A000000.toInt(), 6f)
+            setOnClickListener {
+                onClick()
+                showControls(autoHide = true)
+            }
+        }
 
-    private fun mediaButton(icon: Int, description: String, onClick: () -> Unit): ImageButton = ImageButton(this).apply {
+    private fun mediaButton(
+        icon: Int,
+        description: String,
+        onClick: () -> Unit
+    ): ImageButton = ImageButton(this).apply {
         setImageResource(icon)
         contentDescription = description
         setColorFilter(Color.WHITE)
         setBackgroundColor(Color.TRANSPARENT)
         scaleType = android.widget.ImageView.ScaleType.CENTER_INSIDE
         setOnClickListener { onClick() }
-        layoutParams = LinearLayout.LayoutParams(dp(42), dp(38))
+        layoutParams = LinearLayout.LayoutParams(dp(30), dp(30))
     }
 
     private fun roundedBackground(color: Int, radiusDp: Float) = GradientDrawable().apply {
@@ -586,14 +795,28 @@ class FloatingPlayerService : Service() {
         cornerRadius = dp(radiusDp.roundToInt()).toFloat()
     }
 
-    private fun dp(value: Int): Int = (value * resources.displayMetrics.density).roundToInt()
+    private fun verticalScrim(top: Boolean) = GradientDrawable(
+        if (top) GradientDrawable.Orientation.TOP_BOTTOM
+        else GradientDrawable.Orientation.BOTTOM_TOP,
+        intArrayOf(0xC9000000.toInt(), 0x00000000)
+    )
+
+    private fun speedLabel(speed: Float): String =
+        if (abs(speed - 1f) < 0.01f) "1x" else "${speed}x"
+
+    private fun dp(value: Int): Int =
+        (value * resources.displayMetrics.density).roundToInt()
 
     private fun formatTime(milliseconds: Long): String {
         val total = milliseconds.coerceAtLeast(0L) / 1000L
         val hours = total / 3600L
         val minutes = (total % 3600L) / 60L
         val seconds = total % 60L
-        return if (hours > 0L) "%d:%02d:%02d".format(hours, minutes, seconds) else "%d:%02d".format(minutes, seconds)
+        return if (hours > 0L) {
+            "%d:%02d:%02d".format(hours, minutes, seconds)
+        } else {
+            "%d:%02d".format(minutes, seconds)
+        }
     }
 
     private fun Intent.toVideoItem(): VideoItem? {
@@ -638,6 +861,10 @@ class FloatingPlayerService : Service() {
         private const val CHANNEL_ID = "geo_floating_player"
         private const val NOTIFICATION_ID = 4217
         private const val SEEK_MAX = 1_000
+        private const val PREFS_NAME = "geo_floating_player"
+        private const val KEY_X = "window_x"
+        private const val KEY_Y = "window_y"
+        private const val KEY_SIZE_INDEX = "window_size_index"
 
         private val _surfaceGeneration = MutableStateFlow(0)
         val surfaceGeneration = _surfaceGeneration.asStateFlow()
