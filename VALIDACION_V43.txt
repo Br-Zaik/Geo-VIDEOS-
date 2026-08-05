@@ -1,0 +1,37 @@
+Geo Videos V43 - Gestos, ventana flotante, Mix automático, biblioteca e historial
+
+Cambios realizados sobre V42:
+- Doble toque en el lado derecho o izquierdo del reproductor para adelantar o retroceder 10 segundos.
+- Los dobles toques consecutivos acumulan y muestran 10, 20, 30 segundos, etc.
+- Zoom mediante pellizco de dos dedos entre 100 % y 300 %, con porcentaje visible.
+- Pantalla completa fijada en horizontal, con barras del sistema ocultas y video en modo llenar para evitar franjas negras.
+- Retorno limpio a vertical conservando el segundo, velocidad, calidad y zoom.
+- Ventana flotante propia con permiso SYSTEM_ALERT_WINDOW, distinta del minirreproductor interno.
+- La ventana flotante puede moverse, redimensionarse y volver a pantalla completa.
+- Controles flotantes: calidad, velocidad, anterior, reproducir/pausar, siguiente, progreso y cerrar.
+- El permiso Mostrar sobre otras apps se solicita una sola vez; al regresar de Ajustes se abre automáticamente la ventana pendiente.
+- Liberación y reconexión del surface de video al cerrar la ventana para evitar pantalla negra al volver a la app.
+- Reproducir música usa audio solo y conserva la reproducción con pantalla apagada.
+- Mi Mix se genera automáticamente desde videos relacionados; se eliminó el interruptor manual de Mix.
+- La cola automática alimenta Anterior/Siguiente y los controles de la notificación multimedia.
+- Fila de acciones ordenada como la referencia: Me gusta, No me gusta, Reproducir música, Compartir, Ver más tarde, Ventana emergente y Descargar.
+- Reproducción automática permanece únicamente en el engranaje del reproductor y en Ajustes generales; no aparece como tarjeta debajo del video.
+- Colección con historial reciente, Videos que me gustan, Música, Ver más tarde, playlists y Suscripciones.
+- Historial local con búsqueda, filtros Todo/Videos/Shorts/Podcasts/Música, agrupación por fecha, duración, progreso y eliminación.
+- Shorts prioriza consultas de descubrimiento público y limita el peso de las suscripciones.
+- Se conservó el flujo del descargador sin modificar sus archivos.
+- No se modificaron inicio de sesión, autorización de Google, huella, cuenta ni sesión guardada.
+
+Validaciones realizadas:
+- Versión actualizada a 43.0.0 (versionCode 430).
+- Revisión de referencias entre MainActivity, FloatingPlayerService, UnifiedPlayerOverlay, LitePlayerView, GeoPlayerConnection y PlaybackService.
+- Confirmación de que los archivos del descargador permanecen idénticos a V42.
+- Parseo de todos los XML del proyecto.
+- Revisión léxica de llaves, paréntesis, corchetes, cadenas y comentarios en todos los archivos Kotlin.
+- Análisis de Kotlin con kotlinc para descartar tokens inesperados, bloques sin cerrar y errores sintácticos; las referencias Android quedan fuera de ese compilador aislado.
+- Prueba de integridad del ZIP final con unzip -t.
+
+Limitación del entorno:
+- La compilación Android completa no pudo ejecutarse porque services.gradle.org no pudo resolverse al descargar Gradle 8.13.
+- Por ello, el APK debe compilarse en GitHub Actions y probarse en un teléfono Android antes de publicarse.
+- El historial mostrado es el historial persistente de Geo Videos; no se importa automáticamente el historial privado completo de YouTube.

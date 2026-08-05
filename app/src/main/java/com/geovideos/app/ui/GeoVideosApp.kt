@@ -77,9 +77,9 @@ import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.LiveTv
 import androidx.compose.material.icons.filled.Logout
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.OpenInBrowser
 import androidx.compose.material.icons.filled.Pause
-import androidx.compose.material.icons.filled.PictureInPictureAlt
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.PlayArrow
@@ -181,6 +181,7 @@ import com.geovideos.app.data.PlaylistItem
 import com.geovideos.app.data.VideoItem
 import com.geovideos.app.data.VideoDetails
 import com.geovideos.app.playback.GeoDownloadStage
+import com.geovideos.app.playback.FloatingPlayerService
 import com.geovideos.app.playback.GeoPlayerConnection
 import com.geovideos.app.playback.cancelResolvedMediaDownload
 import com.geovideos.app.playback.openResolvedMediaDownload
@@ -199,7 +200,8 @@ fun GeoVideosApp(
     viewModel: GeoVideosViewModel,
     onConnectGoogle: () -> Unit,
     onSwitchGoogleAccount: (String) -> Unit,
-    isInPictureInPictureMode: Boolean = false
+    isInPictureInPictureMode: Boolean = false,
+    fullscreenRequestToken: Int = 0
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val snackbar = remember { SnackbarHostState() }
@@ -208,7 +210,6 @@ fun GeoVideosApp(
         GeoPlayerConnection.get(context.applicationContext)
     }
     val mainStateHolder = rememberSaveableStateHolder()
-    var autoAdvancedVideoId by remember { mutableStateOf("") }
 
     LaunchedEffect(state.message) {
         state.message?.let {
@@ -220,7 +221,6 @@ fun GeoVideosApp(
     val selectedVideo = state.selectedVideo
     val shortPlaybackMode = state.section == MainSection.SHORTS && !state.playerExpanded
     LaunchedEffect(selectedVideo?.id, state.autoplay, state.dataSaver, shortPlaybackMode) {
-        autoAdvancedVideoId = ""
         selectedVideo?.let { video ->
             playerConnection.open(
                 video = video,
@@ -237,6 +237,10 @@ fun GeoVideosApp(
         }
     }
 
+    LaunchedEffect(state.autoplay) {
+        playerConnection.setAutoplayEnabled(state.autoplay)
+    }
+
     LaunchedEffect(selectedVideo?.id, state.relatedVideos, state.dataSaver) {
         selectedVideo?.let { current ->
             playerConnection.updateQueue(
@@ -244,17 +248,6 @@ fun GeoVideosApp(
                 candidates = state.relatedVideos,
                 dataSaver = state.dataSaver
             )
-        }
-    }
-
-    LaunchedEffect(state.autoplay, selectedVideo?.id) {
-        playerConnection.endedEvents.collect { endedVideoId ->
-            val current = selectedVideo
-            if (state.section != MainSection.SHORTS && state.autoplay && current?.id == endedVideoId && autoAdvancedVideoId != endedVideoId) {
-                autoAdvancedVideoId = endedVideoId
-                delay(900L)
-                viewModel.playNext()
-            }
         }
     }
 
@@ -322,6 +315,7 @@ fun GeoVideosApp(
                         expanded = state.playerExpanded,
                         playerConnection = playerConnection,
                         isInPictureInPictureMode = isInPictureInPictureMode,
+                        fullscreenRequestToken = fullscreenRequestToken,
                         isWatchLater = state.watchLater.any { it.id == selectedVideo.id },
                         isLiked = selectedVideo.id in state.localLikedIds,
                         isDisliked = selectedVideo.id in state.localDislikedIds,
@@ -337,6 +331,7 @@ fun GeoVideosApp(
                         onExpand = viewModel::expandPlayer,
                         onMinimize = viewModel::minimizePlayer,
                         onClose = {
+                            FloatingPlayerService.stop(context)
                             playerConnection.stop()
                             viewModel.closePlayer()
                         },
@@ -690,6 +685,7 @@ private fun MainShell(
                         onOpenHistory = { libraryDestination = LibraryDestination.HISTORY },
                         onOpenWatchLater = { libraryDestination = LibraryDestination.WATCH_LATER },
                         onOpenLiked = { libraryDestination = LibraryDestination.LIKED },
+                        onOpenMusic = { libraryDestination = LibraryDestination.MUSIC },
                         onOpenUploads = { libraryDestination = LibraryDestination.UPLOADS },
                         onOpenSubscriptions = { libraryDestination = LibraryDestination.SUBSCRIPTIONS },
                         onAddDownload = { showDownloadDialog = true },
@@ -712,6 +708,9 @@ private fun MainShell(
                         LibraryDestination.HISTORY -> state.history
                         LibraryDestination.WATCH_LATER -> state.watchLater
                         LibraryDestination.LIKED -> (state.localLikedVideos + state.liked).distinctBy { it.id }
+                        LibraryDestination.MUSIC -> (state.history + state.localLikedVideos + state.liked)
+                            .filter(::looksLikeMusicCollection)
+                            .distinctBy { it.id }
                         LibraryDestination.UPLOADS -> state.uploads
                         LibraryDestination.ROOT, LibraryDestination.SUBSCRIPTIONS -> emptyList()
                     }
@@ -858,6 +857,14 @@ private fun SearchScreen(
     }
 }
 
+private fun looksLikeMusicCollection(video: VideoItem): Boolean {
+    val text = "${video.title} ${video.description} ${video.channelTitle}".lowercase()
+    return listOf(
+        "music", "música", "musica", "song", "lyrics", "audio", "rap", "mix",
+        "nightcore", "remix", "cover", "karaoke", "official audio"
+    ).any { it in text }
+}
+
 @Composable
 private fun LibraryScreen(
     modifier: Modifier,
@@ -878,6 +885,7 @@ private fun LibraryScreen(
     onOpenHistory: () -> Unit,
     onOpenWatchLater: () -> Unit,
     onOpenLiked: () -> Unit,
+    onOpenMusic: () -> Unit,
     onOpenUploads: () -> Unit,
     onOpenSubscriptions: () -> Unit,
     onAddDownload: () -> Unit,
@@ -886,6 +894,9 @@ private fun LibraryScreen(
     val context = LocalContext.current
     val uniqueHistory = remember(history) { history.distinctBy { it.id } }
     val uniqueLiked = remember(liked) { liked.distinctBy { it.id } }
+    val musicVideos = remember(history, liked) {
+        (history + liked).filter(::looksLikeMusicCollection).distinctBy { it.id }
+    }
 
     LazyColumn(
         modifier = modifier.fillMaxSize().background(Color.Black),
@@ -933,6 +944,16 @@ private fun LibraryScreen(
                         thumbnailUrl = uniqueLiked.firstOrNull()?.thumbnailUrl.orEmpty(),
                         subtitle = "Privado",
                         onClick = onOpenLiked
+                    )
+                }
+                item(key = "music-playlist") {
+                    LibraryCoverCard(
+                        title = "Música",
+                        count = musicVideos.size,
+                        icon = Icons.Default.MusicNote,
+                        thumbnailUrl = musicVideos.firstOrNull()?.thumbnailUrl.orEmpty(),
+                        subtitle = "Reproducción y Me gusta",
+                        onClick = onOpenMusic
                     )
                 }
                 item(key = "watch-later-playlist") {

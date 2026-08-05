@@ -1,17 +1,25 @@
 package com.geovideos.app
 
 import android.accounts.Account
+import android.app.AppOpsManager
 import android.app.PictureInPictureParams
+import android.content.Intent
 import android.content.res.Configuration
+import android.net.Uri
 import android.os.Build
+import android.os.Process
 import android.os.Bundle
+import android.provider.Settings
 import android.util.Rational
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.IntentSenderRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
+import com.geovideos.app.data.VideoItem
+import com.geovideos.app.playback.FloatingPlayerService
 import com.geovideos.app.ui.GeoVideosApp
 import com.geovideos.app.ui.GeoVideosViewModel
 import com.geovideos.app.ui.theme.GeoVideosTheme
@@ -23,7 +31,10 @@ import com.google.android.gms.common.api.Scope
 
 class MainActivity : ComponentActivity() {
     private val inPictureInPictureState = mutableStateOf(false)
+    private val fullscreenRequestState = mutableIntStateOf(0)
     private var videoPictureInPictureEnabled = false
+    private var pendingFloatingVideo: VideoItem? = null
+    private var pendingFloatingDataSaver: Boolean = false
 
     private val viewModel: GeoVideosViewModel by viewModels()
 
@@ -51,16 +62,68 @@ class MainActivity : ComponentActivity() {
                     viewModel = viewModel,
                     onConnectGoogle = { requestGoogleAuthorization(allowResolution = true) },
                     onSwitchGoogleAccount = ::switchGoogleAccount,
-                    isInPictureInPictureMode = inPictureInPictureState.value
+                    isInPictureInPictureMode = inPictureInPictureState.value,
+                    fullscreenRequestToken = fullscreenRequestState.intValue
                 )
             }
         }
+
+        handlePlaybackIntent(intent)
 
         if (savedInstanceState == null) {
             window.decorView.postDelayed(
                 { requestGoogleAuthorization(allowResolution = false) },
                 350
             )
+        }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handlePlaybackIntent(intent)
+    }
+
+    private fun handlePlaybackIntent(intent: Intent?) {
+        if (intent?.getBooleanExtra(EXTRA_OPEN_FULLSCREEN_PLAYER, false) == true) {
+            fullscreenRequestState.intValue += 1
+            intent.removeExtra(EXTRA_OPEN_FULLSCREEN_PLAYER)
+        }
+    }
+
+    fun canDrawFloatingPlayer(): Boolean =
+        Build.VERSION.SDK_INT < Build.VERSION_CODES.M || Settings.canDrawOverlays(this)
+
+    fun requestFloatingPlayerPermission() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return
+        val packageUri = Uri.parse("package:$packageName")
+        runCatching {
+            startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, packageUri))
+        }.onFailure {
+            runCatching {
+                startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, packageUri))
+            }
+        }
+    }
+
+    fun openFloatingPlayer(video: VideoItem, dataSaver: Boolean): Boolean {
+        if (!canDrawFloatingPlayer()) {
+            pendingFloatingVideo = video
+            pendingFloatingDataSaver = dataSaver
+            requestFloatingPlayerPermission()
+            return false
+        }
+        pendingFloatingVideo = null
+        FloatingPlayerService.start(this, video, dataSaver)
+        return true
+    }
+
+    override fun onResume() {
+        super.onResume()
+        val pending = pendingFloatingVideo ?: return
+        if (canDrawFloatingPlayer()) {
+            pendingFloatingVideo = null
+            FloatingPlayerService.start(this, pending, pendingFloatingDataSaver)
         }
     }
 
@@ -77,8 +140,44 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    fun canUseVideoPictureInPicture(): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return false
+        val appOps = getSystemService(AppOpsManager::class.java) ?: return true
+        val mode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            appOps.unsafeCheckOpNoThrow(
+                AppOpsManager.OPSTR_PICTURE_IN_PICTURE,
+                Process.myUid(),
+                packageName
+            )
+        } else {
+            @Suppress("DEPRECATION")
+            appOps.checkOpNoThrow(
+                AppOpsManager.OPSTR_PICTURE_IN_PICTURE,
+                Process.myUid(),
+                packageName
+            )
+        }
+        return mode == AppOpsManager.MODE_ALLOWED || mode == AppOpsManager.MODE_DEFAULT
+    }
+
+    fun openVideoPictureInPictureSettings() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
+        val packageUri = Uri.parse("package:$packageName")
+        runCatching {
+            startActivity(Intent("android.settings.PICTURE_IN_PICTURE_SETTINGS", packageUri))
+        }.onFailure {
+            runCatching {
+                startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, packageUri))
+            }
+        }
+    }
+
     fun enterVideoPictureInPicture(): Boolean {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O || isInPictureInPictureMode) return false
+        if (
+            Build.VERSION.SDK_INT < Build.VERSION_CODES.O ||
+            isInPictureInPictureMode ||
+            !canUseVideoPictureInPicture()
+        ) return false
         return runCatching {
             val builder = PictureInPictureParams.Builder()
                 .setAspectRatio(Rational(16, 9))
@@ -94,6 +193,7 @@ class MainActivity : ComponentActivity() {
         super.onUserLeaveHint()
         if (
             videoPictureInPictureEnabled &&
+            canUseVideoPictureInPicture() &&
             Build.VERSION.SDK_INT in Build.VERSION_CODES.O until Build.VERSION_CODES.S
         ) {
             enterVideoPictureInPicture()
@@ -189,5 +289,9 @@ class MainActivity : ComponentActivity() {
             error.message ?: "Google no autorizó el acceso. Código ${error.statusCode}."
         }
         viewModel.onAuthorizationFailure(message, likelySetupProblem)
+    }
+
+    companion object {
+        const val EXTRA_OPEN_FULLSCREEN_PLAYER = "com.geovideos.app.extra.OPEN_FULLSCREEN_PLAYER"
     }
 }

@@ -1,0 +1,11 @@
+Geo Videos V43.1 - correccion de compilacion
+
+Correccion aplicada:
+- MainActivity.kt: se sustituyo la referencia inexistente Settings.ACTION_PICTURE_IN_PICTURE_SETTINGS por la accion Android compatible "android.settings.PICTURE_IN_PICTURE_SETTINGS".
+- Se mantiene el fallback a Settings.ACTION_APPLICATION_DETAILS_SETTINGS.
+- Version incrementada a 43.1.0 (versionCode 431).
+
+Error corregido de GitHub Actions:
+MainActivity.kt:167:43 Unresolved reference 'ACTION_PICTURE_IN_PICTURE_SETTINGS'
+
+La advertencia sobre gradle-wrapper.jar no era la causa del fallo; el workflow continuo hasta compileDebugKotlin.

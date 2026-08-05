@@ -6,6 +6,9 @@ import android.content.ContextWrapper
 import android.content.Intent
 import android.graphics.Color as AndroidColor
 import android.view.LayoutInflater
+import android.view.GestureDetector
+import android.view.MotionEvent
+import android.view.ScaleGestureDetector
 import android.view.View
 import androidx.annotation.OptIn
 import androidx.compose.foundation.background
@@ -20,6 +23,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -40,6 +44,7 @@ import coil.size.Precision
 import com.geovideos.app.R
 import com.geovideos.app.data.MediaKind
 import com.geovideos.app.data.VideoItem
+import kotlin.math.roundToInt
 
 @OptIn(UnstableApi::class)
 @Composable
@@ -49,10 +54,18 @@ internal fun LitePlayerView(
     useController: Boolean,
     resizeMode: Int = androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_FIT,
     useTextureView: Boolean = false,
+    zoomScale: Float = 1f,
+    onZoomScaleChange: ((Float) -> Unit)? = null,
+    onSeekBy: ((Long) -> Unit)? = null,
+    onZoomFeedback: ((Int) -> Unit)? = null,
     onSettingsClick: (() -> Unit)? = null,
     onControllerVisibilityChanged: ((Boolean) -> Unit)? = null
 ) {
     val attachedView = remember { arrayOfNulls<PlayerView>(1) }
+    val currentZoom by rememberUpdatedState(zoomScale)
+    val currentOnZoomScaleChange by rememberUpdatedState(onZoomScaleChange)
+    val currentOnSeekBy by rememberUpdatedState(onSeekBy)
+    val currentOnZoomFeedback by rememberUpdatedState(onZoomFeedback)
     DisposableEffect(controller) {
         onDispose {
             attachedView[0]?.let { view ->
@@ -90,6 +103,45 @@ internal fun LitePlayerView(
                         onControllerVisibilityChanged?.invoke(visibility == View.VISIBLE)
                     }
                 )
+
+                val playerView = this
+                var localZoom = currentZoom.coerceIn(1f, 3f)
+                val scaleDetector = ScaleGestureDetector(
+                    context,
+                    object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
+                        override fun onScale(detector: ScaleGestureDetector): Boolean {
+                            localZoom = (localZoom * detector.scaleFactor).coerceIn(1f, 3f)
+                            applyPlayerZoom(playerView, localZoom)
+                            currentOnZoomScaleChange?.invoke(localZoom)
+                            currentOnZoomFeedback?.invoke((localZoom * 100f).roundToInt())
+                            return true
+                        }
+
+                        override fun onScaleEnd(detector: ScaleGestureDetector) {
+                            currentOnZoomFeedback?.invoke((localZoom * 100f).roundToInt())
+                        }
+                    }
+                )
+                val tapDetector = GestureDetector(
+                    context,
+                    object : GestureDetector.SimpleOnGestureListener() {
+                        override fun onDown(e: MotionEvent): Boolean = true
+
+                        override fun onDoubleTap(e: MotionEvent): Boolean {
+                            val delta = if (e.x >= width / 2f) 10_000L else -10_000L
+                            val duration = controller.duration.takeIf { it > 0L } ?: Long.MAX_VALUE
+                            controller.seekTo((controller.currentPosition + delta).coerceIn(0L, duration))
+                            currentOnSeekBy?.invoke(delta)
+                            return true
+                        }
+                    }
+                )
+                setOnTouchListener { _, event ->
+                    scaleDetector.onTouchEvent(event)
+                    tapDetector.onTouchEvent(event)
+                    false
+                }
+                applyPlayerZoom(this, localZoom)
             }
         },
         update = { view ->
@@ -98,6 +150,7 @@ internal fun LitePlayerView(
             view.useController = useController
             view.controllerAutoShow = useController
             view.resizeMode = resizeMode
+            applyPlayerZoom(view, zoomScale.coerceIn(1f, 3f))
             view.findViewById<View>(Media3UiR.id.exo_settings)?.setOnClickListener {
                 onSettingsClick?.invoke()
             }
@@ -108,6 +161,13 @@ internal fun LitePlayerView(
             )
         }
     )
+}
+
+private fun applyPlayerZoom(view: PlayerView, zoom: Float) {
+    view.videoSurfaceView?.apply {
+        scaleX = zoom
+        scaleY = zoom
+    }
 }
 
 @Composable

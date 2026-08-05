@@ -86,11 +86,11 @@ class GeoPlayerConnection private constructor(context: Context) {
     )
     val preferredQualityHeight: StateFlow<Int?> = _preferredQualityHeight.asStateFlow()
 
-    private val _audioOnlyMode = MutableStateFlow(
-        playerPreferences.getBoolean(KEY_AUDIO_ONLY_MODE, false)
-    )
+    // El modo música pertenece únicamente a la reproducción actual. No se conserva
+    // como preferencia global porque al abrir otro video o un Short debe volver el video.
+    private val _audioOnlyMode = MutableStateFlow(false)
     val audioOnlyMode: StateFlow<Boolean> = _audioOnlyMode.asStateFlow()
-    private var activeAudioOnly: Boolean = _audioOnlyMode.value
+    private var activeAudioOnly: Boolean = false
 
     private val _state = MutableStateFlow(PlaybackUiState())
     val state: StateFlow<PlaybackUiState> = _state.asStateFlow()
@@ -213,7 +213,7 @@ class GeoPlayerConnection private constructor(context: Context) {
             repeat = repeat,
             preferredHeight = _preferredQualityHeight.value,
             forceReload = false,
-            audioOnly = _audioOnlyMode.value
+            audioOnly = false
         )
     }
 
@@ -247,7 +247,6 @@ class GeoPlayerConnection private constructor(context: Context) {
         currentVideo = video
         activeAudioOnly = audioOnly
         _audioOnlyMode.value = audioOnly
-        playerPreferences.edit().putBoolean(KEY_AUDIO_ONLY_MODE, audioOnly).apply()
         _preferredQualityHeight.value = preferredHeight
         playerPreferences.edit().putInt(KEY_PREFERRED_QUALITY, preferredHeight ?: 0).apply()
         resolveJob?.cancel()
@@ -494,12 +493,18 @@ class GeoPlayerConnection private constructor(context: Context) {
         it.repeatMode = if (enabled) Player.REPEAT_MODE_ONE else Player.REPEAT_MODE_OFF
     }
 
+    fun setAutoplayEnabled(enabled: Boolean) {
+        PlaybackService.setContinuousAutoplay(appContext, enabled)
+    }
+
     fun stop() {
         requestSerial += 1L
         resolveJob?.cancel()
         queueJob?.cancel()
         pendingQueue = emptyList()
         currentVideo = null
+        activeAudioOnly = false
+        _audioOnlyMode.value = false
         // Keep the user's quality preference when closing or leaving Shorts.
         // The next video reuses it, matching DayliTube/YouTube behavior.
         withController {
@@ -560,7 +565,6 @@ class GeoPlayerConnection private constructor(context: Context) {
 
     companion object {
         private const val KEY_PREFERRED_QUALITY = "preferred_quality_height"
-        private const val KEY_AUDIO_ONLY_MODE = "audio_only_mode"
 
         @Volatile
         private var instance: GeoPlayerConnection? = null

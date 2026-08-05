@@ -126,7 +126,7 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
     private var gamingNextToken: String = ""
     private var musicNextToken: String = ""
     private var shortsNextToken: String = ""
-    private var shortsQuery: String = "shorts"
+    private var shortsQuery: String = "shorts virales español"
     private var uploadsNextToken: String = ""
     private var likedNextToken: String = ""
     private var searchNextToken: String = ""
@@ -424,18 +424,18 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
                     }.getOrDefault(shortsDeferred.await() to shortsQuery)
                     val shortsPage = loadedShortsPage
                     shortsQuery = loadedShortsQuery
-                    val shortsRaw = shortsPage.items.distinctBy { it.id }.take(30)
+                    val shortsRaw = shortsPage.items.distinctBy { it.id }.take(50)
                     val notificationsRaw = activitiesDeferred.await()
                     val activityVideosRaw = notificationsRaw.mapNotNull { it.video }
-                    // Build the Shorts feed from the user's own activity first: subscribed
-                    // channels, likes and history. Search results are only discovery/fallback.
+                    // La sección Shorts no debe quedar limitada a suscripciones. La actividad
+                    // personal sirve como una señal secundaria; el descubrimiento público manda.
                     val personalShortsRaw = mergeUniqueVideos(
-                        subscriptionFeedRaw,
-                        activityVideosRaw,
-                        likedRaw,
-                        previous.localLikedVideos,
-                        previous.history.take(35),
-                        previous.personalized.take(35)
+                        previous.history.take(24),
+                        likedRaw.take(18),
+                        previous.localLikedVideos.take(18),
+                        popularPage.items.take(18),
+                        activityVideosRaw.take(12),
+                        subscriptionFeedRaw.take(12)
                     ).take(80)
 
                     val allRaw = mergeUniqueVideos(
@@ -465,12 +465,13 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
                     val personalizedShorts = verifyRealShorts(personalShortCandidates)
                     val discoveredShortCandidates = enriched(shortsRaw)
                     val discoveredShorts = verifyRealShorts(discoveredShortCandidates)
-                    val shorts = roundRobinVideos(
-                        discoveredShorts,
-                        personalizedShorts,
-                        discoveredShortCandidates.filter(::looksLikeStrongShort),
-                        personalShortCandidates.filter(::looksLikeStrongShort)
-                    ).take(30)
+                    val shorts = buildDiverseShortFeed(
+                        discovered = discoveredShorts,
+                        personalized = personalizedShorts,
+                        fallback = discoveredShortCandidates.filter(::looksLikeStrongShort) +
+                            personalShortCandidates.filter(::looksLikeStrongShort),
+                        limit = 40
+                    )
                     val liked = enriched(likedRaw)
                     val subscriptionFeed = enriched(subscriptionFeedRaw)
                     val normalSubscriptionFeed = subscriptionFeed.filterNot(::looksLikeShort)
@@ -684,7 +685,12 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
                 val discovered = verified.ifEmpty {
                     candidates.filter(::looksLikeStrongShort).take(24)
                 }
-                val usable = roundRobinVideos(discovered, personalized).take(MAX_HOME_ITEMS)
+                val usable = buildDiverseShortFeed(
+                    discovered = discovered,
+                    personalized = personalized,
+                    fallback = candidates.filter(::looksLikeStrongShort),
+                    limit = MAX_HOME_ITEMS
+                )
                 _uiState.update { current ->
                     val merged = if (usable.isEmpty()) current.shorts else usable
                     current.copy(
@@ -736,7 +742,12 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
                 }
                 _uiState.update {
                     it.copy(
-                        shorts = mergeUniqueVideos(it.shorts, enriched).take(MAX_HOME_ITEMS),
+                        shorts = buildDiverseShortFeed(
+                            discovered = mergeUniqueVideos(it.shorts, enriched),
+                            personalized = emptyList(),
+                            fallback = enriched,
+                            limit = MAX_HOME_ITEMS
+                        ),
                         shortsLoadingMore = false,
                         shortsCanLoadMore = page.nextPageToken.isNotBlank()
                     )
@@ -1053,7 +1064,7 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
 
     fun previewShort(video: VideoItem) {
         val playable = video.copy(resumePositionMs = 0L)
-        val history = _uiState.value.history
+        val history = repository.addToHistory(playable)
         relatedNextToken = ""
         relatedVideoId = ""
         _uiState.update {
@@ -1543,7 +1554,7 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
             "para", "with", "from", "this", "that", "video", "official", "shorts",
             "the", "and", "los", "las", "una", "uno", "del", "por", "como", "music"
         )
-        val interestWords = (history.take(18) + liked.take(18))
+        val interestWords = (history.take(12) + liked.take(12))
             .asSequence()
             .flatMap { it.title.lowercase().split(Regex("""[^\p{L}\p{N}]+""")).asSequence() }
             .filter { it.length >= 4 && it !in stopWords }
@@ -1551,13 +1562,12 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
             .eachCount()
             .entries
             .sortedByDescending { it.value }
-            .take(5)
+            .take(2)
             .map { it.key }
-        val interests = interestWords.take(5).joinToString(" ")
-        return listOf(interests, "shorts tendencias")
+        val interests = interestWords.joinToString(" ")
+        return listOf("shorts virales español", interests)
             .filter { it.isNotBlank() }
             .joinToString(" ")
-            .ifBlank { "shorts tendencias Perú" }
     }
 
     private suspend fun loadPersonalizedShorts(
@@ -1622,34 +1632,84 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
         preferredQuery: String,
         maxResults: Int
     ): Pair<VideoPage, String> {
-        val queries = listOf(
-            preferredQuery,
-            "#shorts tendencias Perú",
+        val genericQueries = listOf(
             "shorts virales español",
-            "shorts música gaming anime",
-            "youtube shorts"
-        ).map { it.trim() }
+            "shorts entretenimiento tendencias",
+            "shorts curiosidades comedia",
+            "shorts música gaming anime"
+        )
+        val rotation = ((System.currentTimeMillis() / 86_400_000L) % genericQueries.size).toInt()
+        val rotated = genericQueries.drop(rotation) + genericQueries.take(rotation)
+        // El descubrimiento público va primero. La consulta personalizada aporta interés,
+        // pero no debe dominar el feed ni convertir Shorts en una copia de Suscripciones.
+        val queries = (rotated.take(3) + listOf(preferredQuery))
+            .map { it.trim() }
             .filter { it.isNotBlank() }
             .distinct()
+            .take(3)
 
-        var fallback = VideoPage(emptyList())
-        var fallbackQuery = queries.firstOrNull().orEmpty().ifBlank { "#shorts" }
-        for (query in queries) {
+        val collected = ArrayList<VideoItem>(maxResults)
+        var primaryQuery = queries.firstOrNull().orEmpty().ifBlank { "shorts virales español" }
+        var primaryToken = ""
+        val perQuery = (maxResults / queries.size.coerceAtLeast(1)).coerceIn(12, 25)
+        queries.forEachIndexed { index, query ->
             val page = runCatching {
                 api.searchVideosPage(
                     token = token,
                     query = query,
                     shortOnly = true,
-                    maxResults = maxResults
+                    maxResults = perQuery
                 )
-            }.getOrNull() ?: continue
-            if (fallback.items.isEmpty()) {
-                fallback = page
-                fallbackQuery = query
+            }.getOrNull() ?: return@forEachIndexed
+            if (index == 0 || primaryToken.isBlank()) {
+                primaryQuery = query
+                primaryToken = page.nextPageToken
             }
-            if (page.items.isNotEmpty()) return page to query
+            collected += page.items
         }
-        return fallback to fallbackQuery
+        return VideoPage(
+            items = limitShortsPerChannel(collected.distinctBy { it.id }, maxResults),
+            nextPageToken = primaryToken
+        ) to primaryQuery
+    }
+
+    private fun buildDiverseShortFeed(
+        discovered: List<VideoItem>,
+        personalized: List<VideoItem>,
+        fallback: List<VideoItem>,
+        limit: Int
+    ): List<VideoItem> {
+        // Tres elementos de descubrimiento por cada señal personal. Así el feed se siente
+        // variado como YouTube sin ignorar por completo los intereses del usuario.
+        val weighted = roundRobinVideos(
+            discovered,
+            discovered,
+            discovered,
+            personalized,
+            fallback
+        )
+        return limitShortsPerChannel(weighted, limit)
+    }
+
+    private fun limitShortsPerChannel(videos: List<VideoItem>, limit: Int): List<VideoItem> {
+        val result = ArrayList<VideoItem>(limit)
+        val channelCounts = HashMap<String, Int>()
+        videos.forEach { video ->
+            if (result.size >= limit || video.id.isBlank()) return@forEach
+            val channelKey = video.channelId.ifBlank { video.channelTitle.ifBlank { video.id } }
+            val maxForChannel = if (result.size < 16) 1 else 2
+            val count = channelCounts[channelKey] ?: 0
+            if (count >= maxForChannel) return@forEach
+            result += video
+            channelCounts[channelKey] = count + 1
+        }
+        if (result.size < limit) {
+            videos.forEach { video ->
+                if (result.size >= limit) return@forEach
+                if (result.none { it.id == video.id }) result += video
+            }
+        }
+        return result
     }
 
     private fun roundRobinVideos(vararg groups: List<VideoItem>): List<VideoItem> {

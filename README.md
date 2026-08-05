@@ -1,46 +1,40 @@
-# Geo Videos V41
+# Geo Videos V43
 
-Versión centrada en música en segundo plano, Geo Mix, reproducción automática e historial, conservando las mejoras del reproductor V40.
+Mejora del reproductor y la biblioteca basada en el comportamiento observado en DailyTube y YouTube, sin modificar el acceso de Google, la huella, la cuenta ni la sesión guardada.
 
-## Música y reproducción continua
+## Reproductor
 
-- Botón visible **Reproducir música** dentro del reproductor.
-- En modo música se solicita una pista de audio compatible, evitando mantener el video activo innecesariamente.
-- El audio continúa mediante el servicio multimedia al salir de Geo Videos o apagar la pantalla.
-- La notificación conserva los controles Anterior, Reproducir/Pausar y Siguiente cuando existe una cola disponible.
-- Al volver a modo video se conserva la posición de reproducción.
+- Doble toque a la izquierda o derecha para retroceder o adelantar 10 segundos, con aviso acumulado de 10, 20, 30 segundos.
+- Zoom con dos dedos de 100 % a 300 %, mostrando el porcentaje aplicado.
+- Pantalla completa horizontal estable: solo se muestra el video, se ocultan las barras del sistema y se conserva el segundo al regresar a vertical.
+- Engranaje con Calidad, Velocidad y Reproducción automática. No se muestra un panel grande debajo del video.
+- Acción Reproducir música para usar solo audio y continuar con la pantalla apagada.
+- Minirreproductor interno mientras se navega por la aplicación.
+- Ventana emergente propia sobre otras aplicaciones, movible y redimensionable, con calidad, velocidad, anterior, pausa, siguiente, progreso y acceso a pantalla completa.
+- Cola automática de videos relacionados para Anterior/Siguiente y notificación multimedia.
+- Mi Mix se genera automáticamente a partir de los videos relacionados; no es una lista que el usuario deba construir manualmente.
 
-## Geo Mix y reproducción automática
+## Biblioteca e historial
 
-- Acción **Geo Mix** y tarjeta visible antes de los videos relacionados.
-- Cola de hasta 20 contenidos relacionados, sin duplicar el video actual.
-- Geo Mix activa la reproducción continua y desactiva la repetición del mismo video.
-- Interruptor **Reproducción automática ON/OFF** dentro de la página del reproductor.
-- El botón Siguiente funciona con la misma cola en el reproductor y en la notificación.
+- Historial reciente en tarjetas y acceso a Ver todo.
+- Videos que me gustan, Música, Ver más tarde, playlists y Suscripciones.
+- Historial local con búsqueda, filtros Todo/Videos/Shorts/Podcasts/Música, fechas, duración, progreso y eliminación individual.
+- El historial corresponde a lo visto dentro de Geo Videos; la API pública no entrega automáticamente el historial privado completo de YouTube.
 
-## Ventanas de reproducción
+## Shorts
 
-- Minirreproductor dentro de Geo Videos.
-- Picture-in-Picture sobre otras aplicaciones durante la reproducción de video, en Android compatible.
-- El modo música continúa en segundo plano sin forzar una ventana flotante de video.
-- Pantalla completa horizontal estable y controles mediante iconos.
+- El descubrimiento público, tendencias e intereses generales tienen prioridad.
+- Las suscripciones son solo una señal secundaria.
+- Mayor variedad y menor repetición del mismo canal.
 
-## Historial
+## Descargas
 
-- Buscador visible permanentemente.
-- Filtros Todo, Videos, Shorts, Podcasts y Música.
-- Orden por reproducción más reciente, agrupación por fecha, progreso y eliminación individual.
-- El historial se llena con lo reproducido dentro de Geo Videos; no importa automáticamente el historial privado de YouTube.
+El flujo del descargador se conserva sin cambios. Las calidades HD continúan descargando video y audio y entregando un único archivo final cuando el origen los proporciona por separado.
 
-## Funciones conservadas
+## Permiso de ventana emergente
 
-- Calidades reales disponibles y preferencia persistente.
-- Descargas HD con tamaño aproximado y unión de video y audio en un único archivo final.
-- Principal actualizable, feed variado de Shorts, canales completos, reproducción en segundo plano y cola multimedia.
-- No se modificaron el acceso de Google, la sesión guardada, la huella, el paquete ni la firma de la aplicación respecto de V40.
+Android exige autorizar una sola vez “Mostrar sobre otras apps”. Geo Videos abre el ajuste correspondiente y, al regresar, inicia automáticamente la ventana flotante pendiente.
 
 ## Compilación
 
-El workflow de GitHub Actions compila la variante `release`.
-
-No fue posible ejecutar la compilación Android completa en este entorno porque no pudo resolverse `services.gradle.org` para descargar Gradle 8.13. La validación definitiva debe realizarse en GitHub Actions y en un teléfono Android.
+El workflow de GitHub Actions compila la variante release. En este entorno no fue posible descargar Gradle 8.13 desde services.gradle.org, por lo que la comprobación final debe realizarse en Actions y en un teléfono Android.

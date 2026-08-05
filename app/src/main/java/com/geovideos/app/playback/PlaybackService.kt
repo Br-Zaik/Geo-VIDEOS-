@@ -108,6 +108,7 @@ class PlaybackService : MediaSessionService() {
         when (intent?.action) {
             ACTION_PLAY_RESOLVED -> playResolved(intent)
             ACTION_APPEND_RESOLVED -> appendResolved(intent)
+            ACTION_SET_CONTINUOUS_AUTOPLAY -> setContinuousAutoplay(intent)
         }
         return result
     }
@@ -140,6 +141,12 @@ class PlaybackService : MediaSessionService() {
         if (alreadyQueued) return
         val source = createResolvedSource(intent) ?: return
         player.addMediaSource(source)
+    }
+
+
+    private fun setContinuousAutoplay(intent: Intent) {
+        val enabled = intent.getBooleanExtra(EXTRA_CONTINUOUS_AUTOPLAY, true)
+        exoPlayer?.setPauseAtEndOfMediaItems(!enabled)
     }
 
     private fun createResolvedSource(intent: Intent): androidx.media3.exoplayer.source.MediaSource? {
@@ -193,6 +200,7 @@ class PlaybackService : MediaSessionService() {
     companion object {
         private const val ACTION_PLAY_RESOLVED = "com.geovideos.app.action.PLAY_RESOLVED"
         private const val ACTION_APPEND_RESOLVED = "com.geovideos.app.action.APPEND_RESOLVED"
+        private const val ACTION_SET_CONTINUOUS_AUTOPLAY = "com.geovideos.app.action.SET_CONTINUOUS_AUTOPLAY"
         private const val EXTRA_MEDIA_ID = "media_id"
         private const val EXTRA_TITLE = "title"
         private const val EXTRA_ARTIST = "artist"
@@ -204,6 +212,15 @@ class PlaybackService : MediaSessionService() {
         private const val EXTRA_POSITION_MS = "position_ms"
         private const val EXTRA_AUTOPLAY = "autoplay"
         private const val EXTRA_REPEAT = "repeat"
+        private const val EXTRA_CONTINUOUS_AUTOPLAY = "continuous_autoplay"
+
+        internal fun setContinuousAutoplay(context: Context, enabled: Boolean) {
+            val intent = Intent(context, PlaybackService::class.java).apply {
+                action = ACTION_SET_CONTINUOUS_AUTOPLAY
+                putExtra(EXTRA_CONTINUOUS_AUTOPLAY, enabled)
+            }
+            runCatching { context.startService(intent) }
+        }
 
         internal fun playResolved(
             context: Context,

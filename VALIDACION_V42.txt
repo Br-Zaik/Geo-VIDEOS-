@@ -1,0 +1,30 @@
+Geo Videos V42 - Correccion del reproductor, ventana emergente, Shorts e historial
+
+Cambios realizados sobre V41:
+- Se restauro el minirreproductor horizontal de ancho completo: miniatura a la izquierda, titulo/canal, pausa y cerrar.
+- Se eliminaron los tres controles superpuestos que mostraban Llenar, Ventana y Ampliar.
+- El video conserva un unico boton de pantalla completa y el engranaje nativo del reproductor.
+- La reproduccion automatica se elimino de la tarjeta situada debajo del video y se movio al menu del engranaje.
+- Se mantuvo la accion Ventana emergente debajo del video, separada de los controles superpuestos.
+- Se agrego comprobacion de permiso Picture-in-Picture y acceso a los ajustes de Imagen en imagen cuando Android lo bloquea.
+- En Android 8 a 11 se solicita Picture-in-Picture al salir de la app mediante onUserLeaveHint; en Android 12 o superior se conserva auto-enter.
+- Se mantuvo el modo Segundo plano para audio con pantalla apagada.
+- La cola multimedia conserva Anterior, Reproducir/Pausar y Siguiente; el autoplay OFF pausa al finalizar sin eliminar la cola.
+- Se corrigio el modo musica para que no quede guardado al abrir otro video o Short.
+- El feed de Shorts prioriza descubrimiento publico y limita repeticiones del mismo canal; las suscripciones son solo una señal secundaria.
+- Los Shorts reproducidos ahora se guardan tambien en el historial local.
+- El historial conserva buscador, filtros, fecha, miniatura, duracion, progreso y eliminacion individual.
+- Los archivos y el flujo del descargador no fueron modificados en esta correccion.
+- No se modificaron inicio de sesion, Google, huella, cuenta ni sesion guardada.
+
+Validaciones realizadas:
+- Version actualizada a 42.0.0 (versionCode 420).
+- Parseo correcto de 27 archivos XML, incluido AndroidManifest.xml.
+- Analisis sintactico de todos los archivos Kotlin con kotlinc: no se detectaron tokens inesperados, bloques sin cerrar ni parametros duplicados.
+- Revision de referencias entre UnifiedPlayerOverlay, NativePlayerDetailsList, MainActivity, GeoPlayerConnection y PlaybackService.
+- Confirmacion de que ResolvedMediaDownloader.kt permanece sin cambios respecto de V41.
+
+Limitacion del entorno:
+- La compilacion Android completa no pudo ejecutarse porque services.gradle.org no se pudo resolver al intentar descargar Gradle 8.13.
+- Por ello, el ZIP debe compilarse en GitHub Actions y probarse en un telefono Android antes de publicarlo.
+- El historial mostrado es el historial persistente de Geo Videos. La API publica de YouTube no entrega automaticamente el historial privado completo de la cuenta.

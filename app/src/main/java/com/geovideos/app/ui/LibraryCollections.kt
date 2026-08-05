@@ -71,6 +71,7 @@ internal enum class LibraryDestination {
     HISTORY,
     WATCH_LATER,
     LIKED,
+    MUSIC,
     UPLOADS,
     SUBSCRIPTIONS
 }
@@ -80,6 +81,7 @@ internal fun LibraryDestination.title(): String = when (this) {
     LibraryDestination.HISTORY -> "Historial"
     LibraryDestination.WATCH_LATER -> "Ver después"
     LibraryDestination.LIKED -> "Videos que me gustan"
+    LibraryDestination.MUSIC -> "Música"
     LibraryDestination.UPLOADS -> "Mis videos"
     LibraryDestination.SUBSCRIPTIONS -> "Suscripciones"
 }
@@ -158,6 +160,7 @@ internal fun LibraryCollectionScreen(
             emptyMessage = when (destination) {
                 LibraryDestination.WATCH_LATER -> "Guarda videos y aparecerán aquí para verlos después."
                 LibraryDestination.LIKED -> "Los videos que marques con Me gusta aparecerán aquí."
+                LibraryDestination.MUSIC -> "La música que reproduzcas o marques con Me gusta aparecerá aquí."
                 LibraryDestination.HISTORY -> "Todavía no hay videos en tu historial."
                 else -> "No hay videos disponibles en esta sección."
             },
