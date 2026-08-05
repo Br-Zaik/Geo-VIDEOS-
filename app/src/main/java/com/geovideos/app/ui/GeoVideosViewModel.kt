@@ -1671,10 +1671,10 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
             "shorts virales humor gaming musica anime deportes animales curiosidades tecnologia español"
         }
         val queries = listOf(
-            normalizedPreferred,
-            "shorts virales humor español",
-            "shorts gaming musica deportes español",
-            "shorts anime curiosidades animales tecnologia español"
+            "shorts virales humor animales curiosidades español",
+            "shorts deportes futbol comida viajes tecnologia español",
+            "shorts gaming musica baile retos español",
+            normalizedPreferred
         )
             .map { it.replace(Regex("""\s+"""), " ").trim() }
             .filter { it.isNotBlank() }
@@ -1712,15 +1712,41 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
         fallback: List<VideoItem>,
         limit: Int
     ): List<VideoItem> {
-        // Mezcla descubrimiento y señales personales sin limitar Shorts a Suscripciones.
+        // DailyTube-style discovery: rotate themes before using personal signals,
+        // so one interest or subscription cannot fill the whole shelf.
+        val allDiscovered = mergeUniqueVideos(discovered, fallback)
+        val buckets = allDiscovered.groupBy(::shortDiscoveryCategory)
+        val themed = roundRobinVideos(
+            buckets["humor"].orEmpty(),
+            buckets["animals"].orEmpty(),
+            buckets["sports"].orEmpty(),
+            buckets["gaming"].orEmpty(),
+            buckets["music"].orEmpty(),
+            buckets["tech"].orEmpty(),
+            buckets["anime"].orEmpty(),
+            buckets["other"].orEmpty()
+        )
         val weighted = roundRobinVideos(
-            discovered,
-            discovered.drop(1),
-            personalized,
-            discovered.drop(2),
-            fallback
+            themed,
+            allDiscovered.drop(1),
+            personalized.take((limit / 4).coerceAtLeast(4)),
+            allDiscovered.drop(2)
         )
         return limitShortsPerChannel(weighted, limit)
+    }
+
+    private fun shortDiscoveryCategory(video: VideoItem): String {
+        val text = (video.title + " " + video.description + " " + video.channelTitle).lowercase()
+        return when {
+            listOf("humor", "risa", "gracioso", "comedia", "meme", "broma").any { it in text } -> "humor"
+            listOf("animal", "perro", "gato", "mascota", "wildlife").any { it in text } -> "animals"
+            listOf("futbol", "fútbol", "deporte", "gol", "basket", "fitness").any { it in text } -> "sports"
+            listOf("gaming", "juego", "free fire", "minecraft", "roblox", "gameplay").any { it in text } -> "gaming"
+            listOf("musica", "música", "song", "rap", "baile", "dance", "lyrics").any { it in text } -> "music"
+            listOf("tecnologia", "tecnología", "celular", "android", "ciencia", "curiosidad").any { it in text } -> "tech"
+            listOf("anime", "manga", "manhwa", "naruto", "donghua").any { it in text } -> "anime"
+            else -> "other"
+        }
     }
 
     private fun isAcceptableShort(video: VideoItem): Boolean {

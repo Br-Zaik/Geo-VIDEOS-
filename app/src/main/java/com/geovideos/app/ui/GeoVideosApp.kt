@@ -201,7 +201,8 @@ fun GeoVideosApp(
     onConnectGoogle: () -> Unit,
     onSwitchGoogleAccount: (String) -> Unit,
     isInPictureInPictureMode: Boolean = false,
-    fullscreenRequestToken: Int = 0
+    fullscreenRequestToken: Int = 0,
+    expandPlayerRequestToken: Int = 0
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val snackbar = remember { SnackbarHostState() }
@@ -232,6 +233,11 @@ fun GeoVideosApp(
     }
     val mainStateHolder = rememberSaveableStateHolder()
     val selectedVideo = state.selectedVideo
+    LaunchedEffect(expandPlayerRequestToken, selectedVideo?.id) {
+        if (expandPlayerRequestToken > 0 && selectedVideo != null) {
+            viewModel.expandPlayer()
+        }
+    }
     val shortPlaybackMode = state.section == MainSection.SHORTS && !state.playerExpanded
     LaunchedEffect(selectedVideo?.id, state.autoplay, state.dataSaver, shortPlaybackMode) {
         selectedVideo?.let { video ->

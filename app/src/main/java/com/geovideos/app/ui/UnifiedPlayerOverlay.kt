@@ -449,9 +449,9 @@ internal fun UnifiedPlayerOverlay(
         val screenWidthPx = with(density) { maxWidth.toPx() }
         val screenHeightPx = with(density) { availableMaxHeight.toPx() }
         val fullPlayerHeightPx = screenWidthPx * 9f / 16f
-        val miniWidthPx = with(density) { 104.dp.toPx() }
+        val miniWidthPx = with(density) { 128.dp.toPx() }
         val miniHeightPx = miniWidthPx * 9f / 16f
-        val miniBottomClearancePx = with(density) { 72.dp.toPx() }
+        val miniBottomClearancePx = with(density) { 78.dp.toPx() }
         val miniTopPx = (screenHeightPx - miniBottomClearancePx - miniHeightPx).coerceAtLeast(1f)
         val miniScale = (miniWidthPx / screenWidthPx).coerceIn(0.18f, 1f)
         val velocityThresholdPx = with(density) { 920.dp.toPx() }
@@ -623,7 +623,7 @@ internal fun UnifiedPlayerOverlay(
                         }
                         .fillMaxWidth()
                         .height(3.dp)
-                        .zIndex(71f)
+                        .zIndex(73f)
                         .graphicsLayer {
                             alpha = ((p - 0.82f) / 0.18f).coerceIn(0f, 1f)
                         }
@@ -637,6 +637,7 @@ internal fun UnifiedPlayerOverlay(
             Modifier
                 .width(maxWidth)
                 .height(with(density) { fullPlayerHeightPx.toDp() })
+                .zIndex(if (p >= 0.82f) 72f else 50f)
                 .graphicsLayer {
                     translationY = miniTopPx * p
                     scaleX = 1f - ((1f - miniScale) * p)

@@ -28,6 +28,7 @@ import androidx.recyclerview.widget.ListAdapter
 import androidx.recyclerview.widget.RecyclerView
 import com.bumptech.glide.Glide
 import com.geovideos.app.data.VideoItem
+import kotlin.math.roundToInt
 
 @Composable
 internal fun RecyclerHomeFeed(
@@ -64,84 +65,141 @@ internal fun RecyclerHomeFeed(
     AndroidView(
         modifier = modifier,
         factory = { context ->
-            RecyclerView(context).apply {
+            val root = FrameLayout(context)
+            val recycler = RecyclerView(context).apply {
                 recyclerViewRef = this
-                val runtime = HomeFeedRuntime(
-                    onAtTopChanged = onAtTopChanged,
-                    onRefresh = onRefresh,
-                    refreshing = refreshing
-                )
-                tag = runtime
                 layoutManager = LinearLayoutManager(context).apply {
-                    initialPrefetchItemCount = 4
+                    initialPrefetchItemCount = 5
                 }
                 this.adapter = adapter
                 itemAnimator = null
                 setHasFixedSize(false)
-                setItemViewCacheSize(4)
+                setItemViewCacheSize(6)
                 recycledViewPool.setMaxRecycledViews(HomeFeedAdapter.TYPE_VIDEO, 8)
                 overScrollMode = View.OVER_SCROLL_NEVER
                 isNestedScrollingEnabled = true
+            }
+            root.addView(
+                recycler,
+                FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.MATCH_PARENT
+                )
+            )
 
-                setOnTouchListener { _, event ->
-                    when (event.actionMasked) {
-                        MotionEvent.ACTION_DOWN -> {
-                            runtime.startY = event.y
-                            runtime.pullEligible = !canScrollVertically(-1)
-                        }
-                        MotionEvent.ACTION_MOVE -> {
-                            if (!canScrollVertically(-1) && event.y >= runtime.startY) {
-                                runtime.pullEligible = true
-                            }
-                        }
-                        MotionEvent.ACTION_UP -> {
-                            val distance = event.y - runtime.startY
-                            if (
-                                runtime.pullEligible &&
-                                !runtime.refreshing &&
-                                distance >= resources.displayMetrics.density * 72f
-                            ) {
-                                runtime.onRefresh()
-                            }
-                            runtime.pullEligible = false
-                        }
-                        MotionEvent.ACTION_CANCEL -> runtime.pullEligible = false
+            val indicator = ProgressBar(context).apply {
+                visibility = View.GONE
+                alpha = 0f
+                scaleX = 0.72f
+                scaleY = 0.72f
+            }
+            root.addView(
+                indicator,
+                FrameLayout.LayoutParams(dp(context, 42), dp(context, 42), Gravity.TOP or Gravity.CENTER_HORIZONTAL).apply {
+                    topMargin = dp(context, 3)
+                }
+            )
+
+            val runtime = HomeFeedRuntime(
+                onAtTopChanged = onAtTopChanged,
+                onRefresh = onRefresh,
+                refreshing = refreshing,
+                recycler = recycler,
+                indicator = indicator
+            )
+            root.tag = runtime
+
+            recycler.setOnTouchListener { _, event ->
+                val density = context.resources.displayMetrics.density
+                when (event.actionMasked) {
+                    MotionEvent.ACTION_DOWN -> {
+                        runtime.startY = event.y
+                        runtime.pullEligible = !recycler.canScrollVertically(-1)
+                        runtime.pullDistance = 0f
                     }
-                    false
+                    MotionEvent.ACTION_MOVE -> {
+                        if (!recycler.canScrollVertically(-1) && event.y >= runtime.startY) {
+                            runtime.pullEligible = true
+                            val raw = (event.y - runtime.startY).coerceAtLeast(0f)
+                            runtime.pullDistance = (raw * 0.36f).coerceAtMost(58f * density)
+                            recycler.translationY = runtime.pullDistance
+                            indicator.visibility = View.VISIBLE
+                            indicator.alpha = (runtime.pullDistance / (44f * density)).coerceIn(0.15f, 1f)
+                            indicator.translationY = (runtime.pullDistance - 34f * density).coerceAtLeast(0f)
+                        }
+                    }
+                    MotionEvent.ACTION_UP -> {
+                        val shouldRefresh = runtime.pullEligible &&
+                            !runtime.refreshing &&
+                            runtime.pullDistance >= 42f * density
+                        recycler.animate().translationY(0f).setDuration(180L).start()
+                        runtime.pullDistance = 0f
+                        runtime.pullEligible = false
+                        if (shouldRefresh) {
+                            indicator.visibility = View.VISIBLE
+                            indicator.alpha = 1f
+                            runtime.onRefresh()
+                        } else if (!runtime.refreshing) {
+                            indicator.animate().alpha(0f).setDuration(140L).withEndAction {
+                                if (!runtime.refreshing) indicator.visibility = View.GONE
+                            }.start()
+                        }
+                    }
+                    MotionEvent.ACTION_CANCEL -> {
+                        recycler.animate().translationY(0f).setDuration(160L).start()
+                        runtime.pullDistance = 0f
+                        runtime.pullEligible = false
+                        if (!runtime.refreshing) {
+                            indicator.visibility = View.GONE
+                            indicator.alpha = 0f
+                        }
+                    }
+                }
+                false
+            }
+
+            recycler.addOnScrollListener(object : RecyclerView.OnScrollListener() {
+                override fun onScrolled(recyclerView: RecyclerView, dx: Int, dy: Int) {
+                    runtime.onAtTopChanged(!recyclerView.canScrollVertically(-1))
+                    if (dy <= 0) return
+                    val manager = recyclerView.layoutManager as? LinearLayoutManager ?: return
+                    val lastVisible = manager.findLastVisibleItemPosition()
+                    val total = recyclerView.adapter?.itemCount ?: 0
+                    val feedAdapter = recyclerView.adapter as? HomeFeedAdapter ?: return
+                    if (
+                        feedAdapter.canLoadMore &&
+                        !feedAdapter.loadingMore &&
+                        total > 0 &&
+                        lastVisible >= total - 4
+                    ) {
+                        feedAdapter.loadingMore = true
+                        feedAdapter.onLoadMore()
+                    }
                 }
 
-                addOnScrollListener(object : RecyclerView.OnScrollListener() {
-                    override fun onScrolled(recyclerView: RecyclerView, dx: Int, dy: Int) {
-                        runtime.onAtTopChanged(!recyclerView.canScrollVertically(-1))
-                        if (dy <= 0) return
-                        val manager = recyclerView.layoutManager as? LinearLayoutManager ?: return
-                        val lastVisible = manager.findLastVisibleItemPosition()
-                        val total = recyclerView.adapter?.itemCount ?: 0
-                        val feedAdapter = recyclerView.adapter as? HomeFeedAdapter ?: return
-                        if (
-                            feedAdapter.canLoadMore &&
-                            !feedAdapter.loadingMore &&
-                            total > 0 &&
-                            lastVisible >= total - 4
-                        ) {
-                            feedAdapter.loadingMore = true
-                            feedAdapter.onLoadMore()
-                        }
-                    }
-
-                    override fun onScrollStateChanged(recyclerView: RecyclerView, newState: Int) {
-                        runtime.onAtTopChanged(!recyclerView.canScrollVertically(-1))
-                    }
-                })
-                post { runtime.onAtTopChanged(!canScrollVertically(-1)) }
-            }
+                override fun onScrollStateChanged(recyclerView: RecyclerView, newState: Int) {
+                    runtime.onAtTopChanged(!recyclerView.canScrollVertically(-1))
+                }
+            })
+            recycler.post { runtime.onAtTopChanged(!recycler.canScrollVertically(-1)) }
+            root
         },
-        update = { recyclerView ->
+        update = { root ->
+            val runtime = root.tag as HomeFeedRuntime
+            val recyclerView = runtime.recycler
             recyclerViewRef = recyclerView
-            (recyclerView.tag as? HomeFeedRuntime)?.let { runtime ->
-                runtime.onAtTopChanged = onAtTopChanged
-                runtime.onRefresh = onRefresh
-                runtime.refreshing = refreshing
+            runtime.onAtTopChanged = onAtTopChanged
+            runtime.onRefresh = onRefresh
+            runtime.refreshing = refreshing
+            runtime.indicator.apply {
+                if (refreshing) {
+                    visibility = View.VISIBLE
+                    alpha = 1f
+                } else if (recyclerView.translationY == 0f) {
+                    animate().alpha(0f).setDuration(140L).withEndAction {
+                        if (!runtime.refreshing) visibility = View.GONE
+                    }.start()
+                }
             }
             onAtTopChanged(!recyclerView.canScrollVertically(-1))
             val homeAdapter = recyclerView.adapter as HomeFeedAdapter
@@ -164,14 +222,16 @@ internal fun RecyclerHomeFeed(
     )
 }
 
-
 private class HomeFeedRuntime(
     var onAtTopChanged: (Boolean) -> Unit,
     var onRefresh: () -> Unit,
-    var refreshing: Boolean
+    var refreshing: Boolean,
+    val recycler: RecyclerView,
+    val indicator: ProgressBar
 ) {
     var startY: Float = 0f
     var pullEligible: Boolean = false
+    var pullDistance: Float = 0f
 }
 
 private fun RecyclerView.scrollHomeToTop() {
@@ -194,6 +254,10 @@ private sealed interface HomeFeedRow {
 
     data class Video(val video: VideoItem, val saved: Boolean) : HomeFeedRow {
         override val stableId: Long = video.id.hashCode().toLong()
+    }
+
+    data class Skeleton(val index: Int, val shortsStyle: Boolean = false) : HomeFeedRow {
+        override val stableId: Long = Long.MIN_VALUE + 100 + index
     }
 
     data object Loading : HomeFeedRow {
@@ -236,19 +300,22 @@ private class HomeFeedAdapter(
         refreshing: Boolean,
         loadingMore: Boolean
     ) {
+        val hasContent = videos.isNotEmpty() || shorts.isNotEmpty() || mixVideo != null
         val rows = buildList {
-            if (refreshing) add(HomeFeedRow.Loading)
-            if (shorts.isNotEmpty()) add(HomeFeedRow.Shorts(shorts.take(12)))
-            val firstVideo = videos.firstOrNull()
-            firstVideo?.let { add(HomeFeedRow.Video(it, it.id in watchLaterIds)) }
+            if (refreshing && hasContent) add(HomeFeedRow.Loading)
+            if (shorts.isNotEmpty()) add(HomeFeedRow.Shorts(shorts.take(14)))
             mixVideo?.let { add(HomeFeedRow.Mix(it)) }
-            videos.drop(if (firstVideo == null) 0 else 1).forEach { video ->
+            videos.forEach { video ->
                 add(HomeFeedRow.Video(video, video.id in watchLaterIds))
             }
             when {
                 loadingMore && !refreshing -> add(HomeFeedRow.Loading)
-                loading && !refreshing && videos.isEmpty() && shorts.isEmpty() && mixVideo == null -> add(HomeFeedRow.Loading)
-                videos.isEmpty() && shorts.isEmpty() && mixVideo == null -> add(HomeFeedRow.Empty)
+                loading && !hasContent -> {
+                    add(HomeFeedRow.Skeleton(index = 0, shortsStyle = true))
+                    add(HomeFeedRow.Skeleton(index = 1))
+                    add(HomeFeedRow.Skeleton(index = 2))
+                }
+                !hasContent -> add(HomeFeedRow.Empty)
             }
         }
         this.loadingMore = loadingMore
@@ -261,6 +328,7 @@ private class HomeFeedAdapter(
         is HomeFeedRow.Shorts -> TYPE_SHORTS
         is HomeFeedRow.Mix -> TYPE_MIX
         is HomeFeedRow.Video -> TYPE_VIDEO
+        is HomeFeedRow.Skeleton -> TYPE_SKELETON
         HomeFeedRow.Loading -> TYPE_LOADING
         HomeFeedRow.Empty -> TYPE_EMPTY
     }
@@ -269,6 +337,7 @@ private class HomeFeedAdapter(
         TYPE_SHORTS -> ShortsShelfHolder(parent.context, onOpenShort)
         TYPE_MIX -> MixHolder(parent.context, onPlay)
         TYPE_VIDEO -> VideoHolder(parent.context, onPlay, onWatchLater)
+        TYPE_SKELETON -> SkeletonHolder(parent.context)
         TYPE_LOADING -> LoadingHolder(parent.context)
         else -> EmptyHolder(parent.context)
     }
@@ -278,6 +347,7 @@ private class HomeFeedAdapter(
             is HomeFeedRow.Shorts -> (holder as ShortsShelfHolder).bind(row.videos, onOpenShort)
             is HomeFeedRow.Mix -> (holder as MixHolder).bind(row.video, onPlay)
             is HomeFeedRow.Video -> (holder as VideoHolder).bind(row.video, row.saved, onPlay, onWatchLater)
+            is HomeFeedRow.Skeleton -> (holder as SkeletonHolder).bind(row.shortsStyle)
             HomeFeedRow.Loading -> Unit
             HomeFeedRow.Empty -> Unit
         }
@@ -298,6 +368,7 @@ private class HomeFeedAdapter(
         const val TYPE_VIDEO = 3
         const val TYPE_LOADING = 4
         const val TYPE_EMPTY = 5
+        const val TYPE_SKELETON = 6
     }
 }
 
@@ -412,11 +483,91 @@ private class ShortsShelfHolder(
     }
 }
 
+private class SkeletonHolder(context: Context) : RecyclerView.ViewHolder(SkeletonFeedView(context)) {
+    private val view = itemView as SkeletonFeedView
+    fun bind(shortsStyle: Boolean) = view.bind(shortsStyle)
+}
+
+private class SkeletonFeedView(context: Context) : LinearLayout(context) {
+    private val imageBlock = View(context)
+    private val avatarBlock = View(context)
+    private val titleBlock = View(context)
+    private val subtitleBlock = View(context)
+    private val shortsRow = LinearLayout(context)
+
+    init {
+        orientation = VERTICAL
+        layoutParams = RecyclerView.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT
+        )
+        setPadding(dp(context, 14), dp(context, 10), dp(context, 14), dp(context, 14))
+        setBackgroundColor(Color.BLACK)
+
+        shortsRow.orientation = HORIZONTAL
+        shortsRow.gravity = Gravity.CENTER_VERTICAL
+        repeat(3) { index ->
+            shortsRow.addView(View(context).apply {
+                background = roundedSkeleton(context, 14f)
+            }, LayoutParams(dp(context, 146), dp(context, 258)).apply {
+                if (index > 0) marginStart = dp(context, 10)
+            })
+        }
+        addView(shortsRow, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+
+        imageBlock.background = roundedSkeleton(context, 0f)
+        addView(imageBlock, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(context, 205)))
+
+        val info = LinearLayout(context).apply {
+            orientation = HORIZONTAL
+            gravity = Gravity.TOP
+            setPadding(0, dp(context, 11), 0, 0)
+        }
+        avatarBlock.background = roundedSkeleton(context, 22f)
+        info.addView(avatarBlock, LayoutParams(dp(context, 42), dp(context, 42)))
+        val texts = LinearLayout(context).apply {
+            orientation = VERTICAL
+            titleBlock.background = roundedSkeleton(context, 6f)
+            subtitleBlock.background = roundedSkeleton(context, 6f)
+            addView(titleBlock, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(context, 15)))
+            addView(subtitleBlock, LayoutParams(dp(context, 180), dp(context, 12)).apply {
+                topMargin = dp(context, 8)
+            })
+        }
+        info.addView(texts, LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+            marginStart = dp(context, 12)
+            marginEnd = dp(context, 38)
+        })
+        addView(info, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+    }
+
+    fun bind(shortsStyle: Boolean) {
+        shortsRow.visibility = if (shortsStyle) View.VISIBLE else View.GONE
+        imageBlock.visibility = if (shortsStyle) View.GONE else View.VISIBLE
+        avatarBlock.visibility = if (shortsStyle) View.GONE else View.VISIBLE
+        titleBlock.visibility = if (shortsStyle) View.GONE else View.VISIBLE
+        subtitleBlock.visibility = if (shortsStyle) View.GONE else View.VISIBLE
+        layoutParams = (layoutParams as RecyclerView.LayoutParams).apply {
+            height = if (shortsStyle) dp(context, 284) else ViewGroup.LayoutParams.WRAP_CONTENT
+        }
+        alpha = 0.86f
+    }
+}
+
+private fun roundedSkeleton(context: Context, radiusDp: Float): GradientDrawable =
+    GradientDrawable().apply {
+        setColor(0xFF24242A.toInt())
+        cornerRadius = dp(context, radiusDp.roundToInt()).toFloat()
+    }
+
 private class LoadingHolder(context: Context) : RecyclerView.ViewHolder(
     FrameLayout(context).apply {
-        layoutParams = RecyclerView.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(context, 96))
+        layoutParams = RecyclerView.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(context, 52))
         addView(
-            ProgressBar(context),
+            ProgressBar(context).apply {
+                scaleX = 0.72f
+                scaleY = 0.72f
+            },
             FrameLayout.LayoutParams(dp(context, 38), dp(context, 38), Gravity.CENTER)
         )
     }
@@ -425,7 +576,7 @@ private class LoadingHolder(context: Context) : RecyclerView.ViewHolder(
 private class EmptyHolder(context: Context) : RecyclerView.ViewHolder(
     TextView(context).apply {
         layoutParams = RecyclerView.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(context, 120))
-        text = "No hay videos disponibles. Pulsa actualizar."
+        text = "No hay videos disponibles. Desliza hacia abajo para actualizar."
         gravity = Gravity.CENTER
         setTextColor(0xFFB6B3BE.toInt())
         setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
@@ -445,7 +596,7 @@ private class ShortsShelfView(
         setPadding(0, dp(context, 8), 0, dp(context, 14))
 
         addView(TextView(context).apply {
-            text = "Shorts"
+            text = "⚡  Shorts"
             setTextColor(Color.WHITE)
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 21f)
             setTypeface(typeface, android.graphics.Typeface.BOLD)
@@ -453,7 +604,7 @@ private class ShortsShelfView(
         })
 
         addView(RecyclerView(context).apply {
-            layoutParams = LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(context, 288))
+            layoutParams = LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(context, 304))
             layoutManager = LinearLayoutManager(context, RecyclerView.HORIZONTAL, false).apply {
                 initialPrefetchItemCount = 3
             }
@@ -500,7 +651,7 @@ private class ShortHolder(context: Context) : RecyclerView.ViewHolder(ShortCardV
         card.setOnClickListener { onOpenShort(video) }
         card.title.text = video.title
         card.meta.text = buildString {
-            append(video.channelTitle.ifBlank { "Short recomendado" })
+            append("Recomendado")
             formatRecyclerPublished(video.publishedAt).takeIf { it.isNotBlank() }?.let {
                 append(" · ")
                 append(it)
@@ -603,7 +754,9 @@ private class ShortCardView(context: Context) : FrameLayout(context) {
     private val more = TextView(context)
 
     init {
-        layoutParams = RecyclerView.LayoutParams(dp(context, 154), dp(context, 278)).apply {
+        val screenWidth = context.resources.displayMetrics.widthPixels
+        val cardWidth = (screenWidth * 0.445f).roundToInt().coerceIn(dp(context, 148), dp(context, 184))
+        layoutParams = RecyclerView.LayoutParams(cardWidth, dp(context, 292)).apply {
             marginEnd = dp(context, 10)
         }
         setBackgroundColor(Color.BLACK)
@@ -639,12 +792,12 @@ private class ShortCardView(context: Context) : FrameLayout(context) {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(context, 9), dp(context, 8), dp(context, 9), dp(context, 10))
             title.setTextColor(Color.WHITE)
-            title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+            title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13.5f)
             title.setTypeface(title.typeface, android.graphics.Typeface.BOLD)
             title.maxLines = 3
             title.ellipsize = android.text.TextUtils.TruncateAt.END
             meta.setTextColor(0xFFE1DDE7.toInt())
-            meta.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
+            meta.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11.5f)
             meta.maxLines = 1
             meta.ellipsize = android.text.TextUtils.TruncateAt.END
             meta.setPadding(0, dp(context, 5), 0, 0)

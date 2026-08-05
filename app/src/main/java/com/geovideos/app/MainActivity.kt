@@ -32,6 +32,7 @@ import com.google.android.gms.common.api.Scope
 class MainActivity : ComponentActivity() {
     private val inPictureInPictureState = mutableStateOf(false)
     private val fullscreenRequestState = mutableIntStateOf(0)
+    private val expandPlayerRequestState = mutableIntStateOf(0)
     private var videoPictureInPictureEnabled = false
     private var pendingFloatingVideo: VideoItem? = null
     private var pendingFloatingDataSaver: Boolean = false
@@ -63,7 +64,8 @@ class MainActivity : ComponentActivity() {
                     onConnectGoogle = { requestGoogleAuthorization(allowResolution = true) },
                     onSwitchGoogleAccount = ::switchGoogleAccount,
                     isInPictureInPictureMode = inPictureInPictureState.value,
-                    fullscreenRequestToken = fullscreenRequestState.intValue
+                    fullscreenRequestToken = fullscreenRequestState.intValue,
+                    expandPlayerRequestToken = expandPlayerRequestState.intValue
                 )
             }
         }
@@ -88,6 +90,10 @@ class MainActivity : ComponentActivity() {
         if (intent?.getBooleanExtra(EXTRA_OPEN_FULLSCREEN_PLAYER, false) == true) {
             fullscreenRequestState.intValue += 1
             intent.removeExtra(EXTRA_OPEN_FULLSCREEN_PLAYER)
+        }
+        if (intent?.getBooleanExtra(EXTRA_EXPAND_PLAYER, false) == true) {
+            expandPlayerRequestState.intValue += 1
+            intent.removeExtra(EXTRA_EXPAND_PLAYER)
         }
     }
 
@@ -293,5 +299,6 @@ class MainActivity : ComponentActivity() {
 
     companion object {
         const val EXTRA_OPEN_FULLSCREEN_PLAYER = "com.geovideos.app.extra.OPEN_FULLSCREEN_PLAYER"
+        const val EXTRA_EXPAND_PLAYER = "com.geovideos.app.extra.EXPAND_PLAYER"
     }
 }

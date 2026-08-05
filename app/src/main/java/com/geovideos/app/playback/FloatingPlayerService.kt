@@ -62,7 +62,7 @@ import kotlin.math.roundToInt
  * Ventana flotante propia, independiente del minirreproductor interno.
  *
  * La ventana empieza en un tamano comodo, se puede mover y redimensionar libremente
- * desde el control inferior izquierdo, manteniendo la proporcion 16:9.
+ * desde el control inferior derecho, manteniendo la proporcion 16:9.
  * Los controles se superponen sobre el video y se ocultan automaticamente para
  * no convertir el reproductor en un panel grande dentro de la aplicacion.
  */
@@ -77,6 +77,8 @@ class FloatingPlayerService : Service() {
     private var playerView: PlayerView? = null
     private var windowParams: WindowManager.LayoutParams? = null
     private var controlsLayer: View? = null
+    private var qualityPanel: LinearLayout? = null
+    private var speedPanel: LinearLayout? = null
     private var activeController: MediaController? = null
     private var currentVideo: VideoItem? = null
     private var dataSaver: Boolean = false
@@ -305,24 +307,46 @@ class FloatingPlayerService : Service() {
             setPadding(dp(6), dp(5), dp(5), 0)
             background = verticalScrim(top = true)
         }
-        qualityText = compactTextButton("Auto") { cycleQuality() }
-        speedText = compactTextButton("1x") { cycleSpeed() }
-        topRow.addView(qualityText, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(27)))
-        topRow.addView(speedText, LinearLayout.LayoutParams(dp(40), dp(27)).apply { marginStart = dp(3) })
-        topRow.addView(textButton("×", 19f) { closeFloatingAndStopPlayback() }, LinearLayout.LayoutParams(dp(32), dp(27)).apply { marginStart = dp(2) })
+        qualityText = compactTextButton("Auto") { toggleQualityPanel() }
+        speedText = compactTextButton("1x") { toggleSpeedPanel() }
+        topRow.addView(qualityText, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(28)))
+        topRow.addView(speedText, LinearLayout.LayoutParams(dp(42), dp(28)).apply { marginStart = dp(4) })
+        topRow.addView(
+            textButton("×", 20f) { closeFloatingAndStopPlayback() },
+            LinearLayout.LayoutParams(dp(34), dp(28)).apply { marginStart = dp(3) }
+        )
         layer.addView(
             topRow,
             FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
-                dp(34),
+                dp(36),
                 Gravity.TOP
             )
         )
 
+        qualityPanel = createChoicePanel().also { panel ->
+            layer.addView(
+                panel,
+                FrameLayout.LayoutParams(dp(156), ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.END).apply {
+                    topMargin = dp(38)
+                    marginEnd = dp(78)
+                }
+            )
+        }
+        speedPanel = createChoicePanel().also { panel ->
+            layer.addView(
+                panel,
+                FrameLayout.LayoutParams(dp(128), ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.END).apply {
+                    topMargin = dp(38)
+                    marginEnd = dp(42)
+                }
+            )
+        }
+
         val bottomPanel = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.BOTTOM
-            setPadding(dp(5), 0, dp(5), dp(3))
+            setPadding(dp(4), 0, dp(4), dp(2))
             background = verticalScrim(top = false)
         }
 
@@ -330,13 +354,10 @@ class FloatingPlayerService : Service() {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
         }
-        resizeHandle = ResizeCornerView(this).apply {
-            contentDescription = "Cambiar tamaño de la ventana"
-            background = roundedBackground(0x8A000000.toInt(), 6f)
-        }.also { handle ->
-            installResizeHandle(handle)
-            controls.addView(handle, LinearLayout.LayoutParams(dp(38), dp(34)))
-        }
+        controls.addView(
+            textButton("↩", 18f) { openPlayerInApp() },
+            LinearLayout.LayoutParams(dp(34), dp(32))
+        )
         controls.addView(View(this), LinearLayout.LayoutParams(0, dp(30), 1f))
         controls.addView(mediaButton(android.R.drawable.ic_media_previous, "Anterior") {
             connection.playPrevious()
@@ -351,13 +372,28 @@ class FloatingPlayerService : Service() {
             showControls(autoHide = true)
         })
         controls.addView(View(this), LinearLayout.LayoutParams(0, dp(30), 1f))
-        controls.addView(
-            textButton("⛶", 17f) { openFullscreenInApp() },
-            LinearLayout.LayoutParams(dp(32), dp(30))
-        )
+        resizeHandle = ResizeCornerView(this).apply {
+            contentDescription = "Cambiar tamaño de la ventana"
+            background = roundedBackground(0x7A000000.toInt(), 6f)
+        }.also { handle ->
+            installResizeHandle(handle)
+            controls.addView(handle, LinearLayout.LayoutParams(dp(38), dp(34)))
+        }
         bottomPanel.addView(
             controls,
-            LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(30))
+            LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(32))
+        )
+
+        timeText = TextView(this).apply {
+            text = "0:00 / 0:00"
+            setTextColor(Color.WHITE)
+            textSize = 10.5f
+            gravity = Gravity.CENTER
+            setShadowLayer(3f, 0f, 1f, Color.BLACK)
+        }
+        bottomPanel.addView(
+            timeText,
+            LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(16))
         )
 
         progressSeek = SeekBar(this).apply {
@@ -388,18 +424,111 @@ class FloatingPlayerService : Service() {
         }
         bottomPanel.addView(
             progressSeek,
-            LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(12))
+            LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(14))
         )
 
         layer.addView(
             bottomPanel,
             FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
-                dp(44),
+                dp(64),
                 Gravity.BOTTOM
             )
         )
         return layer
+    }
+
+    private fun createChoicePanel(): LinearLayout = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        visibility = View.GONE
+        background = roundedBackground(0xF21D1C22.toInt(), 10f)
+        elevation = dp(10).toFloat()
+        setPadding(dp(4), dp(4), dp(4), dp(4))
+    }
+
+    private fun toggleQualityPanel() {
+        if (qualityPanel?.visibility == View.VISIBLE) {
+            hideChoicePanels()
+            showControls(autoHide = true)
+            return
+        }
+        if (qualityOptions.size <= 1) loadQualityOptions()
+        rebuildQualityPanel()
+        speedPanel?.visibility = View.GONE
+        qualityPanel?.visibility = View.VISIBLE
+        handler.removeCallbacks(hideControlsRunnable)
+    }
+
+    private fun rebuildQualityPanel() {
+        val video = currentVideo ?: return
+        qualityPanel?.apply {
+            removeAllViews()
+            addView(choiceRow("Automática", connection.preferredQualityHeight.value == null) {
+                connection.selectQuality(
+                    video.copy(resumePositionMs = connection.progressState.value.positionMs),
+                    null,
+                    dataSaver
+                )
+                hideChoicePanels()
+                showFeedback("Calidad automática")
+                showControls(autoHide = true)
+            })
+            qualityOptions.filterNotNull().sortedDescending().forEach { height ->
+                addView(choiceRow("${height}p", connection.preferredQualityHeight.value == height) {
+                    connection.selectQuality(
+                        video.copy(resumePositionMs = connection.progressState.value.positionMs),
+                        height,
+                        dataSaver
+                    )
+                    hideChoicePanels()
+                    showFeedback("Calidad ${height}p")
+                    showControls(autoHide = true)
+                })
+            }
+            if (qualityOptions.size <= 1) {
+                addView(choiceRow("Buscando calidades…", false) { loadQualityOptions() })
+            }
+        }
+    }
+
+    private fun toggleSpeedPanel() {
+        if (speedPanel?.visibility == View.VISIBLE) {
+            hideChoicePanels()
+            showControls(autoHide = true)
+            return
+        }
+        qualityPanel?.visibility = View.GONE
+        speedPanel?.apply {
+            removeAllViews()
+            listOf(0.5f, 0.75f, 1f, 1.25f, 1.5f, 2f).forEach { speed ->
+                addView(choiceRow(if (speed == 1f) "Normal" else "${speed}x", abs(speed - selectedSpeed) < 0.01f) {
+                    selectedSpeed = speed
+                    connection.setSpeed(speed)
+                    speedText?.text = speedLabel(speed)
+                    hideChoicePanels()
+                    showFeedback("Velocidad ${speedLabel(speed)}")
+                    showControls(autoHide = true)
+                })
+            }
+            visibility = View.VISIBLE
+        }
+        handler.removeCallbacks(hideControlsRunnable)
+    }
+
+    private fun choiceRow(label: String, selected: Boolean, onClick: () -> Unit): TextView =
+        TextView(this).apply {
+            text = if (selected) "✓  $label" else "   $label"
+            setTextColor(Color.WHITE)
+            textSize = 12f
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(9), dp(8), dp(9), dp(8))
+            background = if (selected) roundedBackground(0xFF4C356E.toInt(), 7f) else null
+            setOnClickListener { onClick() }
+        }
+
+    private fun hideChoicePanels() {
+        qualityPanel?.visibility = View.GONE
+        speedPanel?.visibility = View.GONE
     }
 
     private fun attachController(controller: MediaController) {
@@ -428,6 +557,7 @@ class FloatingPlayerService : Service() {
                     .forEach(::add)
             }.distinct()
             updateQualityLabel(connection.coreState.value.videoHeight)
+            if (qualityPanel?.visibility == View.VISIBLE) rebuildQualityPanel()
         }
     }
 
@@ -454,7 +584,7 @@ class FloatingPlayerService : Service() {
         val preferred = connection.preferredQualityHeight.value
         qualityText?.text = when {
             preferred != null -> "${preferred}p"
-            actualHeight > 0 -> "A ${actualHeight}p"
+            actualHeight > 0 -> "Auto ${actualHeight}p"
             else -> "Auto"
         }
     }
@@ -597,8 +727,11 @@ class FloatingPlayerService : Service() {
         controlsVisible = true
         controlsLayer?.visibility = View.VISIBLE
         controlsLayer?.animate()?.alpha(1f)?.setDuration(120L)?.start()
-        if (autoHide) scheduleControlsHide()
+        if (autoHide && !isChoicePanelOpen()) scheduleControlsHide()
     }
+
+    private fun isChoicePanelOpen(): Boolean =
+        qualityPanel?.visibility == View.VISIBLE || speedPanel?.visibility == View.VISIBLE
 
     private fun scheduleControlsHide() {
         handler.removeCallbacks(hideControlsRunnable)
@@ -606,6 +739,7 @@ class FloatingPlayerService : Service() {
     }
 
     private fun hideControls() {
+        hideChoicePanels()
         controlsVisible = false
         handler.removeCallbacks(hideControlsRunnable)
         controlsLayer?.animate()
@@ -624,7 +758,7 @@ class FloatingPlayerService : Service() {
         var startRawX = 0f
         var startWidth = 0
         var startX = 0
-        var fixedRight = 0
+        var startY = 0
         handle.setOnTouchListener { _, event ->
             val params = windowParams ?: return@setOnTouchListener false
             when (event.actionMasked) {
@@ -632,22 +766,22 @@ class FloatingPlayerService : Service() {
                     startRawX = event.rawX
                     startWidth = params.width
                     startX = params.x
-                    fixedRight = startX + startWidth
+                    startY = params.y
                     handler.removeCallbacks(hideControlsRunnable)
                     true
                 }
                 MotionEvent.ACTION_MOVE -> {
-                    val minWidth = dp(150)
-                    val maxWidth = (resources.displayMetrics.widthPixels - dp(10)).coerceAtLeast(minWidth)
-                    val requestedWidth = (startWidth - (event.rawX - startRawX)).roundToInt()
+                    val screenWidth = resources.displayMetrics.widthPixels
+                    val minWidth = (screenWidth * 0.42f).roundToInt().coerceAtLeast(dp(150))
+                    val maxWidth = (screenWidth * 0.96f).roundToInt().coerceAtLeast(minWidth)
+                    val requestedWidth = (startWidth + (event.rawX - startRawX)).roundToInt()
                         .coerceIn(minWidth, maxWidth)
-                    val requestedHeight = (requestedWidth * 9f / 16f).roundToInt()
                     params.width = requestedWidth
-                    params.height = requestedHeight
-                    params.x = fixedRight - requestedWidth
+                    params.height = (requestedWidth * 9f / 16f).roundToInt()
+                    params.x = startX
+                    params.y = startY
                     clampWindowPosition(params)
                     overlayRoot?.let { runCatching { windowManager.updateViewLayout(it, params) } }
-                    showFeedback("${requestedWidth} × ${requestedHeight}")
                     true
                 }
                 MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
@@ -664,9 +798,9 @@ class FloatingPlayerService : Service() {
     private fun initialWindowSize(): Pair<Int, Int> {
         val screenWidth = resources.displayMetrics.widthPixels
         val screenHeight = resources.displayMetrics.heightPixels
-        val minWidth = dp(150)
-        val maxWidth = (screenWidth - dp(10)).coerceAtLeast(minWidth)
-        val defaultWidth = (screenWidth * 0.72f).roundToInt()
+        val minWidth = (screenWidth * 0.42f).roundToInt().coerceAtLeast(dp(150))
+        val maxWidth = (screenWidth * 0.96f).roundToInt().coerceAtLeast(minWidth)
+        val defaultWidth = (screenWidth * 0.86f).roundToInt()
         val width = preferredWindowWidth
             .takeIf { it in minWidth..maxWidth }
             ?: defaultWidth.coerceIn(minWidth, maxWidth)
@@ -702,13 +836,13 @@ class FloatingPlayerService : Service() {
         stopSelf()
     }
 
-    private fun openFullscreenInApp() {
+    private fun openPlayerInApp() {
         saveWindowState()
         val intent = Intent(this, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or
                 Intent.FLAG_ACTIVITY_SINGLE_TOP or
                 Intent.FLAG_ACTIVITY_CLEAR_TOP
-            putExtra(MainActivity.EXTRA_OPEN_FULLSCREEN_PLAYER, true)
+            putExtra(MainActivity.EXTRA_EXPAND_PLAYER, true)
         }
         startActivity(intent)
         stopSelf()
@@ -722,6 +856,8 @@ class FloatingPlayerService : Service() {
         overlayRoot = null
         playerView = null
         controlsLayer = null
+        qualityPanel = null
+        speedPanel = null
         feedbackText = null
         resizeHandle = null
         windowParams = null
@@ -827,13 +963,12 @@ class FloatingPlayerService : Service() {
         override fun onDraw(canvas: Canvas) {
             super.onDraw(canvas)
             val density = resources.displayMetrics.density
-            val left = 7f * density
+            val right = width - 7f * density
             val bottom = height - 7f * density
-            val gap = 5f * density
-            for (index in 1..3) {
-                val length = index * gap
-                canvas.drawLine(left, bottom - length, left + length, bottom, linePaint)
-            }
+            val span = 15f * density
+            canvas.drawLine(right - span, bottom, right, bottom - span, linePaint)
+            canvas.drawLine(right - 7f * density, bottom, right, bottom, linePaint)
+            canvas.drawLine(right, bottom - 7f * density, right, bottom, linePaint)
         }
     }
 

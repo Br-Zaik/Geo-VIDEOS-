@@ -632,12 +632,12 @@ private class NativePlayerAdapter(
                 onPictureInPicture, onOpenChannel
             )
             is PlayerRow.Mix -> (holder as FullVideoHolder).bind(
-                row.current.copy(
+                row.seed.copy(
                     title = "Mix: ${row.current.title}",
                     channelTitle = listOf(row.current.channelTitle, row.seed.channelTitle)
                         .filter { it.isNotBlank() }
                         .distinct()
-                        .joinToString(", ") + " y más"
+                        .joinToString(", ") + " y más · reproducción continua"
                 ),
                 onPlay = { onPlayRelated(row.seed) },
                 onSave = { }
@@ -701,6 +701,12 @@ private class PlayerHeaderHolder(context: Context) : RecyclerView.ViewHolder(Pla
         } else {
             "Comentarios"
         }
+        view.mixBanner.visibility = if (data.mixAvailable) View.VISIBLE else View.GONE
+        view.mixBanner.text = if (data.mixAvailable) {
+            "Mix automático · ${video.channelTitle.ifBlank { "videos relacionados" }} y más"
+        } else {
+            ""
+        }
         view.description.text = data.description
         view.descriptionToggle.visibility = if (data.description.isBlank()) View.GONE else View.VISIBLE
         view.descriptionBox.visibility = View.GONE
@@ -763,6 +769,7 @@ private class PlayerHeaderView(context: Context) : LinearLayout(context) {
     val commentsTitle = TextView(context)
     val commentsHint = TextView(context)
     val commentsBox = LinearLayout(context)
+    val mixBanner = TextView(context)
     val descriptionToggle = TextView(context)
     val descriptionBox = LinearLayout(context)
     val description = TextView(context)
@@ -778,10 +785,10 @@ private class PlayerHeaderView(context: Context) : LinearLayout(context) {
             gravity = Gravity.CENTER_VERTICAL
             setPadding(0, 0, 0, dp(context, 8))
         }
-        stylePlayerTab(infoTab, "Información")
+        stylePlayerTab(infoTab, "Info")
         stylePlayerTab(commentsTab, "Comentarios")
-        tabs.addView(infoTab, LayoutParams(0, dp(context, 40), 1f))
-        tabs.addView(commentsTab, LayoutParams(0, dp(context, 40), 1f).apply { marginStart = dp(context, 8) })
+        tabs.addView(infoTab, LayoutParams(dp(context, 92), dp(context, 34)))
+        tabs.addView(commentsTab, LayoutParams(dp(context, 126), dp(context, 34)).apply { marginStart = dp(context, 7) })
         addView(tabs, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
 
         infoPanel.orientation = VERTICAL
@@ -795,6 +802,14 @@ private class PlayerHeaderView(context: Context) : LinearLayout(context) {
         meta.setTextColor(0xFFAAA7B2.toInt())
         meta.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
         infoPanel.addView(meta, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(context, 5) })
+
+        mixBanner.setTextColor(Color.WHITE)
+        mixBanner.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13.5f)
+        mixBanner.setTypeface(mixBanner.typeface, android.graphics.Typeface.BOLD)
+        mixBanner.setPadding(dp(context, 12), dp(context, 10), dp(context, 12), dp(context, 10))
+        mixBanner.background = roundedDrawable(0xFF211A2B.toInt(), 11f, context)
+        mixBanner.visibility = View.GONE
+        infoPanel.addView(mixBanner, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(context, 9) })
 
         val channelRow = LinearLayout(context).apply { orientation = HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
         avatar.scaleType = ImageView.ScaleType.CENTER_CROP
@@ -821,10 +836,10 @@ private class PlayerHeaderView(context: Context) : LinearLayout(context) {
         }
         val actions = LinearLayout(context).apply { orientation = HORIZONTAL }
         listOf(like, dislike, music, share, watchLater, window, download).forEach { item ->
-            actions.addView(item, LinearLayout.LayoutParams(dp(context, 72), dp(context, 61)))
+            actions.addView(item, LinearLayout.LayoutParams(dp(context, 64), dp(context, 54)))
         }
         scroll.addView(actions)
-        infoPanel.addView(scroll, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(context, 65)).apply { topMargin = dp(context, 7) })
+        infoPanel.addView(scroll, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(context, 58)).apply { topMargin = dp(context, 5) })
 
         descriptionToggle.setTextColor(Color.WHITE)
         descriptionToggle.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
@@ -896,7 +911,7 @@ private class PlayerHeaderView(context: Context) : LinearLayout(context) {
     private fun stylePlayerTab(view: TextView, textValue: String) {
         view.text = textValue
         view.gravity = Gravity.CENTER
-        view.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
+        view.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
         view.setTypeface(view.typeface, android.graphics.Typeface.BOLD)
         view.background = roundedDrawable(0xFF1D1B22.toInt(), 18f, context)
         view.isClickable = true
@@ -1118,15 +1133,15 @@ private class PlayerActionView(context: Context, iconRes: Int, label: String) : 
         isFocusable = true
         icon.setImageResource(iconRes)
         icon.setColorFilter(Color.WHITE)
-        addView(icon, LayoutParams(dp(context, 24), dp(context, 24)))
+        addView(icon, LayoutParams(dp(context, 21), dp(context, 21)))
         labelView.text = label
         labelView.gravity = Gravity.CENTER
         labelView.setTextColor(Color.WHITE)
-        labelView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 10f)
+        labelView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 9.2f)
         labelView.maxLines = 2
         labelView.ellipsize = TextUtils.TruncateAt.END
         addView(labelView, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
-            topMargin = dp(context, 4)
+            topMargin = dp(context, 3)
         })
     }
 

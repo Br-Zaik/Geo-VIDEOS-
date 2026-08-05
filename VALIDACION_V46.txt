@@ -1,0 +1,36 @@
+GEO VIDEOS 46.0.0 - VALIDACION DE CAMBIOS
+Fecha: 2026-08-05
+
+ALCANCE IMPLEMENTADO
+1. Inicio con carga visual mediante tarjetas de esqueleto, sin pantalla vacia.
+2. Actualizacion arrastrando la pagina hacia abajo; no se agrego un boton de recarga en la cabecera.
+3. Shorts de Inicio con tarjetas verticales grandes, fila horizontal, titulo y metadatos.
+4. Mezcla mas diversa de Shorts: humor, animales, deportes, juegos, musica, tecnologia, anime y otros temas, limitando la concentracion por canal.
+5. Mix automatico visible en Inicio y en la informacion del reproductor cuando hay videos relacionados.
+6. Pestañas compactas Info y Comentarios, con fila horizontal de acciones mas pequena.
+7. Minirreproductor interno con superficie de video visible, titulo, canal, pausa, cierre y progreso.
+8. Ventana flotante externa separada del minirreproductor:
+   - tamaño inicial horizontal,
+   - movimiento libre,
+   - redimensionamiento desde la esquina inferior derecha,
+   - sin medidas de pixeles ni marcas tecnicas,
+   - selector real de calidad y velocidad,
+   - anterior, pausa, siguiente, tiempo y barra de progreso,
+   - boton para regresar al video dentro de Geo Videos,
+   - controles que se ocultan automaticamente.
+9. Doble toque para adelantar o retroceder 10 segundos y zoom con dos dedos.
+10. Se conserva el bloqueo de controles y la pantalla completa del reproductor principal.
+
+INICIO DE SESION
+- No se modificaron las funciones de autorizacion, OAuth, seleccion de cuenta, huella ni persistencia de sesion.
+- MainActivity solo recibe una orden interna del reproductor flotante para volver a abrir el video.
+- GeoVideosViewModel solo cambia la seleccion/diversidad del feed de Shorts en esta version.
+
+COMPROBACIONES REALIZADAS
+- Estructura de llaves, parentesis, corchetes, cadenas y comentarios revisada en los archivos Kotlin modificados.
+- Archivos XML validados con analizador XML.
+- Comparacion contra V45.3 confirma que no se cambio la logica de inicio de sesion.
+- Integridad del ZIP comprobada despues de generarlo.
+
+LIMITACION DE VALIDACION
+No se genero el APK localmente porque el entorno no dispone de la distribucion Gradle/Android SDK completa y no puede descargarla por DNS. La compilacion final debe ejecutarse en GitHub Actions. No se afirma que el APK haya sido probado fisicamente hasta completar esa compilacion.
