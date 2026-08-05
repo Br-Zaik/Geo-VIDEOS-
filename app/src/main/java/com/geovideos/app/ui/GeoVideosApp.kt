@@ -205,11 +205,6 @@ fun GeoVideosApp(
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val snackbar = remember { SnackbarHostState() }
-    val context = LocalContext.current
-    val playerConnection = remember(context.applicationContext) {
-        GeoPlayerConnection.get(context.applicationContext)
-    }
-    val mainStateHolder = rememberSaveableStateHolder()
 
     LaunchedEffect(state.message) {
         state.message?.let {
@@ -218,6 +213,24 @@ fun GeoVideosApp(
         }
     }
 
+    // La autenticacion conserva exactamente su flujo original. El reproductor y sus
+    // servicios solo se inicializan despues de que la cuenta ya esta conectada.
+    if (state.authStatus != AuthStatus.CONNECTED) {
+        Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+            GoogleConnectScreen(
+                status = state.authStatus,
+                error = state.authError,
+                onConnect = onConnectGoogle
+            )
+        }
+        return
+    }
+
+    val context = LocalContext.current
+    val playerConnection = remember(context.applicationContext) {
+        GeoPlayerConnection.get(context.applicationContext)
+    }
+    val mainStateHolder = rememberSaveableStateHolder()
     val selectedVideo = state.selectedVideo
     val shortPlaybackMode = state.section == MainSection.SHORTS && !state.playerExpanded
     LaunchedEffect(selectedVideo?.id, state.autoplay, state.dataSaver, shortPlaybackMode) {
@@ -258,14 +271,7 @@ fun GeoVideosApp(
     )
 
     Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-        if (state.authStatus != AuthStatus.CONNECTED) {
-            GoogleConnectScreen(
-                status = state.authStatus,
-                error = state.authError,
-                onConnect = onConnectGoogle
-            )
-        } else {
-            Box(modifier = Modifier.fillMaxSize()) {
+        Box(modifier = Modifier.fillMaxSize()) {
                 mainStateHolder.SaveableStateProvider("main-shell") {
                     MainShell(
                         state = state,
@@ -353,7 +359,6 @@ fun GeoVideosApp(
             }
         }
     }
-}
 
 @Composable
 private fun PlaybackProgressSaver(

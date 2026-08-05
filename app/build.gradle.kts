@@ -14,8 +14,8 @@ android {
         applicationId = "com.geovideos.app"
         minSdk = 23
         targetSdk = 35
-        versionCode = 451
-        versionName = "45.1.0"
+        versionCode = 453
+        versionName = "45.3.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables.useSupportLibrary = true
@@ -91,7 +91,6 @@ dependencies {
     implementation("com.google.android.gms:play-services-auth:21.6.0")
     implementation("io.coil-kt:coil-compose:2.7.0")
     implementation("androidx.recyclerview:recyclerview:1.4.0")
-    implementation("androidx.swiperefreshlayout:swiperefreshlayout:1.1.0")
     implementation("com.github.bumptech.glide:glide:4.16.0")
 
     implementation("androidx.media3:media3-exoplayer:1.6.1")

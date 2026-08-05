@@ -123,12 +123,9 @@ class FloatingPlayerService : Service() {
 
     override fun onCreate() {
         super.onCreate()
-        connection = GeoPlayerConnection.get(applicationContext)
         windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
         preferredWindowWidth = preferences.getInt(KEY_WIDTH, 0)
         createNotificationChannel()
-        startForeground(NOTIFICATION_ID, buildNotification())
-        observePlayer()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -142,9 +139,14 @@ class FloatingPlayerService : Service() {
             stopSelf()
             return START_NOT_STICKY
         }
+        if (!::connection.isInitialized) {
+            connection = GeoPlayerConnection.get(applicationContext)
+            startForeground(NOTIFICATION_ID, buildNotification())
+            observePlayer()
+        }
         showOrRefreshOverlay()
         loadQualityOptions()
-        return START_STICKY
+        return START_NOT_STICKY
     }
 
     override fun onBind(intent: Intent?): IBinder? = null

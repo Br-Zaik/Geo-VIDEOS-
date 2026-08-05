@@ -1,0 +1,27 @@
+GEO VIDEOS 45.3.0 - CORRECCION DE ARRANQUE SIN MODIFICAR AUTENTICACION
+
+Base funcional:
+- Se partio de Geo Videos 45.1.0, no de la 45.2.0.
+- Se descartaron los cambios realizados en 45.2.0 sobre el flujo de Google.
+
+Autenticacion preservada:
+- authorizationLauncher coincide con el proyecto original.
+- requestGoogleAuthorization coincide con el proyecto original.
+- switchGoogleAccount coincide con el proyecto original.
+- requestedScopes coincide con el proyecto original.
+- reportAuthorizationError coincide con el proyecto original.
+- GoogleConnectScreen coincide con el proyecto original.
+- No se cambiaron Google, selector de cuenta, sesion guardada, OAuth ni pantalla de acceso.
+
+Correcciones fuera de autenticacion:
+- El reproductor y GeoPlayerConnection ya no se inicializan mientras se muestra la pantalla de acceso.
+- El reproductor se inicia solamente cuando AuthStatus es CONNECTED.
+- FloatingPlayerService ya no se reinicia como servicio sticky sin un video valido.
+- FloatingPlayerService inicializa el reproductor solo al recibir una solicitud valida.
+- Se retiro SwipeRefreshLayout y su dependencia externa.
+- La actualizacion del Inicio se mantiene mediante gesto de arrastrar hacia abajo sobre el feed.
+- Se mantienen Shorts, Mix, ventana flotante, gestos, historial, descargas y cambios de V45.1.
+
+Version:
+- versionCode: 453
+- versionName: 45.3.0

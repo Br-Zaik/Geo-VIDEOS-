@@ -6,6 +6,7 @@ import android.graphics.drawable.ColorDrawable
 import android.graphics.drawable.GradientDrawable
 import android.util.TypedValue
 import android.view.Gravity
+import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.widget.FrameLayout
@@ -25,7 +26,6 @@ import androidx.recyclerview.widget.DiffUtil
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.ListAdapter
 import androidx.recyclerview.widget.RecyclerView
-import androidx.swiperefreshlayout.widget.SwipeRefreshLayout
 import com.bumptech.glide.Glide
 import com.geovideos.app.data.VideoItem
 
@@ -64,64 +64,85 @@ internal fun RecyclerHomeFeed(
     AndroidView(
         modifier = modifier,
         factory = { context ->
-            SwipeRefreshLayout(context).apply {
-                setColorSchemeColors(0xFF9D6CFF.toInt())
-                setProgressBackgroundColorSchemeColor(0xFF1D1B22.toInt())
-                setOnRefreshListener { onRefresh() }
-                addView(
-                    RecyclerView(context).apply {
-                        recyclerViewRef = this
-                        val runtime = HomeFeedRuntime(onAtTopChanged)
-                        tag = runtime
-                        layoutManager = LinearLayoutManager(context).apply {
-                            initialPrefetchItemCount = 4
-                        }
-                        this.adapter = adapter
-                        itemAnimator = null
-                        setHasFixedSize(false)
-                        setItemViewCacheSize(4)
-                        recycledViewPool.setMaxRecycledViews(HomeFeedAdapter.TYPE_VIDEO, 8)
-                        overScrollMode = View.OVER_SCROLL_NEVER
-                        isNestedScrollingEnabled = true
-
-                        addOnScrollListener(object : RecyclerView.OnScrollListener() {
-                            override fun onScrolled(recyclerView: RecyclerView, dx: Int, dy: Int) {
-                                runtime.onAtTopChanged(!recyclerView.canScrollVertically(-1))
-                                if (dy <= 0) return
-                                val manager = recyclerView.layoutManager as? LinearLayoutManager ?: return
-                                val lastVisible = manager.findLastVisibleItemPosition()
-                                val total = recyclerView.adapter?.itemCount ?: 0
-                                val feedAdapter = recyclerView.adapter as? HomeFeedAdapter ?: return
-                                if (
-                                    feedAdapter.canLoadMore &&
-                                    !feedAdapter.loadingMore &&
-                                    total > 0 &&
-                                    lastVisible >= total - 4
-                                ) {
-                                    feedAdapter.loadingMore = true
-                                    feedAdapter.onLoadMore()
-                                }
-                            }
-
-                            override fun onScrollStateChanged(recyclerView: RecyclerView, newState: Int) {
-                                runtime.onAtTopChanged(!recyclerView.canScrollVertically(-1))
-                            }
-                        })
-                        post { runtime.onAtTopChanged(!canScrollVertically(-1)) }
-                    },
-                    ViewGroup.LayoutParams(
-                        ViewGroup.LayoutParams.MATCH_PARENT,
-                        ViewGroup.LayoutParams.MATCH_PARENT
-                    )
+            RecyclerView(context).apply {
+                recyclerViewRef = this
+                val runtime = HomeFeedRuntime(
+                    onAtTopChanged = onAtTopChanged,
+                    onRefresh = onRefresh,
+                    refreshing = refreshing
                 )
+                tag = runtime
+                layoutManager = LinearLayoutManager(context).apply {
+                    initialPrefetchItemCount = 4
+                }
+                this.adapter = adapter
+                itemAnimator = null
+                setHasFixedSize(false)
+                setItemViewCacheSize(4)
+                recycledViewPool.setMaxRecycledViews(HomeFeedAdapter.TYPE_VIDEO, 8)
+                overScrollMode = View.OVER_SCROLL_NEVER
+                isNestedScrollingEnabled = true
+
+                setOnTouchListener { _, event ->
+                    when (event.actionMasked) {
+                        MotionEvent.ACTION_DOWN -> {
+                            runtime.startY = event.y
+                            runtime.pullEligible = !canScrollVertically(-1)
+                        }
+                        MotionEvent.ACTION_MOVE -> {
+                            if (!canScrollVertically(-1) && event.y >= runtime.startY) {
+                                runtime.pullEligible = true
+                            }
+                        }
+                        MotionEvent.ACTION_UP -> {
+                            val distance = event.y - runtime.startY
+                            if (
+                                runtime.pullEligible &&
+                                !runtime.refreshing &&
+                                distance >= resources.displayMetrics.density * 72f
+                            ) {
+                                runtime.onRefresh()
+                            }
+                            runtime.pullEligible = false
+                        }
+                        MotionEvent.ACTION_CANCEL -> runtime.pullEligible = false
+                    }
+                    false
+                }
+
+                addOnScrollListener(object : RecyclerView.OnScrollListener() {
+                    override fun onScrolled(recyclerView: RecyclerView, dx: Int, dy: Int) {
+                        runtime.onAtTopChanged(!recyclerView.canScrollVertically(-1))
+                        if (dy <= 0) return
+                        val manager = recyclerView.layoutManager as? LinearLayoutManager ?: return
+                        val lastVisible = manager.findLastVisibleItemPosition()
+                        val total = recyclerView.adapter?.itemCount ?: 0
+                        val feedAdapter = recyclerView.adapter as? HomeFeedAdapter ?: return
+                        if (
+                            feedAdapter.canLoadMore &&
+                            !feedAdapter.loadingMore &&
+                            total > 0 &&
+                            lastVisible >= total - 4
+                        ) {
+                            feedAdapter.loadingMore = true
+                            feedAdapter.onLoadMore()
+                        }
+                    }
+
+                    override fun onScrollStateChanged(recyclerView: RecyclerView, newState: Int) {
+                        runtime.onAtTopChanged(!recyclerView.canScrollVertically(-1))
+                    }
+                })
+                post { runtime.onAtTopChanged(!canScrollVertically(-1)) }
             }
         },
-        update = { swipeRefresh ->
-            swipeRefresh.isRefreshing = refreshing
-            swipeRefresh.setOnRefreshListener { onRefresh() }
-            val recyclerView = swipeRefresh.getChildAt(0) as RecyclerView
+        update = { recyclerView ->
             recyclerViewRef = recyclerView
-            (recyclerView.tag as? HomeFeedRuntime)?.onAtTopChanged = onAtTopChanged
+            (recyclerView.tag as? HomeFeedRuntime)?.let { runtime ->
+                runtime.onAtTopChanged = onAtTopChanged
+                runtime.onRefresh = onRefresh
+                runtime.refreshing = refreshing
+            }
             onAtTopChanged(!recyclerView.canScrollVertically(-1))
             val homeAdapter = recyclerView.adapter as HomeFeedAdapter
             homeAdapter.onPlay = onPlay
@@ -136,6 +157,7 @@ internal fun RecyclerHomeFeed(
                 mixVideo = mixVideo,
                 watchLaterIds = watchLaterIds,
                 loading = loading,
+                refreshing = refreshing,
                 loadingMore = loadingMore
             )
         }
@@ -144,8 +166,13 @@ internal fun RecyclerHomeFeed(
 
 
 private class HomeFeedRuntime(
-    var onAtTopChanged: (Boolean) -> Unit
-)
+    var onAtTopChanged: (Boolean) -> Unit,
+    var onRefresh: () -> Unit,
+    var refreshing: Boolean
+) {
+    var startY: Float = 0f
+    var pullEligible: Boolean = false
+}
 
 private fun RecyclerView.scrollHomeToTop() {
     val manager = layoutManager as? LinearLayoutManager ?: return
@@ -206,9 +233,11 @@ private class HomeFeedAdapter(
         mixVideo: VideoItem?,
         watchLaterIds: Set<String>,
         loading: Boolean,
+        refreshing: Boolean,
         loadingMore: Boolean
     ) {
         val rows = buildList {
+            if (refreshing) add(HomeFeedRow.Loading)
             if (shorts.isNotEmpty()) add(HomeFeedRow.Shorts(shorts.take(12)))
             val firstVideo = videos.firstOrNull()
             firstVideo?.let { add(HomeFeedRow.Video(it, it.id in watchLaterIds)) }
@@ -217,8 +246,8 @@ private class HomeFeedAdapter(
                 add(HomeFeedRow.Video(video, video.id in watchLaterIds))
             }
             when {
-                loadingMore -> add(HomeFeedRow.Loading)
-                loading && videos.isEmpty() && shorts.isEmpty() && mixVideo == null -> add(HomeFeedRow.Loading)
+                loadingMore && !refreshing -> add(HomeFeedRow.Loading)
+                loading && !refreshing && videos.isEmpty() && shorts.isEmpty() && mixVideo == null -> add(HomeFeedRow.Loading)
                 videos.isEmpty() && shorts.isEmpty() && mixVideo == null -> add(HomeFeedRow.Empty)
             }
         }

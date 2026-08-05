@@ -26,8 +26,6 @@ import com.geovideos.app.ui.theme.GeoVideosTheme
 import com.google.android.gms.auth.api.identity.AuthorizationRequest
 import com.google.android.gms.auth.api.identity.Identity
 import com.google.android.gms.auth.api.identity.RevokeAccessRequest
-import com.google.android.gms.common.ConnectionResult
-import com.google.android.gms.common.GoogleApiAvailability
 import com.google.android.gms.common.api.ApiException
 import com.google.android.gms.common.api.Scope
 
@@ -37,7 +35,6 @@ class MainActivity : ComponentActivity() {
     private var videoPictureInPictureEnabled = false
     private var pendingFloatingVideo: VideoItem? = null
     private var pendingFloatingDataSaver: Boolean = false
-    private var silentAuthorizationScheduled: Boolean = false
 
     private val viewModel: GeoVideosViewModel by viewModels()
 
@@ -52,8 +49,8 @@ class MainActivity : ComponentActivity() {
             viewModel.onAuthorizationSuccess(result.accessToken)
         } catch (error: ApiException) {
             reportAuthorizationError(error)
-        } catch (error: Throwable) {
-            handleAuthorizationThrowable(error, allowResolution = true)
+        } catch (error: Exception) {
+            viewModel.onAuthorizationFailure(error.message ?: "No se pudo conectar Google.", false)
         }
     }
 
@@ -74,7 +71,10 @@ class MainActivity : ComponentActivity() {
         handlePlaybackIntent(intent)
 
         if (savedInstanceState == null) {
-            scheduleSilentAuthorizationIfNeeded()
+            window.decorView.postDelayed(
+                { requestGoogleAuthorization(allowResolution = false) },
+                350
+            )
         }
     }
 
@@ -208,100 +208,49 @@ class MainActivity : ComponentActivity() {
         inPictureInPictureState.value = isInPictureInPictureMode
     }
 
-    private fun scheduleSilentAuthorizationIfNeeded() {
-        if (silentAuthorizationScheduled || !viewModel.hasCachedGoogleAccount()) return
-        silentAuthorizationScheduled = true
-        window.decorView.postDelayed(
-            {
-                if (!isFinishing && !isDestroyed) {
-                    requestGoogleAuthorization(allowResolution = false)
-                }
-            },
-            1_000
-        )
-    }
-
     private fun requestGoogleAuthorization(allowResolution: Boolean) {
         if (allowResolution) viewModel.beginAuthorization()
+        val request = AuthorizationRequest.builder()
+            .setRequestedScopes(requestedScopes())
+            .build()
 
-        val playServicesStatus = runCatching {
-            GoogleApiAvailability.getInstance().isGooglePlayServicesAvailable(this)
-        }.getOrElse {
-            handleAuthorizationThrowable(it, allowResolution)
-            return
-        }
-        if (playServicesStatus != ConnectionResult.SUCCESS) {
-            val message = "Google Play Services no está disponible o necesita actualizarse."
-            if (allowResolution) {
-                viewModel.onAuthorizationFailure(message, false)
-            } else {
-                viewModel.onSilentAuthorizationFailure(message)
-            }
-            return
-        }
-
-        val request = runCatching {
-            AuthorizationRequest.builder()
-                .setRequestedScopes(requestedScopes())
-                .build()
-        }.getOrElse {
-            handleAuthorizationThrowable(it, allowResolution)
-            return
-        }
-
-        val authorizationTask = runCatching {
-            Identity.getAuthorizationClient(this).authorize(request)
-        }.getOrElse {
-            handleAuthorizationThrowable(it, allowResolution)
-            return
-        }
-
-        authorizationTask
+        Identity.getAuthorizationClient(this)
+            .authorize(request)
             .addOnSuccessListener { result ->
-                runCatching {
-                    if (result.hasResolution()) {
-                        if (!allowResolution) {
-                            viewModel.onSilentAuthorizationUnavailable()
-                            return@runCatching
-                        }
-                        val pendingIntent = result.pendingIntent
-                        if (pendingIntent == null) {
-                            viewModel.onAuthorizationFailure(
-                                "Google no pudo abrir el selector de cuentas.",
-                                false
-                            )
-                        } else {
-                            authorizationLauncher.launch(
-                                IntentSenderRequest.Builder(pendingIntent.intentSender).build()
-                            )
-                        }
-                    } else {
-                        viewModel.onAuthorizationSuccess(result.accessToken)
+                if (result.hasResolution()) {
+                    if (!allowResolution) {
+                        viewModel.onSilentAuthorizationUnavailable()
+                        return@addOnSuccessListener
                     }
-                }.onFailure {
-                    handleAuthorizationThrowable(it, allowResolution)
+                    val pendingIntent = result.pendingIntent
+                    if (pendingIntent == null) {
+                        viewModel.onAuthorizationFailure(
+                            "Google no pudo abrir el selector de cuentas.",
+                            false
+                        )
+                    } else {
+                        authorizationLauncher.launch(
+                            IntentSenderRequest.Builder(pendingIntent.intentSender).build()
+                        )
+                    }
+                } else {
+                    viewModel.onAuthorizationSuccess(result.accessToken)
                 }
             }
             .addOnFailureListener { error ->
-                handleAuthorizationThrowable(error, allowResolution)
+                if (!allowResolution) {
+                    viewModel.onSilentAuthorizationFailure(
+                        error.message ?: "No se pudo renovar la sesión en segundo plano."
+                    )
+                } else if (error is ApiException) {
+                    reportAuthorizationError(error)
+                } else {
+                    viewModel.onAuthorizationFailure(
+                        error.message ?: "No se pudo conectar Google.",
+                        false
+                    )
+                }
             }
-    }
-
-    private fun handleAuthorizationThrowable(error: Throwable, allowResolution: Boolean) {
-        if (!allowResolution) {
-            viewModel.onSilentAuthorizationFailure(
-                error.message ?: "No se pudo renovar la sesión en segundo plano."
-            )
-            return
-        }
-        if (error is ApiException) {
-            reportAuthorizationError(error)
-        } else {
-            viewModel.onAuthorizationFailure(
-                error.message ?: "No se pudo conectar Google.",
-                false
-            )
-        }
     }
 
     private fun switchGoogleAccount(email: String) {
@@ -314,17 +263,12 @@ class MainActivity : ComponentActivity() {
             .setAccount(Account(email, "com.google"))
             .setScopes(requestedScopes())
             .build()
-        runCatching {
-            Identity.getAuthorizationClient(this).revokeAccess(request)
-        }.onSuccess { task ->
-            task.addOnCompleteListener {
+        Identity.getAuthorizationClient(this)
+            .revokeAccess(request)
+            .addOnCompleteListener {
                 viewModel.disconnect()
                 requestGoogleAuthorization(allowResolution = true)
             }
-        }.onFailure {
-            viewModel.disconnect()
-            requestGoogleAuthorization(allowResolution = true)
-        }
     }
 
     private fun requestedScopes(): List<Scope> = listOf(
