@@ -1,32 +1,27 @@
 package com.geovideos.app.ui
 
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Explore
 import androidx.compose.material.icons.filled.Games
 import androidx.compose.material.icons.filled.LiveTv
 import androidx.compose.material.icons.filled.PlaylistPlay
-import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.geovideos.app.data.VideoItem
 
@@ -64,11 +59,22 @@ internal fun LiteHomeScreen(
     }
     val homeShorts = remember(category, baseVideos, shorts) {
         if (category != HomeCategory.FOR_YOU) emptyList()
-        else (shorts + baseVideos.filter(::looksLikeHomeShort)).distinctBy { it.id }.take(16)
+        else (shorts + baseVideos.filter(::looksLikeHomeShort)).distinctBy { it.id }.take(18)
     }
-    val videos = remember(baseVideos, homeShorts) {
-        val shortIds = homeShorts.asSequence().map { it.id }.toHashSet()
-        baseVideos.filterNot { video -> video.id in shortIds || looksLikeHomeShort(video) }
+    val mixVideo = remember(category, music, personalized, popular) {
+        if (category != HomeCategory.FOR_YOU) null
+        else music.firstOrNull()
+            ?: personalized.firstOrNull(::looksLikeMusicForMix)
+            ?: popular.firstOrNull(::looksLikeMusicForMix)
+            ?: personalized.firstOrNull()
+            ?: popular.firstOrNull()
+    }
+    val videos = remember(baseVideos, homeShorts, mixVideo) {
+        val hiddenIds = buildSet {
+            homeShorts.forEach { add(it.id) }
+            mixVideo?.id?.let { add(it) }
+        }
+        baseVideos.filterNot { video -> video.id in hiddenIds || looksLikeHomeShort(video) }
     }
     val watchLaterIds = remember(watchLater) {
         watchLater.asSequence().map { it.id }.toHashSet()
@@ -76,7 +82,10 @@ internal fun LiteHomeScreen(
 
     Column(modifier = modifier.fillMaxSize()) {
         Row(
-            modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 10.dp, vertical = 6.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState())
+                .padding(horizontal = 10.dp, vertical = 6.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(7.dp)
         ) {
@@ -92,13 +101,6 @@ internal fun LiteHomeScreen(
             LiteCategoryChip("Música", Icons.Default.PlaylistPlay, category == HomeCategory.MUSIC) {
                 onCategory(HomeCategory.MUSIC)
             }
-            IconButton(onClick = onRefresh, enabled = !refreshing) {
-                if (refreshing) {
-                    CircularProgressIndicator(modifier = Modifier.size(21.dp), strokeWidth = 2.dp)
-                } else {
-                    Icon(Icons.Default.Refresh, "Actualizar")
-                }
-            }
         }
 
         Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
@@ -106,10 +108,13 @@ internal fun LiteHomeScreen(
                 modifier = Modifier.fillMaxSize(),
                 videos = videos,
                 shorts = homeShorts,
+                mixVideo = mixVideo,
                 loading = loading,
+                refreshing = refreshing,
                 loadingMore = loadingMore,
                 canLoadMore = canLoadMore,
                 watchLaterIds = watchLaterIds,
+                onRefresh = onRefresh,
                 onLoadMore = { onLoadMore(category) },
                 onPlay = onPlay,
                 onOpenShort = onOpenShort,
@@ -136,11 +141,18 @@ private fun LiteCategoryChip(
     )
 }
 
-
 private fun looksLikeHomeShort(video: VideoItem): Boolean {
     val text = (video.title + " " + video.description).lowercase()
     val taggedAsShort = listOf(
         "#shorts", " shorts", "short ", "tiktok", "reel", "vertical", "status video"
     ).any { it in text }
     return taggedAsShort || video.durationMs in 1..90_000L
+}
+
+private fun looksLikeMusicForMix(video: VideoItem): Boolean {
+    val text = (video.title + " " + video.channelTitle + " " + video.description).lowercase()
+    return listOf(
+        "music", "música", "musica", "song", "lyrics", "audio", "rap", "mix", "nightcore",
+        "remix", "cover", "playlist", "álbum", "album"
+    ).any { it in text }
 }

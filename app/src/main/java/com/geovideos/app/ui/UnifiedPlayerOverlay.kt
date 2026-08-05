@@ -38,6 +38,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Fullscreen
 import androidx.compose.material.icons.filled.FullscreenExit
+import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.LockOpen
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.ErrorOutline
@@ -161,6 +163,7 @@ internal fun UnifiedPlayerOverlay(
 
     var fullscreen by rememberSaveable(video.id) { mutableStateOf(false) }
     var playerControlsVisible by remember(video.id) { mutableStateOf(true) }
+    var screenLocked by rememberSaveable(video.id) { mutableStateOf(false) }
     var showPlayerSettings by rememberSaveable(video.id) { mutableStateOf(false) }
     var playerSettingsPage by rememberSaveable(video.id) { mutableStateOf(PlayerSettingsPage.ROOT) }
     var selectedSpeed by rememberSaveable(video.id) { mutableStateOf(1f) }
@@ -419,6 +422,7 @@ internal fun UnifiedPlayerOverlay(
             insets.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
             insets.hide(WindowInsetsCompat.Type.systemBars())
         } else {
+            screenLocked = false
             restorePortrait()
         }
     }
@@ -427,8 +431,9 @@ internal fun UnifiedPlayerOverlay(
         onDispose { restorePortrait() }
     }
 
-    BackHandler(enabled = showPlayerSettings || fullscreen || expanded || dragging || settling) {
+    BackHandler(enabled = showPlayerSettings || fullscreen || expanded || dragging || settling || screenLocked) {
         when {
+            screenLocked -> screenLocked = false
             showPlayerSettings && playerSettingsPage != PlayerSettingsPage.ROOT ->
                 playerSettingsPage = PlayerSettingsPage.ROOT
             showPlayerSettings -> showPlayerSettings = false
@@ -675,7 +680,7 @@ internal fun UnifiedPlayerOverlay(
                     LitePlayerView(
                         controller = controller!!,
                         modifier = Modifier.fillMaxSize(),
-                        useController = fullscreen || (p <= 0.01f && !dragging && !settling),
+                        useController = !screenLocked && (fullscreen || (p <= 0.01f && !dragging && !settling)),
                         resizeMode = if (fullscreen) {
                             AspectRatioFrameLayout.RESIZE_MODE_ZOOM
                         } else {
@@ -713,12 +718,14 @@ internal fun UnifiedPlayerOverlay(
                         },
                         onControllerVisibilityChanged = { visible ->
                             playerControlsVisible = visible
-                        }
+                        },
+                        gesturesEnabled = !screenLocked
                     )
                 }
 
                 if (
                     playerControlsVisible &&
+                    !screenLocked &&
                     (fullscreen || (p <= 0.01f && !dragging && !settling))
                 ) {
                     PlayerControlIconButton(
@@ -732,6 +739,35 @@ internal fun UnifiedPlayerOverlay(
                             if (fullscreen) Icons.Default.FullscreenExit else Icons.Default.Fullscreen,
                             contentDescription = null,
                             tint = Color.White
+                        )
+                    }
+                    if (fullscreen) {
+                        PlayerControlIconButton(
+                            onClick = { screenLocked = true },
+                            contentDescription = "Bloquear controles",
+                            modifier = Modifier
+                                .align(Alignment.BottomStart)
+                                .padding(start = 8.dp, bottom = 42.dp)
+                        ) {
+                            Icon(Icons.Default.Lock, contentDescription = null, tint = Color.White)
+                        }
+                    }
+                }
+
+                if (fullscreen && screenLocked) {
+                    Surface(
+                        modifier = Modifier
+                            .align(Alignment.CenterStart)
+                            .padding(start = 12.dp)
+                            .clickable { screenLocked = false },
+                        color = Color.Black.copy(alpha = 0.62f),
+                        shape = CircleShape
+                    ) {
+                        Icon(
+                            Icons.Default.LockOpen,
+                            contentDescription = "Desbloquear controles",
+                            tint = Color.White,
+                            modifier = Modifier.padding(14.dp).size(28.dp)
                         )
                     }
                 }
@@ -804,7 +840,7 @@ internal fun UnifiedPlayerOverlay(
                 }
             }
 
-            if (showPlayerSettings && (fullscreen || (p <= 0.01f && !dragging && !settling))) {
+            if (!screenLocked && showPlayerSettings && (fullscreen || (p <= 0.01f && !dragging && !settling))) {
                 Box(
                     modifier = Modifier
                         .fillMaxSize()

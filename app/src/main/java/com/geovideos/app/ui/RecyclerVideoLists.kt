@@ -555,7 +555,7 @@ private class ChannelCardView(context: Context) : LinearLayout(context) {
 private sealed interface PlayerRow {
     val id: Long
     data class Header(val data: PlayerHeaderData) : PlayerRow { override val id = Long.MIN_VALUE + 301 }
-    data class Mix(val item: VideoItem) : PlayerRow { override val id = Long.MIN_VALUE + 302 }
+    data class Mix(val current: VideoItem, val seed: VideoItem) : PlayerRow { override val id = Long.MIN_VALUE + 302 }
     data class Related(val item: VideoItem) : PlayerRow { override val id = item.id.hashCode().toLong() }
     data object Loading : PlayerRow { override val id = Long.MIN_VALUE + 303 }
     data object More : PlayerRow { override val id = Long.MIN_VALUE + 304 }
@@ -602,7 +602,7 @@ private class NativePlayerAdapter(
         this.canLoadMore = canLoadMore
         submitList(buildList {
             add(PlayerRow.Header(header))
-            if (header.mixAvailable) related.firstOrNull()?.let { add(PlayerRow.Mix(it)) }
+            if (header.mixAvailable) related.firstOrNull()?.let { add(PlayerRow.Mix(header.video, it)) }
             related.forEach { add(PlayerRow.Related(it)) }
             if (loading || loadingMore) add(PlayerRow.Loading)
             else if (canLoadMore) add(PlayerRow.More)
@@ -632,11 +632,14 @@ private class NativePlayerAdapter(
                 onPictureInPicture, onOpenChannel
             )
             is PlayerRow.Mix -> (holder as FullVideoHolder).bind(
-                row.item.copy(
-                    title = "Mi Mix · ${row.item.title}",
-                    channelTitle = "Cola automática de videos relacionados"
+                row.current.copy(
+                    title = "Mix: ${row.current.title}",
+                    channelTitle = listOf(row.current.channelTitle, row.seed.channelTitle)
+                        .filter { it.isNotBlank() }
+                        .distinct()
+                        .joinToString(", ") + " y más"
                 ),
-                onPlay = { onPlayRelated(row.item) },
+                onPlay = { onPlayRelated(row.seed) },
                 onSave = { }
             )
             is PlayerRow.Related -> (holder as FullVideoHolder).bind(row.item, onPlayRelated, onSaveRelated)
@@ -693,6 +696,11 @@ private class PlayerHeaderHolder(context: Context) : RecyclerView.ViewHolder(Pla
         } else {
             "Comentarios"
         }
+        view.commentsTab.text = if (commentCount > 0L) {
+            "Comentarios ${compactNumber(commentCount)}"
+        } else {
+            "Comentarios"
+        }
         view.description.text = data.description
         view.descriptionToggle.visibility = if (data.description.isBlank()) View.GONE else View.VISIBLE
         view.descriptionBox.visibility = View.GONE
@@ -703,13 +711,10 @@ private class PlayerHeaderHolder(context: Context) : RecyclerView.ViewHolder(Pla
             view.descriptionToggle.text = if (expanded) "Descripción   Más" else "Descripción   Menos"
         }
         bindCommentPreview(view.commentsBox, data.details?.comments.orEmpty())
-        view.commentsBox.visibility = View.GONE
-        view.commentsHint.text = "Ver"
-        view.commentsRow.setOnClickListener {
-            val expanded = view.commentsBox.visibility == View.VISIBLE
-            view.commentsBox.visibility = if (expanded) View.GONE else View.VISIBLE
-            view.commentsHint.text = if (expanded) "Ver" else "Cerrar"
-        }
+        view.infoTab.setOnClickListener { view.showInfo() }
+        view.commentsTab.setOnClickListener { view.showComments() }
+        view.commentsHint.setOnClickListener { view.showInfo() }
+        view.showInfo()
         view.like.setOnClickListener { onLike() }
         view.dislike.setOnClickListener { onDislike() }
         view.watchLater.setOnClickListener { onWatchLater() }
@@ -734,6 +739,12 @@ private class PlayerHeaderHolder(context: Context) : RecyclerView.ViewHolder(Pla
 }
 
 private class PlayerHeaderView(context: Context) : LinearLayout(context) {
+    val infoTab = TextView(context)
+    val commentsTab = TextView(context)
+    private val infoPanel = LinearLayout(context)
+    private val commentsPanel = LinearLayout(context)
+    private val relatedTitle = TextView(context)
+
     val title = TextView(context)
     val meta = TextView(context)
     val avatar = ImageView(context)
@@ -759,27 +770,39 @@ private class PlayerHeaderView(context: Context) : LinearLayout(context) {
     init {
         orientation = VERTICAL
         layoutParams = RecyclerView.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
-        setPadding(dp(context, 16), dp(context, 14), dp(context, 16), dp(context, 14))
+        setPadding(dp(context, 14), dp(context, 8), dp(context, 14), dp(context, 12))
         setBackgroundColor(Color.BLACK)
 
+        val tabs = LinearLayout(context).apply {
+            orientation = HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, 0, 0, dp(context, 8))
+        }
+        stylePlayerTab(infoTab, "Información")
+        stylePlayerTab(commentsTab, "Comentarios")
+        tabs.addView(infoTab, LayoutParams(0, dp(context, 40), 1f))
+        tabs.addView(commentsTab, LayoutParams(0, dp(context, 40), 1f).apply { marginStart = dp(context, 8) })
+        addView(tabs, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+
+        infoPanel.orientation = VERTICAL
         title.setTextColor(Color.WHITE)
-        title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 22f)
+        title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 21f)
         title.setTypeface(title.typeface, android.graphics.Typeface.BOLD)
         title.maxLines = 3
         title.ellipsize = TextUtils.TruncateAt.END
-        addView(title)
+        infoPanel.addView(title)
 
         meta.setTextColor(0xFFAAA7B2.toInt())
         meta.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
-        addView(meta, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(context, 6) })
+        infoPanel.addView(meta, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(context, 5) })
 
         val channelRow = LinearLayout(context).apply { orientation = HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
         avatar.scaleType = ImageView.ScaleType.CENTER_CROP
-        channelRow.addView(avatar, LayoutParams(dp(context, 46), dp(context, 46)))
+        channelRow.addView(avatar, LayoutParams(dp(context, 44), dp(context, 44)))
         val channelTexts = LinearLayout(context).apply {
             orientation = VERTICAL
             channel.setTextColor(Color.WHITE)
-            channel.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16f)
+            channel.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15.5f)
             channel.setTypeface(channel.typeface, android.graphics.Typeface.BOLD)
             channel.maxLines = 1
             subscribers.setTextColor(0xFFAAA7B2.toInt())
@@ -787,10 +810,10 @@ private class PlayerHeaderView(context: Context) : LinearLayout(context) {
             addView(channel)
             addView(subscribers)
         }
-        channelRow.addView(channelTexts, LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { marginStart = dp(context, 12) })
+        channelRow.addView(channelTexts, LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { marginStart = dp(context, 11) })
         styleAction(context, channelButton, "Canal")
-        channelRow.addView(channelButton)
-        addView(channelRow, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(context, 14) })
+        channelRow.addView(channelButton, LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(context, 38)))
+        infoPanel.addView(channelRow, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(context, 12) })
 
         val scroll = HorizontalScrollView(context).apply {
             isHorizontalScrollBarEnabled = false
@@ -798,58 +821,95 @@ private class PlayerHeaderView(context: Context) : LinearLayout(context) {
         }
         val actions = LinearLayout(context).apply { orientation = HORIZONTAL }
         listOf(like, dislike, music, share, watchLater, window, download).forEach { item ->
-            actions.addView(item, LinearLayout.LayoutParams(dp(context, 88), dp(context, 72)))
+            actions.addView(item, LinearLayout.LayoutParams(dp(context, 72), dp(context, 61)))
         }
         scroll.addView(actions)
-        addView(scroll, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(context, 78)).apply { topMargin = dp(context, 8) })
-
-        commentsRow.orientation = HORIZONTAL
-        commentsRow.gravity = Gravity.CENTER_VERTICAL
-        commentsRow.setPadding(dp(context, 14), dp(context, 13), dp(context, 14), dp(context, 13))
-        commentsRow.background = roundedDrawable(0xFF1D1B22.toInt(), 12f, context)
-        commentsTitle.setTextColor(Color.WHITE)
-        commentsTitle.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16f)
-        commentsTitle.setTypeface(commentsTitle.typeface, android.graphics.Typeface.BOLD)
-        commentsHint.text = "Ver"
-        commentsHint.setTextColor(0xFF9D6CFF.toInt())
-        commentsHint.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
-        commentsHint.setTypeface(commentsHint.typeface, android.graphics.Typeface.BOLD)
-        commentsRow.addView(commentsTitle, LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-        commentsRow.addView(commentsHint)
-        addView(commentsRow, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(context, 10) })
-
-        commentsBox.orientation = VERTICAL
-        commentsBox.setPadding(dp(context, 12), dp(context, 8), dp(context, 12), dp(context, 8))
-        commentsBox.background = roundedDrawable(0xFF151419.toInt(), 12f, context)
-        commentsBox.visibility = View.GONE
-        addView(commentsBox, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(context, 6) })
+        infoPanel.addView(scroll, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(context, 65)).apply { topMargin = dp(context, 7) })
 
         descriptionToggle.setTextColor(Color.WHITE)
-        descriptionToggle.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16f)
+        descriptionToggle.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
         descriptionToggle.setTypeface(descriptionToggle.typeface, android.graphics.Typeface.BOLD)
         descriptionToggle.gravity = Gravity.CENTER_VERTICAL
-        descriptionToggle.setPadding(dp(context, 14), dp(context, 13), dp(context, 14), dp(context, 13))
+        descriptionToggle.setPadding(dp(context, 13), dp(context, 11), dp(context, 13), dp(context, 11))
         descriptionToggle.background = roundedDrawable(0xFF1D1B22.toInt(), 12f, context)
-        addView(descriptionToggle, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(context, 10) })
+        infoPanel.addView(descriptionToggle, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(context, 8) })
 
         descriptionBox.orientation = VERTICAL
-        descriptionBox.setPadding(dp(context, 14), dp(context, 12), dp(context, 14), dp(context, 12))
+        descriptionBox.setPadding(dp(context, 13), dp(context, 11), dp(context, 13), dp(context, 11))
         descriptionBox.background = roundedDrawable(0xFF17151B.toInt(), 12f, context)
         description.setTextColor(0xFFC8C5CE.toInt())
-        description.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
+        description.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13.5f)
         description.maxLines = Int.MAX_VALUE
         description.ellipsize = null
         descriptionBox.addView(description, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         descriptionBox.visibility = View.GONE
-        addView(descriptionBox, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(context, 6) })
+        infoPanel.addView(descriptionBox, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(context, 6) })
+        addView(infoPanel, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
 
-        addView(TextView(context).apply {
-            text = "Videos relacionados"
-            setTextColor(Color.WHITE)
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 22f)
-            setTypeface(typeface, android.graphics.Typeface.BOLD)
-            setPadding(0, dp(context, 20), 0, dp(context, 8))
-        })
+        commentsPanel.orientation = VERTICAL
+        commentsRow.orientation = HORIZONTAL
+        commentsRow.gravity = Gravity.CENTER_VERTICAL
+        commentsRow.setPadding(dp(context, 13), dp(context, 10), dp(context, 13), dp(context, 10))
+        commentsRow.background = roundedDrawable(0xFF1D1B22.toInt(), 12f, context)
+        commentsTitle.setTextColor(Color.WHITE)
+        commentsTitle.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16f)
+        commentsTitle.setTypeface(commentsTitle.typeface, android.graphics.Typeface.BOLD)
+        commentsHint.text = "Volver a información"
+        commentsHint.setTextColor(0xFF9D6CFF.toInt())
+        commentsHint.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+        commentsHint.setTypeface(commentsHint.typeface, android.graphics.Typeface.BOLD)
+        commentsRow.addView(commentsTitle, LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        commentsRow.addView(commentsHint)
+        commentsPanel.addView(commentsRow, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+
+        commentsBox.orientation = VERTICAL
+        commentsBox.setPadding(dp(context, 11), dp(context, 6), dp(context, 11), dp(context, 8))
+        commentsBox.background = roundedDrawable(0xFF151419.toInt(), 12f, context)
+        commentsPanel.addView(commentsBox, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(context, 6) })
+        commentsPanel.visibility = View.GONE
+        addView(commentsPanel, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+
+        relatedTitle.text = "Videos relacionados"
+        relatedTitle.setTextColor(Color.WHITE)
+        relatedTitle.setTextSize(TypedValue.COMPLEX_UNIT_SP, 21f)
+        relatedTitle.setTypeface(relatedTitle.typeface, android.graphics.Typeface.BOLD)
+        relatedTitle.setPadding(0, dp(context, 18), 0, dp(context, 8))
+        addView(relatedTitle)
+    }
+
+    fun showInfo() {
+        infoPanel.visibility = View.VISIBLE
+        commentsPanel.visibility = View.GONE
+        relatedTitle.visibility = View.VISIBLE
+        setTabSelected(infoTab, true)
+        setTabSelected(commentsTab, false)
+    }
+
+    fun showComments() {
+        infoPanel.visibility = View.GONE
+        commentsPanel.visibility = View.VISIBLE
+        relatedTitle.visibility = View.GONE
+        setTabSelected(infoTab, false)
+        setTabSelected(commentsTab, true)
+    }
+
+    private fun stylePlayerTab(view: TextView, textValue: String) {
+        view.text = textValue
+        view.gravity = Gravity.CENTER
+        view.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
+        view.setTypeface(view.typeface, android.graphics.Typeface.BOLD)
+        view.background = roundedDrawable(0xFF1D1B22.toInt(), 18f, context)
+        view.isClickable = true
+        view.isFocusable = true
+    }
+
+    private fun setTabSelected(view: TextView, selected: Boolean) {
+        view.setTextColor(if (selected) Color.WHITE else 0xFFA8A4AF.toInt())
+        view.background = roundedDrawable(
+            if (selected) 0xFF5A3C88.toInt() else 0xFF1D1B22.toInt(),
+            18f,
+            context
+        )
     }
 }
 
@@ -1058,11 +1118,11 @@ private class PlayerActionView(context: Context, iconRes: Int, label: String) : 
         isFocusable = true
         icon.setImageResource(iconRes)
         icon.setColorFilter(Color.WHITE)
-        addView(icon, LayoutParams(dp(context, 27), dp(context, 27)))
+        addView(icon, LayoutParams(dp(context, 24), dp(context, 24)))
         labelView.text = label
         labelView.gravity = Gravity.CENTER
         labelView.setTextColor(Color.WHITE)
-        labelView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
+        labelView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 10f)
         labelView.maxLines = 2
         labelView.ellipsize = TextUtils.TruncateAt.END
         addView(labelView, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {

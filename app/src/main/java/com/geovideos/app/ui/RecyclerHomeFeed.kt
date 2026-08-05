@@ -3,6 +3,7 @@ package com.geovideos.app.ui
 import android.content.Context
 import android.graphics.Color
 import android.graphics.drawable.ColorDrawable
+import android.graphics.drawable.GradientDrawable
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.View
@@ -24,6 +25,7 @@ import androidx.recyclerview.widget.DiffUtil
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.ListAdapter
 import androidx.recyclerview.widget.RecyclerView
+import androidx.swiperefreshlayout.widget.SwipeRefreshLayout
 import com.bumptech.glide.Glide
 import com.geovideos.app.data.VideoItem
 
@@ -32,10 +34,13 @@ internal fun RecyclerHomeFeed(
     modifier: Modifier,
     videos: List<VideoItem>,
     shorts: List<VideoItem>,
+    mixVideo: VideoItem?,
     loading: Boolean,
+    refreshing: Boolean,
     loadingMore: Boolean,
     canLoadMore: Boolean,
     watchLaterIds: Set<String>,
+    onRefresh: () -> Unit,
     onLoadMore: () -> Unit,
     onPlay: (VideoItem) -> Unit,
     onOpenShort: (VideoItem) -> Unit,
@@ -59,48 +64,62 @@ internal fun RecyclerHomeFeed(
     AndroidView(
         modifier = modifier,
         factory = { context ->
-            RecyclerView(context).apply {
-                recyclerViewRef = this
-                val runtime = HomeFeedRuntime(onAtTopChanged)
-                tag = runtime
-                layoutManager = LinearLayoutManager(context).apply {
-                    initialPrefetchItemCount = 4
-                }
-                this.adapter = adapter
-                itemAnimator = null
-                setHasFixedSize(false)
-                setItemViewCacheSize(4)
-                recycledViewPool.setMaxRecycledViews(HomeFeedAdapter.TYPE_VIDEO, 8)
-                overScrollMode = View.OVER_SCROLL_NEVER
-                isNestedScrollingEnabled = true
-
-                addOnScrollListener(object : RecyclerView.OnScrollListener() {
-                    override fun onScrolled(recyclerView: RecyclerView, dx: Int, dy: Int) {
-                        runtime.onAtTopChanged(!recyclerView.canScrollVertically(-1))
-                        if (dy <= 0) return
-                        val manager = recyclerView.layoutManager as? LinearLayoutManager ?: return
-                        val lastVisible = manager.findLastVisibleItemPosition()
-                        val total = recyclerView.adapter?.itemCount ?: 0
-                        val feedAdapter = recyclerView.adapter as? HomeFeedAdapter ?: return
-                        if (
-                            feedAdapter.canLoadMore &&
-                            !feedAdapter.loadingMore &&
-                            total > 0 &&
-                            lastVisible >= total - 4
-                        ) {
-                            feedAdapter.loadingMore = true
-                            feedAdapter.onLoadMore()
+            SwipeRefreshLayout(context).apply {
+                setColorSchemeColors(0xFF9D6CFF.toInt())
+                setProgressBackgroundColorSchemeColor(0xFF1D1B22.toInt())
+                setOnRefreshListener { onRefresh() }
+                addView(
+                    RecyclerView(context).apply {
+                        recyclerViewRef = this
+                        val runtime = HomeFeedRuntime(onAtTopChanged)
+                        tag = runtime
+                        layoutManager = LinearLayoutManager(context).apply {
+                            initialPrefetchItemCount = 4
                         }
-                    }
+                        this.adapter = adapter
+                        itemAnimator = null
+                        setHasFixedSize(false)
+                        setItemViewCacheSize(4)
+                        recycledViewPool.setMaxRecycledViews(HomeFeedAdapter.TYPE_VIDEO, 8)
+                        overScrollMode = View.OVER_SCROLL_NEVER
+                        isNestedScrollingEnabled = true
 
-                    override fun onScrollStateChanged(recyclerView: RecyclerView, newState: Int) {
-                        runtime.onAtTopChanged(!recyclerView.canScrollVertically(-1))
-                    }
-                })
-                post { runtime.onAtTopChanged(!canScrollVertically(-1)) }
+                        addOnScrollListener(object : RecyclerView.OnScrollListener() {
+                            override fun onScrolled(recyclerView: RecyclerView, dx: Int, dy: Int) {
+                                runtime.onAtTopChanged(!recyclerView.canScrollVertically(-1))
+                                if (dy <= 0) return
+                                val manager = recyclerView.layoutManager as? LinearLayoutManager ?: return
+                                val lastVisible = manager.findLastVisibleItemPosition()
+                                val total = recyclerView.adapter?.itemCount ?: 0
+                                val feedAdapter = recyclerView.adapter as? HomeFeedAdapter ?: return
+                                if (
+                                    feedAdapter.canLoadMore &&
+                                    !feedAdapter.loadingMore &&
+                                    total > 0 &&
+                                    lastVisible >= total - 4
+                                ) {
+                                    feedAdapter.loadingMore = true
+                                    feedAdapter.onLoadMore()
+                                }
+                            }
+
+                            override fun onScrollStateChanged(recyclerView: RecyclerView, newState: Int) {
+                                runtime.onAtTopChanged(!recyclerView.canScrollVertically(-1))
+                            }
+                        })
+                        post { runtime.onAtTopChanged(!canScrollVertically(-1)) }
+                    },
+                    ViewGroup.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.MATCH_PARENT
+                    )
+                )
             }
         },
-        update = { recyclerView ->
+        update = { swipeRefresh ->
+            swipeRefresh.isRefreshing = refreshing
+            swipeRefresh.setOnRefreshListener { onRefresh() }
+            val recyclerView = swipeRefresh.getChildAt(0) as RecyclerView
             recyclerViewRef = recyclerView
             (recyclerView.tag as? HomeFeedRuntime)?.onAtTopChanged = onAtTopChanged
             onAtTopChanged(!recyclerView.canScrollVertically(-1))
@@ -114,6 +133,7 @@ internal fun RecyclerHomeFeed(
             homeAdapter.submitFeed(
                 videos = videos,
                 shorts = shorts,
+                mixVideo = mixVideo,
                 watchLaterIds = watchLaterIds,
                 loading = loading,
                 loadingMore = loadingMore
@@ -139,6 +159,10 @@ private sealed interface HomeFeedRow {
 
     data class Shorts(val videos: List<VideoItem>) : HomeFeedRow {
         override val stableId: Long = Long.MIN_VALUE + 10
+    }
+
+    data class Mix(val video: VideoItem) : HomeFeedRow {
+        override val stableId: Long = Long.MIN_VALUE + 11
     }
 
     data class Video(val video: VideoItem, val saved: Boolean) : HomeFeedRow {
@@ -179,17 +203,23 @@ private class HomeFeedAdapter(
     fun submitFeed(
         videos: List<VideoItem>,
         shorts: List<VideoItem>,
+        mixVideo: VideoItem?,
         watchLaterIds: Set<String>,
         loading: Boolean,
         loadingMore: Boolean
     ) {
         val rows = buildList {
-            if (shorts.isNotEmpty()) add(HomeFeedRow.Shorts(shorts.take(10)))
-            videos.forEach { video -> add(HomeFeedRow.Video(video, video.id in watchLaterIds)) }
+            if (shorts.isNotEmpty()) add(HomeFeedRow.Shorts(shorts.take(12)))
+            val firstVideo = videos.firstOrNull()
+            firstVideo?.let { add(HomeFeedRow.Video(it, it.id in watchLaterIds)) }
+            mixVideo?.let { add(HomeFeedRow.Mix(it)) }
+            videos.drop(if (firstVideo == null) 0 else 1).forEach { video ->
+                add(HomeFeedRow.Video(video, video.id in watchLaterIds))
+            }
             when {
                 loadingMore -> add(HomeFeedRow.Loading)
-                loading && videos.isEmpty() -> add(HomeFeedRow.Loading)
-                videos.isEmpty() -> add(HomeFeedRow.Empty)
+                loading && videos.isEmpty() && shorts.isEmpty() && mixVideo == null -> add(HomeFeedRow.Loading)
+                videos.isEmpty() && shorts.isEmpty() && mixVideo == null -> add(HomeFeedRow.Empty)
             }
         }
         this.loadingMore = loadingMore
@@ -200,6 +230,7 @@ private class HomeFeedAdapter(
 
     override fun getItemViewType(position: Int): Int = when (getItem(position)) {
         is HomeFeedRow.Shorts -> TYPE_SHORTS
+        is HomeFeedRow.Mix -> TYPE_MIX
         is HomeFeedRow.Video -> TYPE_VIDEO
         HomeFeedRow.Loading -> TYPE_LOADING
         HomeFeedRow.Empty -> TYPE_EMPTY
@@ -207,6 +238,7 @@ private class HomeFeedAdapter(
 
     override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): RecyclerView.ViewHolder = when (viewType) {
         TYPE_SHORTS -> ShortsShelfHolder(parent.context, onOpenShort)
+        TYPE_MIX -> MixHolder(parent.context, onPlay)
         TYPE_VIDEO -> VideoHolder(parent.context, onPlay, onWatchLater)
         TYPE_LOADING -> LoadingHolder(parent.context)
         else -> EmptyHolder(parent.context)
@@ -215,6 +247,7 @@ private class HomeFeedAdapter(
     override fun onBindViewHolder(holder: RecyclerView.ViewHolder, position: Int) {
         when (val row = getItem(position)) {
             is HomeFeedRow.Shorts -> (holder as ShortsShelfHolder).bind(row.videos, onOpenShort)
+            is HomeFeedRow.Mix -> (holder as MixHolder).bind(row.video, onPlay)
             is HomeFeedRow.Video -> (holder as VideoHolder).bind(row.video, row.saved, onPlay, onWatchLater)
             HomeFeedRow.Loading -> Unit
             HomeFeedRow.Empty -> Unit
@@ -225,15 +258,45 @@ private class HomeFeedAdapter(
         super.onViewRecycled(holder)
         when (holder) {
             is VideoHolder -> holder.recycle()
+            is MixHolder -> holder.recycle()
             is ShortsShelfHolder -> holder.recycle()
         }
     }
 
     companion object {
         const val TYPE_SHORTS = 1
-        const val TYPE_VIDEO = 2
-        const val TYPE_LOADING = 3
-        const val TYPE_EMPTY = 4
+        const val TYPE_MIX = 2
+        const val TYPE_VIDEO = 3
+        const val TYPE_LOADING = 4
+        const val TYPE_EMPTY = 5
+    }
+}
+
+
+private class MixHolder(
+    context: Context,
+    onPlay: (VideoItem) -> Unit
+) : RecyclerView.ViewHolder(MixCardView(context)) {
+    private val card = itemView as MixCardView
+    private var current: VideoItem? = null
+
+    init { card.setOnClickListener { current?.let(onPlay) } }
+
+    fun bind(video: VideoItem, onPlay: (VideoItem) -> Unit) {
+        current = video
+        card.setOnClickListener { onPlay(video) }
+        card.title.text = "Mix: ${video.title}"
+        card.subtitle.text = buildString {
+            append(video.channelTitle.ifBlank { "Selección automática" })
+            append(" y más")
+        }
+        loadClearThumbnail(card.image, video.thumbnailUrl, 720, 405)
+    }
+
+    fun recycle() {
+        current = null
+        Glide.with(card.image).clear(card.image)
+        card.setOnClickListener(null)
     }
 }
 
@@ -361,7 +424,7 @@ private class ShortsShelfView(
         })
 
         addView(RecyclerView(context).apply {
-            layoutParams = LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(context, 270))
+            layoutParams = LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(context, 288))
             layoutManager = LinearLayoutManager(context, RecyclerView.HORIZONTAL, false).apply {
                 initialPrefetchItemCount = 3
             }
@@ -407,6 +470,13 @@ private class ShortHolder(context: Context) : RecyclerView.ViewHolder(ShortCardV
     fun bind(video: VideoItem, onOpenShort: (VideoItem) -> Unit) {
         card.setOnClickListener { onOpenShort(video) }
         card.title.text = video.title
+        card.meta.text = buildString {
+            append(video.channelTitle.ifBlank { "Short recomendado" })
+            formatRecyclerPublished(video.publishedAt).takeIf { it.isNotBlank() }?.let {
+                append(" · ")
+                append(it)
+            }
+        }
         loadClearThumbnail(card.image, video.thumbnailUrl, 360, 640, fitCenter = false)
     }
 
@@ -500,9 +570,11 @@ private class VideoCardView(context: Context) : LinearLayout(context) {
 private class ShortCardView(context: Context) : FrameLayout(context) {
     val image = ImageView(context)
     val title = TextView(context)
+    val meta = TextView(context)
+    private val more = TextView(context)
 
     init {
-        layoutParams = RecyclerView.LayoutParams(dp(context, 148), dp(context, 264)).apply {
+        layoutParams = RecyclerView.LayoutParams(dp(context, 154), dp(context, 278)).apply {
             marginEnd = dp(context, 10)
         }
         setBackgroundColor(Color.BLACK)
@@ -514,15 +586,93 @@ private class ShortCardView(context: Context) : FrameLayout(context) {
         }
         image.scaleType = ImageView.ScaleType.CENTER_CROP
         addView(image, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
-        addView(title.apply {
+
+        val gradient = View(context).apply {
+            background = GradientDrawable(
+                GradientDrawable.Orientation.BOTTOM_TOP,
+                intArrayOf(0xE6000000.toInt(), 0x70000000, 0x00000000)
+            )
+        }
+        addView(gradient, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(context, 132), Gravity.BOTTOM))
+
+        more.apply {
+            text = "⋮"
             setTextColor(Color.WHITE)
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
-            setTypeface(typeface, android.graphics.Typeface.BOLD)
-            maxLines = 3
-            ellipsize = android.text.TextUtils.TruncateAt.END
-            setBackgroundColor(0x99000000.toInt())
-            setPadding(dp(context, 9), dp(context, 8), dp(context, 9), dp(context, 9))
-        }, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM))
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 24f)
+            gravity = Gravity.CENTER
+            setShadowLayer(5f, 0f, 1f, Color.BLACK)
+        }
+        addView(more, LayoutParams(dp(context, 34), dp(context, 40), Gravity.TOP or Gravity.END).apply {
+            setMargins(0, dp(context, 4), dp(context, 3), 0)
+        })
+
+        val textBox = LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(context, 9), dp(context, 8), dp(context, 9), dp(context, 10))
+            title.setTextColor(Color.WHITE)
+            title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+            title.setTypeface(title.typeface, android.graphics.Typeface.BOLD)
+            title.maxLines = 3
+            title.ellipsize = android.text.TextUtils.TruncateAt.END
+            meta.setTextColor(0xFFE1DDE7.toInt())
+            meta.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
+            meta.maxLines = 1
+            meta.ellipsize = android.text.TextUtils.TruncateAt.END
+            meta.setPadding(0, dp(context, 5), 0, 0)
+            addView(title, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+            addView(meta, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        }
+        addView(textBox, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM))
+    }
+}
+
+private class MixCardView(context: Context) : LinearLayout(context) {
+    val image = ImageView(context)
+    val title = TextView(context)
+    val subtitle = TextView(context)
+
+    init {
+        orientation = VERTICAL
+        layoutParams = RecyclerView.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+        isClickable = true
+        isFocusable = true
+        foreground = context.obtainStyledAttributes(intArrayOf(android.R.attr.selectableItemBackground)).getDrawable(0)
+
+        val frame = SixteenNineFrame(context).apply {
+            setPadding(dp(context, 14), 0, dp(context, 14), 0)
+            image.scaleType = ImageView.ScaleType.CENTER_CROP
+            addView(image, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT).apply {
+                setMargins(dp(context, 14), 0, dp(context, 14), 0)
+            })
+            addView(TextView(context).apply {
+                text = "MIX"
+                setTextColor(Color.WHITE)
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+                setTypeface(typeface, android.graphics.Typeface.BOLD)
+                setPadding(dp(context, 7), dp(context, 4), dp(context, 7), dp(context, 4))
+                setBackgroundColor(0xB0000000.toInt())
+            }, FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM or Gravity.END).apply {
+                setMargins(0, 0, dp(context, 22), dp(context, 10))
+            })
+        }
+        addView(frame)
+
+        title.setTextColor(Color.WHITE)
+        title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 17f)
+        title.setTypeface(title.typeface, android.graphics.Typeface.BOLD)
+        title.maxLines = 2
+        title.ellipsize = android.text.TextUtils.TruncateAt.END
+        addView(title, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+            setMargins(dp(context, 16), dp(context, 9), dp(context, 16), 0)
+        })
+
+        subtitle.setTextColor(0xFFAAA7B2.toInt())
+        subtitle.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+        subtitle.maxLines = 1
+        subtitle.ellipsize = android.text.TextUtils.TruncateAt.END
+        addView(subtitle, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+            setMargins(dp(context, 16), dp(context, 3), dp(context, 16), dp(context, 16))
+        })
     }
 }
 

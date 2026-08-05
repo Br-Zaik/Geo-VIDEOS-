@@ -126,7 +126,7 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
     private var gamingNextToken: String = ""
     private var musicNextToken: String = ""
     private var shortsNextToken: String = ""
-    private var shortsQuery: String = "shorts entretenimiento musica gaming anime español"
+    private var shortsQuery: String = "shorts virales humor gaming musica anime deportes animales curiosidades tecnologia español"
     private var uploadsNextToken: String = ""
     private var likedNextToken: String = ""
     private var searchNextToken: String = ""
@@ -1596,11 +1596,11 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
 
         val interests = (categoryTerms + frequentWords)
             .distinct()
-            .take(4)
+            .take(3)
         return if (interests.isEmpty()) {
-            "shorts entretenimiento musica gaming anime español"
+            "shorts virales humor gaming musica anime deportes animales curiosidades tecnologia español"
         } else {
-            "shorts ${interests.joinToString(" ")} español"
+            "shorts ${interests.joinToString(" ")} virales humor tendencias español"
         }
     }
 
@@ -1668,22 +1668,18 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
         maxResults: Int
     ): Pair<VideoPage, String> {
         val normalizedPreferred = preferredQuery.trim().ifBlank {
-            "shorts entretenimiento musica gaming anime español"
+            "shorts virales humor gaming musica anime deportes animales curiosidades tecnologia español"
         }
-        val interestCore = normalizedPreferred
-            .replace(Regex("""(?i)^shorts\s+"""), "")
-            .replace(Regex("""(?i)\s+español$"""), "")
-            .trim()
         val queries = listOf(
             normalizedPreferred,
-            "shorts $interestCore tendencias",
-            "shorts $interestCore recomendados",
-            "shorts entretenimiento musica gaming anime español"
+            "shorts virales humor español",
+            "shorts gaming musica deportes español",
+            "shorts anime curiosidades animales tecnologia español"
         )
             .map { it.replace(Regex("""\s+"""), " ").trim() }
             .filter { it.isNotBlank() }
             .distinct()
-            .take(3)
+            .take(4)
 
         val collected = ArrayList<VideoItem>(maxResults)
         var primaryQuery = queries.first()
@@ -1719,9 +1715,9 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
         // Mezcla descubrimiento y señales personales sin limitar Shorts a Suscripciones.
         val weighted = roundRobinVideos(
             discovered,
+            discovered.drop(1),
             personalized,
-            discovered,
-            personalized,
+            discovered.drop(2),
             fallback
         )
         return limitShortsPerChannel(weighted, limit)

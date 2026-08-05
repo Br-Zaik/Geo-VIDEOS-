@@ -558,15 +558,6 @@ private fun MainShell(
                     }
                 },
                 actions = {
-                    if (state.section == MainSection.HOME) {
-                        IconButton(onClick = onRefresh, enabled = !state.refreshing) {
-                            if (state.refreshing) {
-                                CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
-                            } else {
-                                Icon(Icons.Default.Refresh, contentDescription = "Actualizar inicio")
-                            }
-                        }
-                    }
                     IconButton(onClick = { showNotifications = true }) {
                         BadgedBox(badge = {
                             if (state.notifications.isNotEmpty()) Badge { Text(state.notifications.size.coerceAtMost(99).toString()) }

@@ -59,13 +59,15 @@ internal fun LitePlayerView(
     onSeekBy: ((Long) -> Unit)? = null,
     onZoomFeedback: ((Int) -> Unit)? = null,
     onSettingsClick: (() -> Unit)? = null,
-    onControllerVisibilityChanged: ((Boolean) -> Unit)? = null
+    onControllerVisibilityChanged: ((Boolean) -> Unit)? = null,
+    gesturesEnabled: Boolean = true
 ) {
     val attachedView = remember { arrayOfNulls<PlayerView>(1) }
     val currentZoom by rememberUpdatedState(zoomScale)
     val currentOnZoomScaleChange by rememberUpdatedState(onZoomScaleChange)
     val currentOnSeekBy by rememberUpdatedState(onSeekBy)
     val currentOnZoomFeedback by rememberUpdatedState(onZoomFeedback)
+    val currentGesturesEnabled by rememberUpdatedState(gesturesEnabled)
     DisposableEffect(controller) {
         onDispose {
             attachedView[0]?.let { view ->
@@ -137,6 +139,7 @@ internal fun LitePlayerView(
                     }
                 )
                 setOnTouchListener { _, event ->
+                    if (!currentGesturesEnabled) return@setOnTouchListener true
                     scaleDetector.onTouchEvent(event)
                     tapDetector.onTouchEvent(event)
                     false

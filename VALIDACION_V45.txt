@@ -1,0 +1,21 @@
+GEO VIDEOS V45.0.0 - VALIDACION Y CAMBIOS
+
+CAMBIOS PRINCIPALES
+- Inicio actualizado mediante gesto de arrastrar hacia abajo; se retiro el boton visible de recarga.
+- Se agrego una tarjeta Mix automatica basada en contenido musical/recomendado disponible.
+- Shorts de Inicio reconstruidos como estante horizontal con tarjetas verticales, esquinas redondeadas, titulo, canal/fecha y menu.
+- Se ampliaron y diversificaron las consultas de descubrimiento de Shorts para evitar depender solo de suscripciones.
+- Pantalla de video reorganizada con pestanas Informacion/Comentarios y acciones compactas desplazables.
+- Mix automatico dentro del reproductor cuando existen videos relacionados.
+- Pantalla completa con bloqueo de controles, doble toque +/-10 segundos acumulable y zoom por pellizco con porcentaje.
+- Ventana flotante externa separada del minirreproductor interno, movible y redimensionable desde la esquina inferior izquierda.
+- La ventana flotante recuerda posicion y ancho, conserva 16:9, calidad, velocidad, progreso y controles multimedia.
+- Descargas, inicio de sesion, Google, huella y persistencia de sesion no fueron modificados.
+
+VALIDACIONES REALIZADAS
+- Integridad estructural del proyecto y del ZIP.
+- Analisis de XML mediante parser.
+- Revision estatica de sintaxis Kotlin en archivos modificados.
+
+LIMITACION DE PRUEBA
+Este entorno no incluye Android SDK/Gradle completo ni permite descargar la distribucion de Gradle. Por ello la validacion final de compilacion y funcionamiento en dispositivo debe realizarse con GitHub Actions y un telefono Android.
