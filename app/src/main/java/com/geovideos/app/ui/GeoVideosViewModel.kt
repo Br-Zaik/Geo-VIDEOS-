@@ -139,6 +139,7 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
     private var lastSearchQuery: String = ""
     private var subscriptionOffset: Int = 0
     private var subscriptionRefreshCursor: Int = 0
+    private var pendingSubscriptionToggle: ChannelItem? = null
 
     private val cachedProfile = repository.loadProfile()
     private val _uiState = MutableStateFlow(
@@ -209,6 +210,7 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
             )
         }
         refreshSynchronizedAccountData()
+        syncPendingLocalAccountChanges()
     }
 
     fun onYouTubeSyncAuthorizationUnavailable() {
@@ -216,7 +218,7 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
             it.copy(
                 youtubeSyncAuthorized = false,
                 youtubeSyncBusy = false,
-                message = if (it.youtubeSyncEnabled) "Toca Activar sincronización para renovar el permiso de YouTube." else it.message
+                message = if (it.youtubeSyncEnabled) "La sincronización de YouTube necesita autorización cuando vuelvas a usar una acción sincronizada." else it.message
             )
         }
     }
@@ -229,6 +231,56 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
                 youtubeSyncBusy = false,
                 message = message.ifBlank { "No se pudo autorizar la sincronización con YouTube." }
             )
+        }
+    }
+
+    fun queueSubscriptionToggle(channel: ChannelItem) {
+        pendingSubscriptionToggle = channel
+        _uiState.update {
+            it.copy(message = "Autoriza YouTube una vez para sincronizar esta suscripción.")
+        }
+    }
+
+    private fun syncPendingLocalAccountChanges() {
+        val token = youtubeWriteToken ?: return
+        val snapshot = _uiState.value
+        val localLikes = snapshot.localLikedVideos
+        val localDislikes = snapshot.localDislikedIds
+        val localWatchLater = snapshot.watchLater
+        val pendingSubscription = pendingSubscriptionToggle.also { pendingSubscriptionToggle = null }
+
+        viewModelScope.launch {
+            runCatching {
+                localLikes.take(250).forEach { video ->
+                    api.rateVideo(token, video.id, "like")
+                }
+                localDislikes.take(250).forEach { videoId ->
+                    api.rateVideo(token, videoId, "dislike")
+                }
+
+                if (localWatchLater.isNotEmpty()) {
+                    var playlistId = repository.loadGeoWatchLaterPlaylistId()
+                    if (playlistId.isBlank()) {
+                        playlistId = api.findPlaylistByTitle(token, GEO_WATCH_LATER_TITLE)
+                            ?: api.createPrivatePlaylist(
+                                token,
+                                GEO_WATCH_LATER_TITLE,
+                                "Lista privada sincronizada desde Geo Videos"
+                            )
+                        if (playlistId.isNotBlank()) repository.saveGeoWatchLaterPlaylistId(playlistId)
+                    }
+                    if (playlistId.isNotBlank()) {
+                        localWatchLater.take(250).forEach { video ->
+                            val existing = api.findPlaylistItemId(token, playlistId, video.id)
+                            if (existing == null) api.addVideoToPlaylist(token, playlistId, video.id)
+                        }
+                    }
+                }
+            }.onFailure(::handleYouTubeWriteFailure)
+
+            pendingSubscription?.let { channel ->
+                toggleSubscription(channel)
+            }
         }
     }
 
@@ -1550,15 +1602,12 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     fun toggleSubscription(channel: ChannelItem) {
-        if (!_uiState.value.youtubeSyncEnabled) {
-            _uiState.update { it.copy(message = "Activa la sincronización con YouTube desde Cuenta para suscribirte.") }
+        if (!_uiState.value.youtubeSyncEnabled || youtubeWriteToken.isNullOrBlank()) {
+            pendingSubscriptionToggle = channel
+            _uiState.update { it.copy(message = "Autoriza YouTube para sincronizar esta suscripción.") }
             return
         }
-        val token = youtubeWriteToken
-        if (token.isNullOrBlank()) {
-            _uiState.update { it.copy(message = "Renueva la sincronización con YouTube desde Cuenta.") }
-            return
-        }
+        val token = youtubeWriteToken ?: return
         val currentlySubscribed = _uiState.value.subscriptions.any { it.id == channel.id }
         viewModelScope.launch {
             runCatching {
@@ -1589,7 +1638,7 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
     private fun handleYouTubeWriteFailure(error: Throwable) {
         if (error is YouTubeApiException && error.statusCode == 401) {
             youtubeWriteToken = null
-            _uiState.update { it.copy(youtubeSyncAuthorized = false, message = "El permiso de sincronización caducó. Renuévalo desde Cuenta.") }
+            _uiState.update { it.copy(youtubeSyncAuthorized = false, message = "El permiso de sincronización caducó. Se solicitará de nuevo al usar una acción de YouTube.") }
         } else {
             _uiState.update { it.copy(message = error.message ?: "No se pudo sincronizar con YouTube.") }
         }

@@ -298,9 +298,18 @@ fun GeoVideosApp(
                         onPlay = viewModel::play,
                         onOpenVideo = viewModel::openShortDetails,
                         onPreviewShort = viewModel::previewShort,
-                        onWatchLater = viewModel::toggleWatchLater,
-                        onLike = viewModel::toggleLocalLike,
-                        onDislike = viewModel::toggleLocalDislike,
+                        onWatchLater = { video ->
+                            if (!state.youtubeSyncAuthorized && !state.youtubeSyncBusy) onRequestYouTubeSync()
+                            viewModel.toggleWatchLater(video)
+                        },
+                        onLike = { video ->
+                            if (!state.youtubeSyncAuthorized && !state.youtubeSyncBusy) onRequestYouTubeSync()
+                            viewModel.toggleLocalLike(video)
+                        },
+                        onDislike = { video ->
+                            if (!state.youtubeSyncAuthorized && !state.youtubeSyncBusy) onRequestYouTubeSync()
+                            viewModel.toggleLocalDislike(video)
+                        },
                         onSearch = viewModel::search,
                         onRefresh = viewModel::refresh,
                         onLoadMoreHome = viewModel::loadMoreHome,
@@ -311,7 +320,14 @@ fun GeoVideosApp(
                         onLoadMoreSearch = viewModel::loadMoreSearch,
                         onOpenChannel = viewModel::openChannel,
                         onCloseChannel = viewModel::closeChannel,
-                        onToggleSubscription = viewModel::toggleSubscription,
+                        onToggleSubscription = { channel ->
+                            if (!state.youtubeSyncAuthorized) {
+                                viewModel.queueSubscriptionToggle(channel)
+                                if (!state.youtubeSyncBusy) onRequestYouTubeSync()
+                            } else {
+                                viewModel.toggleSubscription(channel)
+                            }
+                        },
                         onDisconnect = { playerConnection.stop(); viewModel.disconnect() },
                         onClearData = viewModel::clearLocalData,
                         onRegisterDownload = viewModel::registerDownload,
@@ -320,7 +336,6 @@ fun GeoVideosApp(
                         onAutoplayChange = viewModel::setAutoplay,
                         onDataSaverChange = viewModel::setDataSaver,
                         onNotificationsChange = viewModel::setNotificationsEnabled,
-                        onDisableYouTubeSync = viewModel::disableYouTubeSync,
                         onMessage = viewModel::showMessage,
                         miniPlayerVisible = selectedVideo != null && !state.playerExpanded && state.section != MainSection.SHORTS
                     )
@@ -352,9 +367,18 @@ fun GeoVideosApp(
                             playerConnection.stop()
                             viewModel.closePlayer()
                         },
-                        onWatchLater = { viewModel.toggleWatchLater(selectedVideo) },
-                        onLike = { viewModel.toggleLocalLike(selectedVideo) },
-                        onDislike = { viewModel.toggleLocalDislike(selectedVideo) },
+                        onWatchLater = {
+                            if (!state.youtubeSyncAuthorized && !state.youtubeSyncBusy) onRequestYouTubeSync()
+                            viewModel.toggleWatchLater(selectedVideo)
+                        },
+                        onLike = {
+                            if (!state.youtubeSyncAuthorized && !state.youtubeSyncBusy) onRequestYouTubeSync()
+                            viewModel.toggleLocalLike(selectedVideo)
+                        },
+                        onDislike = {
+                            if (!state.youtubeSyncAuthorized && !state.youtubeSyncBusy) onRequestYouTubeSync()
+                            viewModel.toggleLocalDislike(selectedVideo)
+                        },
                         onPlayRelated = viewModel::play,
                         onWatchLaterRelated = viewModel::toggleWatchLater,
                         onLoadMoreRelated = viewModel::loadMoreRelated,
@@ -519,7 +543,6 @@ private fun MainShell(
     onAutoplayChange: (Boolean) -> Unit,
     onDataSaverChange: (Boolean) -> Unit,
     onNotificationsChange: (Boolean) -> Unit,
-    onDisableYouTubeSync: () -> Unit,
     onMessage: (String) -> Unit,
     miniPlayerVisible: Boolean
 ) {
@@ -774,14 +797,9 @@ private fun MainShell(
                 autoplay = state.autoplay,
                 dataSaver = state.dataSaver,
                 notificationsEnabled = state.notificationsEnabled,
-                youtubeSyncEnabled = state.youtubeSyncEnabled,
-                youtubeSyncAuthorized = state.youtubeSyncAuthorized,
-                youtubeSyncBusy = state.youtubeSyncBusy,
                 onAutoplayChange = onAutoplayChange,
                 onDataSaverChange = onDataSaverChange,
                 onNotificationsChange = onNotificationsChange,
-                onYouTubeSync = onRequestYouTubeSync,
-                onDisableYouTubeSync = onDisableYouTubeSync,
                 onReconnect = onConnectGoogle,
                 onSwitchAccount = { onSwitchGoogleAccount(state.profile?.email.orEmpty()) },
                 onDisconnect = onDisconnect,
@@ -1417,14 +1435,9 @@ private fun AccountScreen(
     autoplay: Boolean,
     dataSaver: Boolean,
     notificationsEnabled: Boolean,
-    youtubeSyncEnabled: Boolean,
-    youtubeSyncAuthorized: Boolean,
-    youtubeSyncBusy: Boolean,
     onAutoplayChange: (Boolean) -> Unit,
     onDataSaverChange: (Boolean) -> Unit,
     onNotificationsChange: (Boolean) -> Unit,
-    onYouTubeSync: () -> Unit,
-    onDisableYouTubeSync: () -> Unit,
     onReconnect: () -> Unit,
     onSwitchAccount: () -> Unit,
     onDisconnect: () -> Unit,
@@ -1444,41 +1457,6 @@ private fun AccountScreen(
         SettingSwitch("Reproducción automática", "Inicia el video y pasa al siguiente al terminar", autoplay, onAutoplayChange)
         SettingSwitch("Ahorro de datos", "Prioriza una calidad menor y reduce el consumo de red", dataSaver, onDataSaverChange)
         SettingSwitch("Avisos en la app", "Sincroniza actividad disponible para la campana", notificationsEnabled, onNotificationsChange)
-
-        Card(
-            modifier = Modifier.fillMaxWidth().padding(top = 10.dp),
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
-        ) {
-            Column(modifier = Modifier.fillMaxWidth().padding(16.dp)) {
-                Text("Sincronización con YouTube", fontWeight = FontWeight.Bold)
-                Text(
-                    when {
-                        youtubeSyncAuthorized -> "Activa: Me gusta, suscripciones y la lista privada Geo Videos - Ver después se sincronizan con YouTube."
-                        youtubeSyncEnabled -> "Configurada, pero el permiso necesita renovarse para esta sesión."
-                        else -> "Opcional. Se autoriza aparte y no modifica tu inicio de sesión actual."
-                    },
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(top = 5.dp)
-                )
-                Button(
-                    onClick = onYouTubeSync,
-                    enabled = !youtubeSyncBusy,
-                    modifier = Modifier.fillMaxWidth().padding(top = 12.dp)
-                ) {
-                    if (youtubeSyncBusy) {
-                        CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
-                        Spacer(Modifier.width(10.dp))
-                    }
-                    Text(if (youtubeSyncAuthorized) "Renovar sincronización" else "Activar sincronización")
-                }
-                if (youtubeSyncEnabled) {
-                    TextButton(onClick = onDisableYouTubeSync, modifier = Modifier.align(Alignment.End)) {
-                        Text("Desactivar")
-                    }
-                }
-            }
-        }
 
         Spacer(Modifier.height(18.dp))
         OutlinedButton(onClick = onSwitchAccount, modifier = Modifier.fillMaxWidth()) {
