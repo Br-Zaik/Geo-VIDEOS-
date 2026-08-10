@@ -123,6 +123,117 @@ class YouTubeApi {
         )
     }
 
+
+    suspend fun rateVideo(token: String, videoId: String, rating: String) = withContext(Dispatchers.IO) {
+        if (videoId.isBlank()) return@withContext
+        require(rating in setOf("like", "dislike", "none")) { "Calificación no válida" }
+        requestBody(
+            url = "https://www.googleapis.com/youtube/v3/videos/rate?id=${encode(videoId)}&rating=${encode(rating)}",
+            token = token,
+            method = "POST"
+        )
+    }
+
+    suspend fun subscribe(token: String, channelId: String): String = withContext(Dispatchers.IO) {
+        if (channelId.isBlank()) return@withContext ""
+        val body = JSONObject()
+            .put("snippet", JSONObject()
+                .put("resourceId", JSONObject()
+                    .put("kind", "youtube#channel")
+                    .put("channelId", channelId)))
+        val json = requestJsonWrite(
+            url = "https://www.googleapis.com/youtube/v3/subscriptions?part=snippet",
+            token = token,
+            method = "POST",
+            body = body
+        )
+        json.optString("id")
+    }
+
+    suspend fun findSubscriptionId(token: String, channelId: String): String? = withContext(Dispatchers.IO) {
+        if (channelId.isBlank()) return@withContext null
+        val json = requestJson(
+            "https://www.googleapis.com/youtube/v3/subscriptions?part=id&mine=true&forChannelId=${encode(channelId)}&maxResults=1",
+            token
+        )
+        json.optJSONArray("items")?.optJSONObject(0)?.optString("id")?.takeIf { it.isNotBlank() }
+    }
+
+    suspend fun unsubscribe(token: String, subscriptionId: String) = withContext(Dispatchers.IO) {
+        if (subscriptionId.isBlank()) return@withContext
+        requestBody(
+            url = "https://www.googleapis.com/youtube/v3/subscriptions?id=${encode(subscriptionId)}",
+            token = token,
+            method = "DELETE"
+        )
+    }
+
+    suspend fun createPrivatePlaylist(token: String, title: String, description: String = ""): String = withContext(Dispatchers.IO) {
+        val body = JSONObject()
+            .put("snippet", JSONObject()
+                .put("title", title)
+                .put("description", description))
+            .put("status", JSONObject().put("privacyStatus", "private"))
+        val json = requestJsonWrite(
+            url = "https://www.googleapis.com/youtube/v3/playlists?part=snippet,status",
+            token = token,
+            method = "POST",
+            body = body
+        )
+        json.optString("id")
+    }
+
+    suspend fun findPlaylistByTitle(token: String, title: String): String? = withContext(Dispatchers.IO) {
+        val json = requestJson(
+            "https://www.googleapis.com/youtube/v3/playlists?part=snippet&mine=true&maxResults=50",
+            token
+        )
+        val items = json.optJSONArray("items") ?: return@withContext null
+        for (index in 0 until items.length()) {
+            val item = items.optJSONObject(index) ?: continue
+            val currentTitle = item.optJSONObject("snippet")?.optString("title").orEmpty()
+            if (currentTitle.equals(title, ignoreCase = true)) {
+                return@withContext item.optString("id").takeIf { it.isNotBlank() }
+            }
+        }
+        null
+    }
+
+    suspend fun addVideoToPlaylist(token: String, playlistId: String, videoId: String): String = withContext(Dispatchers.IO) {
+        if (playlistId.isBlank() || videoId.isBlank()) return@withContext ""
+        val body = JSONObject()
+            .put("snippet", JSONObject()
+                .put("playlistId", playlistId)
+                .put("resourceId", JSONObject()
+                    .put("kind", "youtube#video")
+                    .put("videoId", videoId)))
+        val json = requestJsonWrite(
+            url = "https://www.googleapis.com/youtube/v3/playlistItems?part=snippet",
+            token = token,
+            method = "POST",
+            body = body
+        )
+        json.optString("id")
+    }
+
+    suspend fun findPlaylistItemId(token: String, playlistId: String, videoId: String): String? = withContext(Dispatchers.IO) {
+        if (playlistId.isBlank() || videoId.isBlank()) return@withContext null
+        val json = requestJson(
+            "https://www.googleapis.com/youtube/v3/playlistItems?part=id&playlistId=${encode(playlistId)}&videoId=${encode(videoId)}&maxResults=1",
+            token
+        )
+        json.optJSONArray("items")?.optJSONObject(0)?.optString("id")?.takeIf { it.isNotBlank() }
+    }
+
+    suspend fun removePlaylistItem(token: String, playlistItemId: String) = withContext(Dispatchers.IO) {
+        if (playlistItemId.isBlank()) return@withContext
+        requestBody(
+            url = "https://www.googleapis.com/youtube/v3/playlistItems?id=${encode(playlistItemId)}",
+            token = token,
+            method = "DELETE"
+        )
+    }
+
     suspend fun relatedVideosPage(
         token: String,
         video: VideoItem,
@@ -584,6 +695,59 @@ class YouTubeApi {
             )
         }
         return JSONObject(body.ifBlank { "{}" })
+    }
+
+    private fun requestJsonWrite(
+        url: String,
+        token: String,
+        method: String,
+        body: JSONObject? = null
+    ): JSONObject {
+        val response = requestBody(url, token, method, body)
+        return JSONObject(response.ifBlank { "{}" })
+    }
+
+    private fun requestBody(
+        url: String,
+        token: String,
+        method: String,
+        body: JSONObject? = null
+    ): String {
+        val connection = URL(url).openConnection() as HttpURLConnection
+        connection.requestMethod = method
+        connection.connectTimeout = 20_000
+        connection.readTimeout = 25_000
+        connection.setRequestProperty("Authorization", "Bearer $token")
+        connection.setRequestProperty("Accept", "application/json")
+        connection.setRequestProperty("Accept-Language", "es-PE,es;q=0.9")
+        if (body != null) {
+            connection.doOutput = true
+            connection.setRequestProperty("Content-Type", "application/json; charset=UTF-8")
+            connection.outputStream.use { output ->
+                output.write(body.toString().toByteArray(Charsets.UTF_8))
+            }
+        }
+        val code = connection.responseCode
+        val stream = if (code in 200..299) connection.inputStream else connection.errorStream
+        val response = if (stream != null) {
+            BufferedReader(InputStreamReader(stream)).use { it.readText() }
+        } else {
+            ""
+        }
+        connection.disconnect()
+        if (code !in 200..299) {
+            val apiMessage = runCatching {
+                JSONObject(response.ifBlank { "{}" })
+                    .optJSONObject("error")
+                    ?.optString("message")
+                    .orEmpty()
+            }.getOrDefault("")
+            throw YouTubeApiException(
+                code,
+                apiMessage.ifBlank { "Error del servicio de video ($code)" }
+            )
+        }
+        return response
     }
 
     private fun encode(value: String): String = URLEncoder.encode(value, Charsets.UTF_8.name())

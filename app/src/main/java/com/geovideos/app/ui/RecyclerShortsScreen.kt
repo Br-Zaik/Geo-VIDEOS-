@@ -834,21 +834,21 @@ private class ShortPageView(context: Context) : FrameLayout(context) {
                 })
             }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
         }
-        addView(info, LayoutParams((context.resources.displayMetrics.widthPixels * 0.78f).toInt(), ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM or Gravity.START).apply {
+        addView(info, LayoutParams((context.resources.displayMetrics.widthPixels * 0.74f).toInt(), ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM or Gravity.START).apply {
             setMargins(dpShort(context, 14), 0, 0, dpShort(context, 18))
         })
 
         val actions = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER_HORIZONTAL
-            listOf(like, dislike, comments, share, save, download, quality).forEach { action ->
-                addView(action, LinearLayout.LayoutParams(dpShort(context, 54), dpShort(context, 54)).apply {
-                    bottomMargin = dpShort(context, 2)
+            listOf(like, share, save, download, quality).forEach { action ->
+                addView(action, LinearLayout.LayoutParams(dpShort(context, 50), dpShort(context, 52)).apply {
+                    bottomMargin = dpShort(context, 3)
                 })
             }
         }
-        addView(actions, LayoutParams(dpShort(context, 66), ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM or Gravity.END).apply {
-            setMargins(0, 0, dpShort(context, 5), dpShort(context, 12))
+        addView(actions, LayoutParams(dpShort(context, 58), ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM or Gravity.END).apply {
+            setMargins(0, 0, dpShort(context, 5), dpShort(context, 16))
         })
     }
 
@@ -958,13 +958,13 @@ private class ShortActionView(context: Context, iconRes: Int, label: String) : L
         isFocusable = true
         icon.setImageResource(iconRes)
         icon.setColorFilter(Color.WHITE)
-        icon.setPadding(dpShort(context, 9), dpShort(context, 9), dpShort(context, 9), dpShort(context, 9))
-        icon.background = circleDrawable(0x88000000.toInt())
-        addView(icon, LayoutParams(dpShort(context, 43), dpShort(context, 43)))
+        icon.setPadding(dpShort(context, 8), dpShort(context, 8), dpShort(context, 8), dpShort(context, 8))
+        icon.background = circleDrawable(0x72000000.toInt())
+        addView(icon, LayoutParams(dpShort(context, 39), dpShort(context, 39)))
         text.text = label
         text.gravity = Gravity.CENTER
         text.setTextColor(Color.WHITE)
-        text.setTextSize(TypedValue.COMPLEX_UNIT_SP, 9.5f)
+        text.setTextSize(TypedValue.COMPLEX_UNIT_SP, 8.8f)
         text.maxLines = 2
         text.ellipsize = TextUtils.TruncateAt.END
         addView(text, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {

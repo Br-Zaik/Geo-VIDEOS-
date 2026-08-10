@@ -1,0 +1,58 @@
+GEO VIDEOS V47 - VALIDACION DE CAMBIOS
+
+OBJETIVO
+- Conservar intacto el inicio de sesion existente.
+- Separar la autorizacion opcional de escritura de YouTube del login normal.
+- Mejorar reproductor flotante, Shorts, recomendaciones, historial y controles del reproductor.
+
+INICIO DE SESION
+- requestGoogleAuthorization(): sin cambios respecto de V46.
+- authorizationLauncher normal: sin cambios respecto de V46.
+- requestedScopes() normal: sin cambios respecto de V46.
+- switchGoogleAccount(): sin cambios respecto de V46.
+- GoogleConnectScreen(): sin cambios respecto de V46.
+- La sincronizacion de YouTube usa un AuthorizationRequest separado con youtube.force-ssl.
+- Al desconectar/cambiar cuenta, la autorizacion opcional de sincronizacion se desvincula para no mezclar cuentas.
+
+SINCRONIZACION YOUTUBE
+- Me gusta / quitar Me gusta: videos.rate.
+- Suscribirse / desuscribirse: subscriptions.insert/delete.
+- Ver despues de Geo Videos: se replica en una playlist privada propia "Geo Videos - Ver después" mediante playlists/playlistItems.
+- El historial visto permanece persistente en Geo Videos; no se fuerza dentro del historial oficial de YouTube.
+- La sincronizacion se activa de forma opcional desde Cuenta y no amplía los scopes del login base.
+
+REPRODUCTOR FLOTANTE
+- Dos tamanos estables 16:9: mini y grande.
+- Alternancia mini/grande desde control integrado abajo a la derecha.
+- Ese control no abre pantalla completa.
+- Posicion y tamano recordados.
+- Transicion animada entre tamanos.
+- Calidad, velocidad, cerrar, anterior, pausa, siguiente, tiempo y progreso integrados.
+- Controles se ocultan automaticamente.
+- Sin medidas en pixeles ni marcas tecnicas de redimensionado.
+
+REPRODUCTOR PRINCIPAL
+- Acciones inferiores mas compactas.
+- Se conservan Info / Comentarios, Mix automatico y controles integrados.
+- Se conservan gestos, zoom, saltos temporales y bloqueo de pantalla ya presentes en V46.
+
+SHORTS
+- En la vista de Shorts quedan visibles solo: Me gusta, Compartir, Guardar, Descargar y Calidad.
+- Se quitan de la columna visible No me gusta y Comentarios.
+- Prioridad de recomendaciones mejorada con historial, busquedas, Me gusta y suscripciones.
+- Se prioriza contenido en espanol/Peru y se penaliza contenido ingles generico sin relacion con intereses.
+- Se limita repeticion excesiva por canal.
+
+HISTORIAL
+- Se mantiene persistente y ordenado por fecha/progreso.
+- Capacidad local ampliada a 300 elementos.
+
+PUBLICACIONES DE COMUNIDAD
+- No se implementa scraping ni se inventan publicaciones/imágenes.
+- La YouTube Data API oficial no expone un recurso de publicaciones de Comunidad en su referencia actual.
+- Se mantiene este punto separado para evitar una funcion fragil o incompatible con la API oficial.
+
+VALIDACIONES ESTATICAS
+- XML/AndroidManifest analizados correctamente.
+- Delimitadores Kotlin revisados.
+- Scopes y funciones del login base comparados contra V46.

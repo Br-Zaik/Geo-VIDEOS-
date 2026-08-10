@@ -200,6 +200,7 @@ fun GeoVideosApp(
     viewModel: GeoVideosViewModel,
     onConnectGoogle: () -> Unit,
     onSwitchGoogleAccount: (String) -> Unit,
+    onRequestYouTubeSync: () -> Unit,
     isInPictureInPictureMode: Boolean = false,
     fullscreenRequestToken: Int = 0,
     expandPlayerRequestToken: Int = 0
@@ -285,6 +286,7 @@ fun GeoVideosApp(
                         playerConnection = playerConnection,
                         onConnectGoogle = onConnectGoogle,
                         onSwitchGoogleAccount = onSwitchGoogleAccount,
+                        onRequestYouTubeSync = onRequestYouTubeSync,
                         onSection = { target ->
                             if (state.section == MainSection.SHORTS && target != MainSection.SHORTS) {
                                 playerConnection.stop()
@@ -308,6 +310,7 @@ fun GeoVideosApp(
                         onLoadMoreSearch = viewModel::loadMoreSearch,
                         onOpenChannel = viewModel::openChannel,
                         onCloseChannel = viewModel::closeChannel,
+                        onToggleSubscription = viewModel::toggleSubscription,
                         onDisconnect = { playerConnection.stop(); viewModel.disconnect() },
                         onClearData = viewModel::clearLocalData,
                         onRegisterDownload = viewModel::registerDownload,
@@ -316,6 +319,7 @@ fun GeoVideosApp(
                         onAutoplayChange = viewModel::setAutoplay,
                         onDataSaverChange = viewModel::setDataSaver,
                         onNotificationsChange = viewModel::setNotificationsEnabled,
+                        onDisableYouTubeSync = viewModel::disableYouTubeSync,
                         onMessage = viewModel::showMessage,
                         miniPlayerVisible = selectedVideo != null && !state.playerExpanded && state.section != MainSection.SHORTS
                     )
@@ -469,6 +473,7 @@ private fun MainShell(
     playerConnection: GeoPlayerConnection,
     onConnectGoogle: () -> Unit,
     onSwitchGoogleAccount: (String) -> Unit,
+    onRequestYouTubeSync: () -> Unit,
     onSection: (MainSection) -> Unit,
     onCategory: (HomeCategory) -> Unit,
     onPlay: (VideoItem) -> Unit,
@@ -487,6 +492,7 @@ private fun MainShell(
     onLoadMoreSearch: () -> Unit,
     onOpenChannel: (ChannelItem) -> Unit,
     onCloseChannel: () -> Unit,
+    onToggleSubscription: (ChannelItem) -> Unit,
     onDisconnect: () -> Unit,
     onClearData: () -> Unit,
     onRegisterDownload: (String, String, Long) -> Unit,
@@ -495,6 +501,7 @@ private fun MainShell(
     onAutoplayChange: (Boolean) -> Unit,
     onDataSaverChange: (Boolean) -> Unit,
     onNotificationsChange: (Boolean) -> Unit,
+    onDisableYouTubeSync: () -> Unit,
     onMessage: (String) -> Unit,
     miniPlayerVisible: Boolean
 ) {
@@ -551,6 +558,7 @@ private fun MainShell(
             onBack = onCloseChannel,
             onPlay = onPlay,
             onWatchLater = onWatchLater,
+            onToggleSubscription = onToggleSubscription,
             onMessage = onMessage
         )
         return
@@ -748,9 +756,14 @@ private fun MainShell(
                 autoplay = state.autoplay,
                 dataSaver = state.dataSaver,
                 notificationsEnabled = state.notificationsEnabled,
+                youtubeSyncEnabled = state.youtubeSyncEnabled,
+                youtubeSyncAuthorized = state.youtubeSyncAuthorized,
+                youtubeSyncBusy = state.youtubeSyncBusy,
                 onAutoplayChange = onAutoplayChange,
                 onDataSaverChange = onDataSaverChange,
                 onNotificationsChange = onNotificationsChange,
+                onYouTubeSync = onRequestYouTubeSync,
+                onDisableYouTubeSync = onDisableYouTubeSync,
                 onReconnect = onConnectGoogle,
                 onSwitchAccount = { onSwitchGoogleAccount(state.profile?.email.orEmpty()) },
                 onDisconnect = onDisconnect,
@@ -1386,9 +1399,14 @@ private fun AccountScreen(
     autoplay: Boolean,
     dataSaver: Boolean,
     notificationsEnabled: Boolean,
+    youtubeSyncEnabled: Boolean,
+    youtubeSyncAuthorized: Boolean,
+    youtubeSyncBusy: Boolean,
     onAutoplayChange: (Boolean) -> Unit,
     onDataSaverChange: (Boolean) -> Unit,
     onNotificationsChange: (Boolean) -> Unit,
+    onYouTubeSync: () -> Unit,
+    onDisableYouTubeSync: () -> Unit,
     onReconnect: () -> Unit,
     onSwitchAccount: () -> Unit,
     onDisconnect: () -> Unit,
@@ -1408,6 +1426,41 @@ private fun AccountScreen(
         SettingSwitch("Reproducción automática", "Inicia el video y pasa al siguiente al terminar", autoplay, onAutoplayChange)
         SettingSwitch("Ahorro de datos", "Prioriza una calidad menor y reduce el consumo de red", dataSaver, onDataSaverChange)
         SettingSwitch("Avisos en la app", "Sincroniza actividad disponible para la campana", notificationsEnabled, onNotificationsChange)
+
+        Card(
+            modifier = Modifier.fillMaxWidth().padding(top = 10.dp),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+        ) {
+            Column(modifier = Modifier.fillMaxWidth().padding(16.dp)) {
+                Text("Sincronización con YouTube", fontWeight = FontWeight.Bold)
+                Text(
+                    when {
+                        youtubeSyncAuthorized -> "Activa: Me gusta, suscripciones y la lista privada Geo Videos - Ver después se sincronizan con YouTube."
+                        youtubeSyncEnabled -> "Configurada, pero el permiso necesita renovarse para esta sesión."
+                        else -> "Opcional. Se autoriza aparte y no modifica tu inicio de sesión actual."
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 5.dp)
+                )
+                Button(
+                    onClick = onYouTubeSync,
+                    enabled = !youtubeSyncBusy,
+                    modifier = Modifier.fillMaxWidth().padding(top = 12.dp)
+                ) {
+                    if (youtubeSyncBusy) {
+                        CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                        Spacer(Modifier.width(10.dp))
+                    }
+                    Text(if (youtubeSyncAuthorized) "Renovar sincronización" else "Activar sincronización")
+                }
+                if (youtubeSyncEnabled) {
+                    TextButton(onClick = onDisableYouTubeSync, modifier = Modifier.align(Alignment.End)) {
+                        Text("Desactivar")
+                    }
+                }
+            }
+        }
 
         Spacer(Modifier.height(18.dp))
         OutlinedButton(onClick = onSwitchAccount, modifier = Modifier.fillMaxWidth()) {
@@ -1507,6 +1560,7 @@ private fun ChannelScreen(
     onBack: () -> Unit,
     onPlay: (VideoItem) -> Unit,
     onWatchLater: (VideoItem) -> Unit,
+    onToggleSubscription: (ChannelItem) -> Unit,
     onMessage: (String) -> Unit
 ) {
     BackHandler(onBack = onBack)
@@ -1586,10 +1640,7 @@ private fun ChannelScreen(
                         )
                     }
                     Button(
-                        onClick = {
-                            if (channel.isSubscribed) onMessage("Ya estás suscrito a este canal.")
-                            else onMessage("Para suscribirte en YouTube se necesita permiso adicional de la cuenta.")
-                        },
+                        onClick = { onToggleSubscription(channel) },
                         modifier = Modifier.fillMaxWidth().padding(top = 14.dp),
                         shape = RoundedCornerShape(22.dp)
                     ) {

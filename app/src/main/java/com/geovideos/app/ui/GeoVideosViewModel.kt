@@ -101,6 +101,9 @@ data class GeoVideosUiState(
     val autoplay: Boolean = true,
     val dataSaver: Boolean = false,
     val notificationsEnabled: Boolean = true,
+    val youtubeSyncEnabled: Boolean = false,
+    val youtubeSyncAuthorized: Boolean = false,
+    val youtubeSyncBusy: Boolean = false,
     val lastSyncMs: Long = 0L,
     val message: String? = null
 ) {
@@ -119,6 +122,7 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
     private val api = YouTubeApi()
 
     private var accessToken: String? = null
+    private var youtubeWriteToken: String? = null
     private var likesPlaylistId: String = ""
     private var uploadsPlaylistId: String = ""
     private var popularNextToken: String = ""
@@ -166,6 +170,8 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
             autoplay = repository.loadAutoplay(),
             dataSaver = repository.loadDataSaver(),
             notificationsEnabled = repository.loadNotificationsEnabled(),
+            youtubeSyncEnabled = repository.loadYouTubeSyncEnabled(),
+            youtubeSyncAuthorized = false,
             lastSyncMs = repository.loadLastSyncMs()
         )
     )
@@ -179,6 +185,86 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
                 _uiState.update { state ->
                     state.copy(shorts = verified.ifEmpty { state.shorts })
                 }
+            }
+        }
+    }
+
+    fun beginYouTubeSyncAuthorization() {
+        _uiState.update { it.copy(youtubeSyncBusy = true, message = "Solicitando permiso de sincronización con YouTube…") }
+    }
+
+    fun onYouTubeSyncAuthorizationSuccess(token: String?) {
+        if (token.isNullOrBlank()) {
+            onYouTubeSyncAuthorizationFailure("Google no devolvió el permiso de YouTube.")
+            return
+        }
+        youtubeWriteToken = token
+        repository.setYouTubeSyncEnabled(true)
+        _uiState.update {
+            it.copy(
+                youtubeSyncEnabled = true,
+                youtubeSyncAuthorized = true,
+                youtubeSyncBusy = false,
+                message = "Sincronización con YouTube activada."
+            )
+        }
+        refreshSynchronizedAccountData()
+    }
+
+    fun onYouTubeSyncAuthorizationUnavailable() {
+        _uiState.update {
+            it.copy(
+                youtubeSyncAuthorized = false,
+                youtubeSyncBusy = false,
+                message = if (it.youtubeSyncEnabled) "Toca Activar sincronización para renovar el permiso de YouTube." else it.message
+            )
+        }
+    }
+
+    fun onYouTubeSyncAuthorizationFailure(message: String) {
+        youtubeWriteToken = null
+        _uiState.update {
+            it.copy(
+                youtubeSyncAuthorized = false,
+                youtubeSyncBusy = false,
+                message = message.ifBlank { "No se pudo autorizar la sincronización con YouTube." }
+            )
+        }
+    }
+
+    fun disableYouTubeSync() {
+        youtubeWriteToken = null
+        repository.setYouTubeSyncEnabled(false)
+        _uiState.update {
+            it.copy(
+                youtubeSyncEnabled = false,
+                youtubeSyncAuthorized = false,
+                youtubeSyncBusy = false,
+                message = "Sincronización con YouTube desactivada. El historial local se conserva."
+            )
+        }
+    }
+
+    private fun refreshSynchronizedAccountData() {
+        val token = youtubeWriteToken ?: return
+        viewModelScope.launch {
+            runCatching {
+                val subscriptions = api.subscriptions(token)
+                val playlists = api.playlists(token)
+                subscriptions to playlists
+            }.onSuccess { (subscriptions, playlists) ->
+                repository.saveSubscriptions(subscriptions)
+                _uiState.update {
+                    it.copy(
+                        subscriptions = subscriptions,
+                        playlists = playlists,
+                        youtubeSyncAuthorized = true,
+                        youtubeSyncBusy = false
+                    )
+                }
+            }.onFailure { error ->
+                if (error is YouTubeApiException && error.statusCode == 401) youtubeWriteToken = null
+                _uiState.update { it.copy(youtubeSyncBusy = false) }
             }
         }
     }
@@ -267,6 +353,8 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
 
     fun disconnect() {
         accessToken = null
+        youtubeWriteToken = null
+        repository.clearYouTubeSyncAccountBinding()
         likesPlaylistId = ""
         uploadsPlaylistId = ""
         resetPagination()
@@ -274,6 +362,7 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
         _uiState.update {
             GeoVideosUiState(
                 authStatus = AuthStatus.DISCONNECTED,
+                youtubeSyncAuthorized = false,
                 history = repository.loadHistory(),
                 watchLater = repository.loadWatchLater(),
                 localLikedIds = repository.loadLocalLikedIds(),
@@ -466,12 +555,16 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
                     val personalizedShorts = verifyRealShorts(personalShortCandidates)
                     val discoveredShortCandidates = enriched(shortsRaw)
                     val discoveredShorts = verifyRealShorts(discoveredShortCandidates)
-                    val shorts = buildDiverseShortFeed(
-                        discovered = discoveredShorts,
-                        personalized = personalizedShorts,
-                        fallback = discoveredShortCandidates.filter(::looksLikeStrongShort) +
-                            personalShortCandidates.filter(::looksLikeStrongShort),
-                        limit = 40
+                    val shorts = prioritizeShortsForUser(
+                        buildDiverseShortFeed(
+                            discovered = discoveredShorts,
+                            personalized = personalizedShorts,
+                            fallback = discoveredShortCandidates.filter(::looksLikeStrongShort) +
+                                personalShortCandidates.filter(::looksLikeStrongShort),
+                            limit = 48
+                        ),
+                        previous,
+                        40
                     )
                     val liked = enriched(likedRaw)
                     val subscriptionFeed = enriched(subscriptionFeedRaw)
@@ -692,11 +785,15 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
                 val discovered = verified.ifEmpty {
                     candidates.filter(::looksLikeStrongShort).take(24)
                 }
-                val usable = buildDiverseShortFeed(
-                    discovered = discovered,
-                    personalized = personalized,
-                    fallback = candidates.filter(::looksLikeStrongShort),
-                    limit = MAX_HOME_ITEMS
+                val usable = prioritizeShortsForUser(
+                    buildDiverseShortFeed(
+                        discovered = discovered,
+                        personalized = personalized,
+                        fallback = candidates.filter(::looksLikeStrongShort),
+                        limit = MAX_HOME_ITEMS
+                    ),
+                    state,
+                    MAX_HOME_ITEMS
                 )
                 _uiState.update { current ->
                     val merged = if (usable.isEmpty()) current.shorts else usable
@@ -749,11 +846,15 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
                 }
                 _uiState.update {
                     it.copy(
-                        shorts = buildDiverseShortFeed(
-                            discovered = mergeUniqueVideos(it.shorts, enriched),
-                            personalized = emptyList(),
-                            fallback = enriched,
-                            limit = MAX_HOME_ITEMS
+                        shorts = prioritizeShortsForUser(
+                            buildDiverseShortFeed(
+                                discovered = mergeUniqueVideos(it.shorts, enriched),
+                                personalized = emptyList(),
+                                fallback = enriched,
+                                limit = MAX_HOME_ITEMS
+                            ),
+                            it,
+                            MAX_HOME_ITEMS
                         ),
                         shortsLoadingMore = false,
                         shortsCanLoadMore = page.nextPageToken.isNotBlank()
@@ -1334,26 +1435,30 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
 
     fun toggleLocalLike(video: VideoItem) {
         val (likes, dislikes, localVideos) = repository.toggleLocalLike(video)
+        val likedNow = video.id in likes
         _uiState.update {
             it.copy(
                 localLikedIds = likes,
                 localDislikedIds = dislikes,
                 localLikedVideos = localVideos,
-                message = if (video.id in likes) "Me gusta guardado en Geo Videos." else "Me gusta eliminado."
+                message = if (likedNow) "Me gusta guardado en Geo Videos." else "Me gusta eliminado."
             )
         }
+        syncVideoRating(video, if (likedNow) "like" else "none")
     }
 
     fun toggleLocalDislike(video: VideoItem) {
         val (likes, dislikes, localVideos) = repository.toggleLocalDislike(video.id)
+        val dislikedNow = video.id in dislikes
         _uiState.update {
             it.copy(
                 localLikedIds = likes,
                 localDislikedIds = dislikes,
                 localLikedVideos = localVideos,
-                message = if (video.id in dislikes) "Marcado como no me gusta en Geo Videos." else "Reacción eliminada."
+                message = if (dislikedNow) "Marcado como no me gusta en Geo Videos." else "Reacción eliminada."
             )
         }
+        syncVideoRating(video, if (dislikedNow) "dislike" else "none")
     }
 
     fun toggleWatchLater(video: VideoItem) {
@@ -1364,6 +1469,110 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
                 watchLater = updated,
                 message = if (added) "Guardado en Ver después." else "Quitado de Ver después."
             )
+        }
+        syncGeoWatchLater(video, added)
+    }
+
+    private fun syncVideoRating(video: VideoItem, rating: String) {
+        if (!_uiState.value.youtubeSyncEnabled) return
+        val token = youtubeWriteToken
+        if (token.isNullOrBlank()) {
+            _uiState.update { it.copy(message = "El cambio quedó en Geo Videos. Renueva la sincronización para enviarlo a YouTube.") }
+            return
+        }
+        viewModelScope.launch {
+            runCatching { api.rateVideo(token, video.id, rating) }
+                .onSuccess {
+                    _uiState.update { current ->
+                        val remoteLiked = when (rating) {
+                            "like" -> mergeUniqueVideos(listOf(video), current.liked)
+                            else -> current.liked.filterNot { it.id == video.id }
+                        }
+                        repository.saveLikedVideos(remoteLiked)
+                        current.copy(liked = remoteLiked, message = "Sincronizado con YouTube.")
+                    }
+                }
+                .onFailure(::handleYouTubeWriteFailure)
+        }
+    }
+
+    private fun syncGeoWatchLater(video: VideoItem, added: Boolean) {
+        if (!_uiState.value.youtubeSyncEnabled) return
+        val token = youtubeWriteToken
+        if (token.isNullOrBlank()) {
+            _uiState.update { it.copy(message = "Ver después quedó guardado en Geo Videos. Renueva la sincronización para enviarlo a YouTube.") }
+            return
+        }
+        viewModelScope.launch {
+            runCatching {
+                var playlistId = repository.loadGeoWatchLaterPlaylistId()
+                if (playlistId.isBlank()) {
+                    playlistId = api.findPlaylistByTitle(token, GEO_WATCH_LATER_TITLE)
+                        ?: api.createPrivatePlaylist(
+                            token,
+                            GEO_WATCH_LATER_TITLE,
+                            "Lista privada sincronizada desde Geo Videos"
+                        )
+                    if (playlistId.isNotBlank()) repository.saveGeoWatchLaterPlaylistId(playlistId)
+                }
+                if (playlistId.isBlank()) error("No se pudo preparar la lista de YouTube.")
+                if (added) {
+                    val existing = api.findPlaylistItemId(token, playlistId, video.id)
+                    if (existing == null) api.addVideoToPlaylist(token, playlistId, video.id)
+                } else {
+                    api.findPlaylistItemId(token, playlistId, video.id)?.let {
+                        api.removePlaylistItem(token, it)
+                    }
+                }
+            }.onSuccess {
+                _uiState.update { it.copy(message = "Ver después sincronizado con YouTube.") }
+            }.onFailure(::handleYouTubeWriteFailure)
+        }
+    }
+
+    fun toggleSubscription(channel: ChannelItem) {
+        if (!_uiState.value.youtubeSyncEnabled) {
+            _uiState.update { it.copy(message = "Activa la sincronización con YouTube desde Cuenta para suscribirte.") }
+            return
+        }
+        val token = youtubeWriteToken
+        if (token.isNullOrBlank()) {
+            _uiState.update { it.copy(message = "Renueva la sincronización con YouTube desde Cuenta.") }
+            return
+        }
+        val currentlySubscribed = _uiState.value.subscriptions.any { it.id == channel.id }
+        viewModelScope.launch {
+            runCatching {
+                if (currentlySubscribed) {
+                    api.findSubscriptionId(token, channel.id)?.let { api.unsubscribe(token, it) }
+                } else {
+                    api.subscribe(token, channel.id)
+                }
+            }.onSuccess {
+                val updated = if (currentlySubscribed) {
+                    _uiState.value.subscriptions.filterNot { it.id == channel.id }
+                } else {
+                    listOf(channel.copy(isSubscribed = true)) + _uiState.value.subscriptions.filterNot { it.id == channel.id }
+                }
+                repository.saveSubscriptions(updated)
+                _uiState.update { state ->
+                    state.copy(
+                        subscriptions = updated,
+                        selectedChannel = state.selectedChannel?.takeIf { it.id == channel.id }?.copy(isSubscribed = !currentlySubscribed)
+                            ?: state.selectedChannel,
+                        message = if (currentlySubscribed) "Suscripción eliminada en YouTube." else "Suscripción guardada en YouTube."
+                    )
+                }
+            }.onFailure(::handleYouTubeWriteFailure)
+        }
+    }
+
+    private fun handleYouTubeWriteFailure(error: Throwable) {
+        if (error is YouTubeApiException && error.statusCode == 401) {
+            youtubeWriteToken = null
+            _uiState.update { it.copy(youtubeSyncAuthorized = false, message = "El permiso de sincronización caducó. Renuévalo desde Cuenta.") }
+        } else {
+            _uiState.update { it.copy(message = error.message ?: "No se pudo sincronizar con YouTube.") }
         }
     }
 
@@ -1749,6 +1958,60 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
+    private fun prioritizeShortsForUser(
+        videos: List<VideoItem>,
+        state: GeoVideosUiState,
+        limit: Int
+    ): List<VideoItem> {
+        if (videos.isEmpty()) return videos
+        val stopWords = setOf(
+            "video", "shorts", "short", "para", "como", "este", "esta", "with", "from",
+            "that", "your", "the", "and", "official", "2026", "2025"
+        )
+        val interestTerms = sequenceOf(
+            state.searchHistory.asSequence(),
+            state.history.asSequence().take(30).map { it.title + " " + it.channelTitle },
+            state.localLikedVideos.asSequence().take(20).map { it.title + " " + it.channelTitle },
+            state.liked.asSequence().take(20).map { it.title + " " + it.channelTitle },
+            state.subscriptions.asSequence().take(20).map { it.title }
+        ).flatten()
+            .flatMap { text -> text.lowercase().split(Regex("[^\\p{L}\\p{N}]+")).asSequence() }
+            .filter { it.length >= 4 && it !in stopWords }
+            .groupingBy { it }
+            .eachCount()
+            .entries
+            .sortedByDescending { it.value }
+            .map { it.key }
+            .take(18)
+            .toSet()
+
+        fun score(video: VideoItem): Int {
+            val text = (video.title + " " + video.description + " " + video.channelTitle).lowercase()
+            var score = 0
+            val interestHits = interestTerms.count { it in text }
+            score += interestHits * 5
+            if (video.channelId.isNotBlank() && state.subscriptions.any { it.id == video.channelId }) score += 3
+            if (state.localLikedVideos.any { it.channelId.isNotBlank() && it.channelId == video.channelId }) score += 2
+            if (listOf(
+                    " el ", " la ", " los ", " las ", " que ", " como ", " para ", " con ", " de ",
+                    "español", "latino", "hoy", "nuevo", "nueva", "música", "musica", "juego", "humor"
+                ).any { it in " $text " }) score += 4
+            if (listOf("anime", "donghua", "manhwa", "naruto", "minecraft", "free fire", "rap", "fútbol", "futbol", "perro", "gato").any { it in text }) score += 2
+            val genericEnglish = listOf(
+                "watch till the end", "viral shorts", "funny video", "subscribe now",
+                "best moments", "daily vlog", "prank video", "random facts"
+            ).any { it in text }
+            if (genericEnglish && interestHits == 0) score -= 6
+            return score
+        }
+
+        val ranked = videos.distinctBy { it.id }
+            .mapIndexed { index, video -> Triple(video, score(video), index) }
+            .sortedWith(compareByDescending<Triple<VideoItem, Int, Int>> { it.second }.thenBy { it.third })
+            .map { it.first }
+        return limitShortsPerChannel(ranked, limit)
+    }
+
     private fun isAcceptableShort(video: VideoItem): Boolean {
         val text = (video.title + " " + video.description + " " + video.channelTitle).lowercase()
         val blocked = listOf(
@@ -1825,6 +2088,7 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
         const val FIRST_RELATED_PAGE = "__first__"
         const val INITIAL_SUBSCRIPTION_BATCH = 4
         const val SUBSCRIPTION_PAGE_SIZE = 4
+        const val GEO_WATCH_LATER_TITLE = "Geo Videos - Ver después"
         const val MAX_HOME_ITEMS = 60
     }
 }

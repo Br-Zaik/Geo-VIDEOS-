@@ -1,14 +1,13 @@
 package com.geovideos.app.playback
 
+import android.animation.ValueAnimator
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
-import android.graphics.Canvas
 import android.graphics.Color
-import android.graphics.Paint
 import android.graphics.PixelFormat
 import android.graphics.drawable.GradientDrawable
 import android.os.Build
@@ -61,8 +60,8 @@ import kotlin.math.roundToInt
 /**
  * Ventana flotante propia, independiente del minirreproductor interno.
  *
- * La ventana empieza en un tamano comodo, se puede mover y redimensionar libremente
- * desde el control inferior derecho, manteniendo la proporcion 16:9.
+ * La ventana tiene dos tamanos estables (mini y grande), se puede mover libremente
+ * y alterna de tamano desde el control inferior derecho manteniendo la proporcion 16:9.
  * Los controles se superponen sobre el video y se ocultan automaticamente para
  * no convertir el reproductor en un panel grande dentro de la aplicacion.
  */
@@ -87,7 +86,7 @@ class FloatingPlayerService : Service() {
     private var qualityOptions: List<Int?> = listOf(null)
     private var qualityLoadingJob: Job? = null
     private var controlsVisible = true
-    private var preferredWindowWidth = 0
+    private var windowLarge = false
 
     private var qualityText: TextView? = null
     private var speedText: TextView? = null
@@ -96,6 +95,7 @@ class FloatingPlayerService : Service() {
     private var timeText: TextView? = null
     private var feedbackText: TextView? = null
     private var resizeHandle: View? = null
+    private var resizeAnimator: ValueAnimator? = null
     private var ignoreSeekCallback = false
     private var lastSeekDirection = 0
     private var accumulatedSeekSeconds = 0
@@ -126,7 +126,7 @@ class FloatingPlayerService : Service() {
     override fun onCreate() {
         super.onCreate()
         windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
-        preferredWindowWidth = preferences.getInt(KEY_WIDTH, 0)
+        windowLarge = preferences.getBoolean(KEY_LARGE, false)
         createNotificationChannel()
     }
 
@@ -155,6 +155,7 @@ class FloatingPlayerService : Service() {
 
     override fun onDestroy() {
         qualityLoadingJob?.cancel()
+        resizeAnimator?.cancel()
         handler.removeCallbacksAndMessages(null)
         activeController?.removeListener(controllerListener)
         removeOverlay()
@@ -372,11 +373,15 @@ class FloatingPlayerService : Service() {
             showControls(autoHide = true)
         })
         controls.addView(View(this), LinearLayout.LayoutParams(0, dp(30), 1f))
-        resizeHandle = ResizeCornerView(this).apply {
-            contentDescription = "Cambiar tamaño de la ventana"
-            background = roundedBackground(0x7A000000.toInt(), 6f)
+        resizeHandle = ImageButton(this).apply {
+            setImageResource(R.drawable.ic_player_resize)
+            contentDescription = "Agrandar o achicar ventana"
+            setColorFilter(Color.WHITE)
+            setBackgroundColor(Color.TRANSPARENT)
+            scaleType = android.widget.ImageView.ScaleType.CENTER_INSIDE
+            setPadding(dp(7), dp(7), dp(7), dp(7))
+            setOnClickListener { toggleWindowSize() }
         }.also { handle ->
-            installResizeHandle(handle)
             controls.addView(handle, LinearLayout.LayoutParams(dp(38), dp(34)))
         }
         bottomPanel.addView(
@@ -542,6 +547,7 @@ class FloatingPlayerService : Service() {
     private fun loadQualityOptions() {
         val video = currentVideo ?: return
         qualityLoadingJob?.cancel()
+        resizeAnimator?.cancel()
         qualityLoadingJob = scope.launch {
             qualityText?.text = "..."
             val options = runCatching {
@@ -754,58 +760,59 @@ class FloatingPlayerService : Service() {
     private val hideFeedbackRunnable = Runnable { feedbackText?.visibility = View.GONE }
     private val hideControlsRunnable = Runnable { hideControls() }
 
-    private fun installResizeHandle(handle: View) {
-        var startRawX = 0f
-        var startWidth = 0
-        var startX = 0
-        var startY = 0
-        handle.setOnTouchListener { _, event ->
-            val params = windowParams ?: return@setOnTouchListener false
-            when (event.actionMasked) {
-                MotionEvent.ACTION_DOWN -> {
-                    startRawX = event.rawX
-                    startWidth = params.width
-                    startX = params.x
-                    startY = params.y
-                    handler.removeCallbacks(hideControlsRunnable)
-                    true
-                }
-                MotionEvent.ACTION_MOVE -> {
-                    val screenWidth = resources.displayMetrics.widthPixels
-                    val minWidth = (screenWidth * 0.42f).roundToInt().coerceAtLeast(dp(150))
-                    val maxWidth = (screenWidth * 0.96f).roundToInt().coerceAtLeast(minWidth)
-                    val requestedWidth = (startWidth + (event.rawX - startRawX)).roundToInt()
-                        .coerceIn(minWidth, maxWidth)
-                    params.width = requestedWidth
-                    params.height = (requestedWidth * 9f / 16f).roundToInt()
-                    params.x = startX
-                    params.y = startY
-                    clampWindowPosition(params)
-                    overlayRoot?.let { runCatching { windowManager.updateViewLayout(it, params) } }
-                    true
-                }
-                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                    preferredWindowWidth = params.width
+    private fun toggleWindowSize() {
+        val params = windowParams ?: return
+        val screenWidth = resources.displayMetrics.widthPixels
+        val targetLarge = !windowLarge
+        val targetWidth = if (targetLarge) {
+            (screenWidth * LARGE_WIDTH_FRACTION).roundToInt()
+        } else {
+            (screenWidth * MINI_WIDTH_FRACTION).roundToInt()
+        }.coerceAtLeast(dp(170))
+        windowLarge = targetLarge
+        animateWindowSize(params.width, targetWidth)
+    }
+
+    private fun animateWindowSize(fromWidth: Int, toWidth: Int) {
+        val params = windowParams ?: return
+        val root = overlayRoot ?: return
+        resizeAnimator?.cancel()
+        val startX = params.x
+        val startY = params.y
+        val startWidth = params.width
+        val startHeight = params.height
+        val targetHeight = (toWidth * 9f / 16f).roundToInt()
+        val targetX = startX + (startWidth - toWidth) / 2
+        val targetY = startY + (startHeight - targetHeight) / 2
+        resizeAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
+            duration = 180L
+            addUpdateListener { animator ->
+                val fraction = animator.animatedValue as Float
+                params.width = (fromWidth + (toWidth - fromWidth) * fraction).roundToInt()
+                params.height = (params.width * 9f / 16f).roundToInt()
+                params.x = (startX + (targetX - startX) * fraction).roundToInt()
+                params.y = (startY + (targetY - startY) * fraction).roundToInt()
+                clampWindowPosition(params)
+                runCatching { windowManager.updateViewLayout(root, params) }
+            }
+            addListener(object : android.animation.AnimatorListenerAdapter() {
+                override fun onAnimationEnd(animation: android.animation.Animator) {
                     saveWindowState()
                     showControls(autoHide = true)
-                    true
                 }
-                else -> false
-            }
+            })
+            start()
         }
     }
 
     private fun initialWindowSize(): Pair<Int, Int> {
         val screenWidth = resources.displayMetrics.widthPixels
-        val screenHeight = resources.displayMetrics.heightPixels
-        val minWidth = (screenWidth * 0.42f).roundToInt().coerceAtLeast(dp(150))
-        val maxWidth = (screenWidth * 0.96f).roundToInt().coerceAtLeast(minWidth)
-        val defaultWidth = (screenWidth * 0.86f).roundToInt()
-        val width = preferredWindowWidth
-            .takeIf { it in minWidth..maxWidth }
-            ?: defaultWidth.coerceIn(minWidth, maxWidth)
-        val maxHeight = (screenHeight - dp(48)).coerceAtLeast(dp(90))
-        val height = (width * 9f / 16f).roundToInt().coerceAtMost(maxHeight)
+        val width = if (windowLarge) {
+            (screenWidth * LARGE_WIDTH_FRACTION).roundToInt()
+        } else {
+            (screenWidth * MINI_WIDTH_FRACTION).roundToInt()
+        }.coerceAtLeast(dp(170))
+        val height = (width * 9f / 16f).roundToInt()
         return width to height
     }
 
@@ -827,7 +834,7 @@ class FloatingPlayerService : Service() {
         preferences.edit()
             .putInt(KEY_X, params.x)
             .putInt(KEY_Y, params.y)
-            .putInt(KEY_WIDTH, params.width)
+            .putBoolean(KEY_LARGE, windowLarge)
             .apply()
     }
 
@@ -951,27 +958,6 @@ class FloatingPlayerService : Service() {
         intArrayOf(0xC9000000.toInt(), 0x00000000)
     )
 
-    private class ResizeCornerView(context: Context) : View(context) {
-        private val linePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.WHITE
-            style = Paint.Style.STROKE
-            strokeWidth = resources.displayMetrics.density * 1.8f
-            strokeCap = Paint.Cap.ROUND
-            alpha = 235
-        }
-
-        override fun onDraw(canvas: Canvas) {
-            super.onDraw(canvas)
-            val density = resources.displayMetrics.density
-            val right = width - 7f * density
-            val bottom = height - 7f * density
-            val span = 15f * density
-            canvas.drawLine(right - span, bottom, right, bottom - span, linePaint)
-            canvas.drawLine(right - 7f * density, bottom, right, bottom, linePaint)
-            canvas.drawLine(right, bottom - 7f * density, right, bottom, linePaint)
-        }
-    }
-
     private fun speedLabel(speed: Float): String =
         if (abs(speed - 1f) < 0.01f) "1x" else "${speed}x"
 
@@ -1035,7 +1021,9 @@ class FloatingPlayerService : Service() {
         private const val PREFS_NAME = "geo_floating_player"
         private const val KEY_X = "window_x"
         private const val KEY_Y = "window_y"
-        private const val KEY_WIDTH = "window_width"
+        private const val KEY_LARGE = "window_large"
+        private const val MINI_WIDTH_FRACTION = 0.52f
+        private const val LARGE_WIDTH_FRACTION = 0.90f
 
         private val _surfaceGeneration = MutableStateFlow(0)
         val surfaceGeneration = _surfaceGeneration.asStateFlow()

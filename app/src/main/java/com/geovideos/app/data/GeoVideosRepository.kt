@@ -20,6 +20,8 @@ class GeoVideosRepository(context: Context) {
     fun loadNotificationsEnabled(): Boolean = preferences.getBoolean(KEY_NOTIFICATIONS, true)
     fun hasConnectedAccount(): Boolean = preferences.getBoolean(KEY_CONNECTED_ACCOUNT, false)
     fun loadLastSyncMs(): Long = preferences.getLong(KEY_LAST_SYNC, 0L)
+    fun loadYouTubeSyncEnabled(): Boolean = preferences.getBoolean(KEY_YOUTUBE_SYNC_ENABLED, false)
+    fun loadGeoWatchLaterPlaylistId(): String = preferences.getString(KEY_GEO_WATCH_LATER_PLAYLIST, "").orEmpty()
 
     fun loadProfile(): GoogleProfile? = runCatching {
         val raw = preferences.getString(KEY_PROFILE, null) ?: return@runCatching null
@@ -87,6 +89,29 @@ class GeoVideosRepository(context: Context) {
         preferences.edit().putBoolean(KEY_CONNECTED_ACCOUNT, value).apply()
     }
 
+    fun setYouTubeSyncEnabled(value: Boolean) {
+        preferences.edit().putBoolean(KEY_YOUTUBE_SYNC_ENABLED, value).apply()
+    }
+
+    fun saveGeoWatchLaterPlaylistId(value: String) {
+        preferences.edit().putString(KEY_GEO_WATCH_LATER_PLAYLIST, value).apply()
+    }
+
+    fun clearYouTubeSyncAccountBinding() {
+        preferences.edit()
+            .putBoolean(KEY_YOUTUBE_SYNC_ENABLED, false)
+            .remove(KEY_GEO_WATCH_LATER_PLAYLIST)
+            .apply()
+    }
+
+    fun saveSubscriptions(channels: List<ChannelItem>) {
+        preferences.edit().putString(KEY_SUBSCRIPTIONS, encodeChannels(channels).toString()).apply()
+    }
+
+    fun saveLikedVideos(videos: List<VideoItem>) {
+        preferences.edit().putString(KEY_LIKED, encodeVideos(videos).toString()).apply()
+    }
+
     fun saveRemoteSnapshot(
         profile: GoogleProfile,
         personalized: List<VideoItem>,
@@ -136,7 +161,7 @@ class GeoVideosRepository(context: Context) {
         )
         val updated = loadHistory().filterNot { it.id == video.id }.toMutableList()
         updated.add(0, merged)
-        return updated.take(80).also { saveVideos(KEY_HISTORY, it) }
+        return updated.take(MAX_HISTORY_ITEMS).also { saveVideos(KEY_HISTORY, it) }
     }
 
     fun updatePlayback(video: VideoItem, positionMs: Long, durationMs: Long): List<VideoItem> {
@@ -152,7 +177,7 @@ class GeoVideosRepository(context: Context) {
                 watchedAtMs = System.currentTimeMillis()
             )
         )
-        return current.take(80).also { saveVideos(KEY_HISTORY, it) }
+        return current.take(MAX_HISTORY_ITEMS).also { saveVideos(KEY_HISTORY, it) }
     }
 
     fun removeFromHistory(videoId: String): List<VideoItem> {
@@ -474,5 +499,8 @@ class GeoVideosRepository(context: Context) {
         const val KEY_CHANNEL_AVATARS = "channel_avatars"
         const val KEY_LAST_SYNC = "last_sync"
         const val MAX_CHANNEL_AVATARS = 1_000
+        const val MAX_HISTORY_ITEMS = 300
+        const val KEY_YOUTUBE_SYNC_ENABLED = "youtube_sync_enabled"
+        const val KEY_GEO_WATCH_LATER_PLAYLIST = "geo_watch_later_playlist"
     }
 }

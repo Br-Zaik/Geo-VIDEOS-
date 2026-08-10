@@ -55,6 +55,22 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private val youtubeSyncAuthorizationLauncher = registerForActivityResult(
+        ActivityResultContracts.StartIntentSenderForResult()
+    ) { activityResult ->
+        try {
+            val data = activityResult.data
+                ?: error("Google cerró la autorización de YouTube.")
+            val result = Identity.getAuthorizationClient(this)
+                .getAuthorizationResultFromIntent(data)
+            viewModel.onYouTubeSyncAuthorizationSuccess(result.accessToken)
+        } catch (error: Exception) {
+            viewModel.onYouTubeSyncAuthorizationFailure(
+                error.message ?: "No se pudo autorizar la sincronización con YouTube."
+            )
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
@@ -63,6 +79,7 @@ class MainActivity : ComponentActivity() {
                     viewModel = viewModel,
                     onConnectGoogle = { requestGoogleAuthorization(allowResolution = true) },
                     onSwitchGoogleAccount = ::switchGoogleAccount,
+                    onRequestYouTubeSync = { requestYouTubeSyncAuthorization(allowResolution = true) },
                     isInPictureInPictureMode = inPictureInPictureState.value,
                     fullscreenRequestToken = fullscreenRequestState.intValue,
                     expandPlayerRequestToken = expandPlayerRequestState.intValue
@@ -76,6 +93,15 @@ class MainActivity : ComponentActivity() {
             window.decorView.postDelayed(
                 { requestGoogleAuthorization(allowResolution = false) },
                 350
+            )
+            window.decorView.postDelayed(
+                {
+                    val state = viewModel.uiState.value
+                    if (state.youtubeSyncEnabled && state.profile != null) {
+                        requestYouTubeSyncAuthorization(allowResolution = false)
+                    }
+                },
+                1_250
             )
         }
     }
@@ -259,6 +285,45 @@ class MainActivity : ComponentActivity() {
             }
     }
 
+    private fun requestYouTubeSyncAuthorization(allowResolution: Boolean) {
+        if (allowResolution) viewModel.beginYouTubeSyncAuthorization()
+        val request = AuthorizationRequest.builder()
+            .setRequestedScopes(listOf(Scope(YOUTUBE_FORCE_SSL_SCOPE)))
+            .build()
+
+        Identity.getAuthorizationClient(this)
+            .authorize(request)
+            .addOnSuccessListener { result ->
+                if (result.hasResolution()) {
+                    if (!allowResolution) {
+                        viewModel.onYouTubeSyncAuthorizationUnavailable()
+                        return@addOnSuccessListener
+                    }
+                    val pendingIntent = result.pendingIntent
+                    if (pendingIntent == null) {
+                        viewModel.onYouTubeSyncAuthorizationFailure(
+                            "Google no pudo abrir el permiso de sincronización con YouTube."
+                        )
+                    } else {
+                        youtubeSyncAuthorizationLauncher.launch(
+                            IntentSenderRequest.Builder(pendingIntent.intentSender).build()
+                        )
+                    }
+                } else {
+                    viewModel.onYouTubeSyncAuthorizationSuccess(result.accessToken)
+                }
+            }
+            .addOnFailureListener { error ->
+                if (!allowResolution) {
+                    viewModel.onYouTubeSyncAuthorizationUnavailable()
+                } else {
+                    viewModel.onYouTubeSyncAuthorizationFailure(
+                        error.message ?: "No se pudo autorizar la sincronización con YouTube."
+                    )
+                }
+            }
+    }
+
     private fun switchGoogleAccount(email: String) {
         if (email.isBlank()) {
             viewModel.disconnect()
@@ -300,5 +365,6 @@ class MainActivity : ComponentActivity() {
     companion object {
         const val EXTRA_OPEN_FULLSCREEN_PLAYER = "com.geovideos.app.extra.OPEN_FULLSCREEN_PLAYER"
         const val EXTRA_EXPAND_PLAYER = "com.geovideos.app.extra.EXPAND_PLAYER"
+        private const val YOUTUBE_FORCE_SSL_SCOPE = "https://www.googleapis.com/auth/youtube.force-ssl"
     }
 }
