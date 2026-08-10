@@ -3,4 +3,5 @@
     <include domain="file" path="." />
     <include domain="database" path="." />
     <include domain="sharedpref" path="." />
+    <exclude domain="sharedpref" path="geo_videos_account_v1.xml" />
 </full-backup-content>

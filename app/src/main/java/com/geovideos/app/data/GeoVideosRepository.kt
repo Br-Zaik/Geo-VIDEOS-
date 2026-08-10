@@ -6,6 +6,11 @@ import org.json.JSONObject
 
 class GeoVideosRepository(context: Context) {
     private val preferences = context.getSharedPreferences("geo_videos_v4", Context.MODE_PRIVATE)
+    private val accountPreferences = context.getSharedPreferences(AUTH_PREFS_NAME, Context.MODE_PRIVATE)
+
+    init {
+        migrateLegacyAccountState()
+    }
 
     fun loadHistory(): List<VideoItem> = decodeVideos(preferences.getString(KEY_HISTORY, "[]").orEmpty())
     fun loadWatchLater(): List<VideoItem> = decodeVideos(preferences.getString(KEY_WATCH_LATER, "[]").orEmpty())
@@ -18,22 +23,29 @@ class GeoVideosRepository(context: Context) {
     fun loadAutoplay(): Boolean = preferences.getBoolean(KEY_AUTOPLAY, true)
     fun loadDataSaver(): Boolean = preferences.getBoolean(KEY_DATA_SAVER, false)
     fun loadNotificationsEnabled(): Boolean = preferences.getBoolean(KEY_NOTIFICATIONS, true)
-    fun hasConnectedAccount(): Boolean = preferences.getBoolean(KEY_CONNECTED_ACCOUNT, false)
+    fun hasConnectedAccount(): Boolean = accountPreferences.getBoolean(KEY_CONNECTED_ACCOUNT, false)
     fun loadLastSyncMs(): Long = preferences.getLong(KEY_LAST_SYNC, 0L)
     fun loadYouTubeSyncEnabled(): Boolean = preferences.getBoolean(KEY_YOUTUBE_SYNC_ENABLED, false)
     fun loadGeoWatchLaterPlaylistId(): String = preferences.getString(KEY_GEO_WATCH_LATER_PLAYLIST, "").orEmpty()
 
-    fun loadProfile(): GoogleProfile? = runCatching {
-        val raw = preferences.getString(KEY_PROFILE, null) ?: return@runCatching null
-        val item = JSONObject(raw)
-        GoogleProfile(
-            name = item.optString("name"),
-            email = item.optString("email"),
-            pictureUrl = item.optString("pictureUrl"),
-            channelTitle = item.optString("channelTitle"),
-            channelId = item.optString("channelId")
-        )
-    }.getOrNull()
+    fun loadProfile(): GoogleProfile? = decodeProfile(
+        accountPreferences.getString(KEY_PROFILE, null)
+    )
+
+    fun saveConnectedProfile(profile: GoogleProfile) {
+        val email = profile.email.trim()
+        if (email.isBlank()) return
+        val profileJson = JSONObject()
+            .put("name", profile.name.trim())
+            .put("email", email)
+            .put("pictureUrl", profile.pictureUrl.trim())
+            .put("channelTitle", profile.channelTitle.trim())
+            .put("channelId", profile.channelId.trim())
+        accountPreferences.edit()
+            .putString(KEY_PROFILE, profileJson.toString())
+            .putBoolean(KEY_CONNECTED_ACCOUNT, true)
+            .apply()
+    }
 
     fun loadPersonalized(): List<VideoItem> = loadVideos(KEY_PERSONALIZED)
     fun loadPopular(): List<VideoItem> = loadVideos(KEY_POPULAR)
@@ -86,7 +98,7 @@ class GeoVideosRepository(context: Context) {
     }
 
     fun markConnected(value: Boolean) {
-        preferences.edit().putBoolean(KEY_CONNECTED_ACCOUNT, value).apply()
+        accountPreferences.edit().putBoolean(KEY_CONNECTED_ACCOUNT, value).apply()
     }
 
     fun setYouTubeSyncEnabled(value: Boolean) {
@@ -134,8 +146,14 @@ class GeoVideosRepository(context: Context) {
             .put("channelTitle", profile.channelTitle)
             .put("channelId", profile.channelId)
 
-        preferences.edit()
+        accountPreferences.edit()
             .putString(KEY_PROFILE, profileJson.toString())
+            .putBoolean(KEY_CONNECTED_ACCOUNT, true)
+            .apply()
+
+        preferences.edit()
+            .remove(KEY_PROFILE)
+            .remove(KEY_CONNECTED_ACCOUNT)
             .putString(KEY_PERSONALIZED, encodeVideos(personalized).toString())
             .putString(KEY_POPULAR, encodeVideos(popular).toString())
             .putString(KEY_LIVE, encodeVideos(live).toString())
@@ -148,7 +166,6 @@ class GeoVideosRepository(context: Context) {
             .putString(KEY_PLAYLISTS, encodePlaylists(playlists).toString())
             .putString(KEY_REMOTE_NOTIFICATIONS, encodeNotifications(notifications).toString())
             .putLong(KEY_LAST_SYNC, syncTimeMs)
-            .putBoolean(KEY_CONNECTED_ACCOUNT, true)
             .apply()
     }
 
@@ -279,8 +296,10 @@ class GeoVideosRepository(context: Context) {
     }
 
     fun clearAccountCache() {
+        accountPreferences.edit().clear().apply()
         preferences.edit()
             .remove(KEY_PROFILE)
+            .remove(KEY_CONNECTED_ACCOUNT)
             .remove(KEY_PERSONALIZED)
             .remove(KEY_POPULAR)
             .remove(KEY_LIVE)
@@ -293,9 +312,44 @@ class GeoVideosRepository(context: Context) {
             .remove(KEY_PLAYLISTS)
             .remove(KEY_REMOTE_NOTIFICATIONS)
             .remove(KEY_LAST_SYNC)
-            .putBoolean(KEY_CONNECTED_ACCOUNT, false)
             .apply()
     }
+
+    private fun migrateLegacyAccountState() {
+        val currentProfile = decodeProfile(accountPreferences.getString(KEY_PROFILE, null))
+        val currentConnected = accountPreferences.getBoolean(KEY_CONNECTED_ACCOUNT, false)
+        if (currentConnected && currentProfile != null) {
+            // El archivo nuevo ya es la fuente de verdad. Borra restos antiguos para
+            // que un backup viejo no pueda volver a imponerse en futuras versiones.
+            preferences.edit().remove(KEY_PROFILE).remove(KEY_CONNECTED_ACCOUNT).apply()
+            return
+        }
+
+        // Si el archivo nuevo quedó a medias (connected sin correo, JSON dañado, etc.),
+        // no se acepta como sesión válida.
+        accountPreferences.edit().clear().apply()
+
+        val legacyProfile = decodeProfile(preferences.getString(KEY_PROFILE, null))
+        val legacyConnected = preferences.getBoolean(KEY_CONNECTED_ACCOUNT, false)
+        if (legacyConnected && legacyProfile != null) {
+            saveConnectedProfile(legacyProfile)
+        }
+        preferences.edit().remove(KEY_PROFILE).remove(KEY_CONNECTED_ACCOUNT).apply()
+    }
+
+    private fun decodeProfile(raw: String?): GoogleProfile? = runCatching {
+        if (raw.isNullOrBlank()) return@runCatching null
+        val item = JSONObject(raw)
+        val email = item.optString("email").trim()
+        if (email.isBlank()) return@runCatching null
+        GoogleProfile(
+            name = item.optString("name").trim(),
+            email = email,
+            pictureUrl = item.optString("pictureUrl").trim(),
+            channelTitle = item.optString("channelTitle").trim(),
+            channelId = item.optString("channelId").trim()
+        )
+    }.getOrNull()
 
     private fun loadVideos(key: String): List<VideoItem> = decodeVideos(preferences.getString(key, "[]").orEmpty())
 
@@ -508,5 +562,6 @@ class GeoVideosRepository(context: Context) {
         const val MAX_HISTORY_ITEMS = 300
         const val KEY_YOUTUBE_SYNC_ENABLED = "youtube_sync_enabled"
         const val KEY_GEO_WATCH_LATER_PLAYLIST = "geo_watch_later_playlist"
+        const val AUTH_PREFS_NAME = "geo_videos_account_v1"
     }
 }

@@ -1,0 +1,39 @@
+Geo Videos 50.2.0 - correccion del vinculo de cuenta Google
+
+Objetivo de esta version
+- Corregir el caso en el que Google muestra el selector, el usuario elige una cuenta, pero Geo Videos entra como "Cuenta" sin correo o conserva otra cuenta.
+
+Cambios aplicados
+1. La app ya no pasa a CONNECTED solo por recibir un access token.
+2. El resultado de Google conserva la cuenta elegida mediante AuthorizationResult.toGoogleSignInAccount().
+3. Antes de entrar se consulta oauth2/v3/userinfo con el token y se exige un correo no vacio.
+4. Si Google informa la cuenta elegida, su correo debe coincidir con el correo que devuelve el token.
+5. La renovacion silenciosa se fija a la cuenta ya verificada mediante AuthorizationRequest.Builder.setAccount().
+6. Cambiar de cuenta ya no revoca los permisos OAuth de la cuenta anterior; solo limpia el vinculo local y vuelve a abrir SELECT_ACCOUNT.
+7. La sesion/perfil se guarda en geo_videos_account_v1, separado de historial, descargas y ajustes.
+8. geo_videos_account_v1 se excluye de backup/restauracion de Android para evitar restaurar una sesion fantasma en una instalacion nueva.
+9. Estados antiguos con connected_account=true y perfil sin correo se rechazan y limpian.
+10. Cada refresco vuelve a comprobar que el correo devuelto por el token coincide con el perfil conectado.
+
+No se modifico
+- applicationId
+- keystore/firma
+- scopes existentes
+- reproductor
+- Shorts
+- historial local
+- descargas
+- interfaz general
+- servicio multimedia/notificacion
+
+Validacion estatica ejecutada
+- versionCode/versionName correctos
+- SELECT_ACCOUNT presente para acciones interactivas
+- cuenta fijada para renovacion silenciosa
+- verificacion userinfo antes de CONNECTED
+- comprobacion cuenta seleccionada vs token
+- sesion separada de backup
+- no existe RevokeAccessRequest en el cambio de cuenta
+
+Pendiente real
+- La prueba definitiva sigue siendo instalar el APK compilado en el telefono y seleccionar una cuenta real. Este entorno no tiene el SDK/Gradle completo para compilar el APK localmente.

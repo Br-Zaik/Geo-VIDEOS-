@@ -117,6 +117,8 @@ data class GeoVideosUiState(
     }
 }
 
+private class GoogleAccountMismatchException(message: String) : IllegalStateException(message)
+
 class GeoVideosViewModel(application: Application) : AndroidViewModel(application) {
     private val repository = GeoVideosRepository(application)
     private val api = YouTubeApi()
@@ -140,6 +142,7 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
     private var subscriptionOffset: Int = 0
     private var subscriptionRefreshCursor: Int = 0
     private var pendingSubscriptionToggle: ChannelItem? = null
+    private var authorizationAttemptId: Long = 0L
 
     private val cachedProfile = repository.loadProfile()
     private val _uiState = MutableStateFlow(
@@ -321,11 +324,16 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
+    fun connectedAccountEmail(): String = _uiState.value.profile?.email.orEmpty().trim()
+
     fun beginAuthorization() {
-        if (_uiState.value.profile == null) {
-            _uiState.update { it.copy(authStatus = AuthStatus.CONNECTING, authError = "") }
-        } else {
-            _uiState.update { it.copy(authError = "", message = "Renovando acceso de Google…") }
+        _uiState.update {
+            it.copy(
+                authStatus = AuthStatus.CONNECTING,
+                authError = "",
+                loading = false,
+                message = null
+            )
         }
     }
 
@@ -351,22 +359,132 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
-    fun onAuthorizationSuccess(token: String?) {
+    fun onAuthorizationSuccess(
+        token: String?,
+        selectedEmail: String? = null,
+        selectedName: String? = null,
+        selectedPhotoUrl: String? = null,
+        interactive: Boolean = true
+    ) {
         if (token.isNullOrBlank()) {
             onAuthorizationFailure("Google no devolvió un token de acceso.", false)
             return
         }
-        accessToken = token
-        repository.markConnected(true)
+
+        val attemptId = ++authorizationAttemptId
+        val previousProfile = _uiState.value.profile
+        val selected = selectedEmail.orEmpty().trim()
+
+        // No se abre la aplicación solo por recibir un token. El token se valida
+        // contra userinfo y, cuando Google informa la cuenta elegida, ambos correos
+        // deben coincidir antes de guardar la sesión.
         _uiState.update {
             it.copy(
-                authStatus = AuthStatus.CONNECTED,
-                loading = it.profile == null && it.personalized.isEmpty(),
-                authError = ""
+                authStatus = AuthStatus.CONNECTING,
+                authError = "",
+                loading = false,
+                message = null
             )
         }
-        resetPagination()
-        loadAll(initialLoad = _uiState.value.lastSyncMs == 0L)
+
+        viewModelScope.launch {
+            try {
+                val tokenProfile = api.getUserInfo(token)
+                if (attemptId != authorizationAttemptId) return@launch
+
+                val verifiedEmail = tokenProfile.email.trim()
+                if (verifiedEmail.isBlank()) {
+                    throw IllegalStateException(
+                        "Google autorizó el acceso, pero no devolvió el correo de la cuenta."
+                    )
+                }
+
+                if (selected.isNotBlank() && !selected.equals(verifiedEmail, ignoreCase = true)) {
+                    throw IllegalStateException(
+                        "La cuenta elegida no coincide con el token devuelto por Google. Vuelve a elegir la cuenta."
+                    )
+                }
+
+                val previousEmail = previousProfile?.email.orEmpty().trim()
+                if (!interactive && previousEmail.isNotBlank() &&
+                    !previousEmail.equals(verifiedEmail, ignoreCase = true)
+                ) {
+                    throw IllegalStateException(
+                        "Google intentó renovar otra cuenta distinta de la que Geo Videos tenía guardada."
+                    )
+                }
+
+                val changedAccount = previousEmail.isNotBlank() &&
+                    !previousEmail.equals(verifiedEmail, ignoreCase = true)
+                val newAccountSession = previousProfile == null || changedAccount
+
+                val verifiedProfile = tokenProfile.copy(
+                    name = tokenProfile.name.trim().ifBlank {
+                        selectedName.orEmpty().trim().ifBlank { verifiedEmail.substringBefore('@') }
+                    },
+                    email = verifiedEmail,
+                    pictureUrl = tokenProfile.pictureUrl.trim().ifBlank { selectedPhotoUrl.orEmpty().trim() },
+                    channelTitle = "",
+                    channelId = ""
+                )
+
+                if (newAccountSession) {
+                    repository.clearAccountCache()
+                    repository.clearYouTubeSyncAccountBinding()
+                    youtubeWriteToken = null
+                    likesPlaylistId = ""
+                    uploadsPlaylistId = ""
+                }
+
+                accessToken = token
+                repository.saveConnectedProfile(verifiedProfile)
+                resetPagination()
+
+                _uiState.update { state ->
+                    val base = if (newAccountSession) {
+                        state.copy(
+                            personalized = emptyList(),
+                            popular = emptyList(),
+                            live = emptyList(),
+                            gaming = emptyList(),
+                            music = emptyList(),
+                            shorts = emptyList(),
+                            subscriptions = emptyList(),
+                            playlists = emptyList(),
+                            liked = emptyList(),
+                            uploads = emptyList(),
+                            notifications = emptyList(),
+                            searchResults = emptyList(),
+                            selectedChannel = null,
+                            channelVideos = emptyList(),
+                            channelPlaylists = emptyList(),
+                            lastSyncMs = 0L,
+                            youtubeSyncEnabled = false,
+                            youtubeSyncAuthorized = false,
+                            youtubeSyncBusy = false
+                        )
+                    } else {
+                        state
+                    }
+                    base.copy(
+                        authStatus = AuthStatus.CONNECTED,
+                        profile = verifiedProfile,
+                        loading = newAccountSession || base.personalized.isEmpty(),
+                        authError = "",
+                        message = null
+                    )
+                }
+
+                loadAll(initialLoad = newAccountSession || _uiState.value.lastSyncMs == 0L)
+            } catch (error: Exception) {
+                if (attemptId != authorizationAttemptId) return@launch
+                accessToken = null
+                onAuthorizationFailure(
+                    error.message ?: "No se pudo comprobar la cuenta seleccionada en Google.",
+                    false
+                )
+            }
+        }
     }
 
     fun onAuthorizationFailure(message: String, cloudSetupLikely: Boolean) {
@@ -404,6 +522,7 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     fun disconnect() {
+        authorizationAttemptId += 1L
         accessToken = null
         youtubeWriteToken = null
         repository.clearYouTubeSyncAccountBinding()
@@ -531,6 +650,21 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
                     }
 
                     val baseProfile = userDeferred.await()
+                    val expectedEmail = previous.profile?.email.orEmpty().trim()
+                    val receivedEmail = baseProfile.email.trim()
+                    if (receivedEmail.isBlank()) {
+                        throw GoogleAccountMismatchException(
+                            "Google dejó de identificar la cuenta autorizada. Vuelve a conectar tu cuenta."
+                        )
+                    }
+                    if (expectedEmail.isNotBlank() &&
+                        !expectedEmail.equals(receivedEmail, ignoreCase = true)
+                    ) {
+                        throw GoogleAccountMismatchException(
+                            "El token de Google pertenece a $receivedEmail, pero Geo Videos estaba conectado con $expectedEmail."
+                        )
+                    }
+
                     val channelDetails = runCatching { api.getMyChannel(token, baseProfile) }.getOrNull()
                     likesPlaylistId = channelDetails?.likesPlaylistId.orEmpty()
                     uploadsPlaylistId = channelDetails?.uploadsPlaylistId.orEmpty()
@@ -751,6 +885,17 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
                             } else null
                         )
                     }
+                }
+            } catch (error: GoogleAccountMismatchException) {
+                disconnect()
+                _uiState.update {
+                    it.copy(
+                        authStatus = AuthStatus.ERROR,
+                        authError = error.message ?: "La cuenta de Google no coincide con la sesión guardada.",
+                        loading = false,
+                        refreshing = false,
+                        message = null
+                    )
                 }
             } catch (error: YouTubeApiException) {
                 handleApiError(error)

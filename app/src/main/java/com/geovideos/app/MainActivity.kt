@@ -24,8 +24,8 @@ import com.geovideos.app.ui.GeoVideosApp
 import com.geovideos.app.ui.GeoVideosViewModel
 import com.geovideos.app.ui.theme.GeoVideosTheme
 import com.google.android.gms.auth.api.identity.AuthorizationRequest
+import com.google.android.gms.auth.api.identity.AuthorizationResult
 import com.google.android.gms.auth.api.identity.Identity
-import com.google.android.gms.auth.api.identity.RevokeAccessRequest
 import com.google.android.gms.common.api.ApiException
 import com.google.android.gms.common.api.Scope
 
@@ -47,7 +47,7 @@ class MainActivity : ComponentActivity() {
                 ?: error("Google cerró el selector sin devolver una cuenta.")
             val result = Identity.getAuthorizationClient(this)
                 .getAuthorizationResultFromIntent(data)
-            viewModel.onAuthorizationSuccess(result.accessToken)
+            deliverGoogleAuthorizationResult(result, interactive = true)
         } catch (error: ApiException) {
             reportAuthorizationError(error)
         } catch (error: Exception) {
@@ -252,15 +252,37 @@ class MainActivity : ComponentActivity() {
         inPictureInPictureState.value = isInPictureInPictureMode
     }
 
+    private fun deliverGoogleAuthorizationResult(
+        result: AuthorizationResult,
+        interactive: Boolean
+    ) {
+        val account = runCatching { result.toGoogleSignInAccount() }.getOrNull()
+        viewModel.onAuthorizationSuccess(
+            token = result.accessToken,
+            selectedEmail = account?.email,
+            selectedName = account?.displayName,
+            selectedPhotoUrl = account?.photoUrl?.toString(),
+            interactive = interactive
+        )
+    }
+
     private fun requestGoogleAuthorization(allowResolution: Boolean) {
         if (allowResolution) viewModel.beginAuthorization()
         val requestBuilder = AuthorizationRequest.builder()
             .setRequestedScopes(requestedScopes())
+
         if (allowResolution) {
-            // El toque explicito en "Continuar con Google" siempre muestra el
-            // selector oficial, incluso si Google ya habia concedido los scopes.
+            // En una acción explícita siempre se muestra el selector. No se fija
+            // una cuenta anterior: la cuenta que el usuario toque es la candidata.
             requestBuilder.setPrompt(AuthorizationRequest.Prompt.SELECT_ACCOUNT)
+        } else {
+            // La renovación silenciosa queda ligada al correo ya verificado.
+            // Así Google no puede renovar otra cuenta elegible del dispositivo.
+            viewModel.connectedAccountEmail()
+                .takeIf { it.isNotBlank() }
+                ?.let { requestBuilder.setAccount(Account(it, "com.google")) }
         }
+
         val request = requestBuilder.build()
 
         Identity.getAuthorizationClient(this)
@@ -283,7 +305,7 @@ class MainActivity : ComponentActivity() {
                         )
                     }
                 } else {
-                    viewModel.onAuthorizationSuccess(result.accessToken)
+                    deliverGoogleAuthorizationResult(result, interactive = allowResolution)
                 }
             }
             .addOnFailureListener { error ->
@@ -342,22 +364,11 @@ class MainActivity : ComponentActivity() {
             }
     }
 
-    private fun switchGoogleAccount(email: String) {
-        if (email.isBlank()) {
-            viewModel.disconnect()
-            requestGoogleAuthorization(allowResolution = true)
-            return
-        }
-        val request = RevokeAccessRequest.builder()
-            .setAccount(Account(email, "com.google"))
-            .setScopes(requestedScopes())
-            .build()
-        Identity.getAuthorizationClient(this)
-            .revokeAccess(request)
-            .addOnCompleteListener {
-                viewModel.disconnect()
-                requestGoogleAuthorization(allowResolution = true)
-            }
+    private fun switchGoogleAccount(_email: String) {
+        // Cambiar de cuenta no debe revocar los permisos OAuth de la cuenta anterior.
+        // Solo se borra el vínculo local y se vuelve a abrir SELECT_ACCOUNT.
+        viewModel.disconnect()
+        requestGoogleAuthorization(allowResolution = true)
     }
 
     private fun requestedScopes(): List<Scope> = listOf(
