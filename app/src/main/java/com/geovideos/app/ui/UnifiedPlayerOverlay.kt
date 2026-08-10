@@ -982,15 +982,16 @@ private fun PlayerControlIconButton(
     modifier: Modifier = Modifier,
     content: @Composable () -> Unit
 ) {
-    Surface(
-        modifier = modifier,
-        color = Color.Black.copy(alpha = 0.62f),
-        shape = RoundedCornerShape(6.dp)
+    IconButton(
+        onClick = onClick,
+        modifier = modifier.size(38.dp)
     ) {
-        IconButton(onClick = onClick, modifier = Modifier.size(40.dp)) {
-            Box(contentAlignment = Alignment.Center) {
-                content()
-            }
+        Surface(
+            color = Color.Black.copy(alpha = 0.28f),
+            shape = CircleShape,
+            modifier = Modifier.size(34.dp)
+        ) {
+            Box(contentAlignment = Alignment.Center) { content() }
         }
     }
 }

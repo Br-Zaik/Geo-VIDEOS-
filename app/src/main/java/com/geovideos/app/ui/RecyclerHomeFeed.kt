@@ -827,12 +827,15 @@ private class MixCardView(context: Context) : LinearLayout(context) {
                 setMargins(dp(context, 14), 0, dp(context, 14), 0)
             })
             addView(TextView(context).apply {
-                text = "MIX"
+                text = "◉  Mix"
                 setTextColor(Color.WHITE)
-                setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 11.5f)
                 setTypeface(typeface, android.graphics.Typeface.BOLD)
-                setPadding(dp(context, 7), dp(context, 4), dp(context, 7), dp(context, 4))
-                setBackgroundColor(0xB0000000.toInt())
+                setPadding(dp(context, 8), dp(context, 4), dp(context, 8), dp(context, 4))
+                background = GradientDrawable().apply {
+                    cornerRadius = dp(context, 10).toFloat()
+                    setColor(0x99000000.toInt())
+                }
             }, FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM or Gravity.END).apply {
                 setMargins(0, 0, dp(context, 22), dp(context, 10))
             })

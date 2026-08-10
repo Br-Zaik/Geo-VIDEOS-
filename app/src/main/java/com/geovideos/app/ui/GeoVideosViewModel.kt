@@ -459,6 +459,25 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
                         }
                     }
 
+                    // Publicar cada bloque en cuanto llegue. La pantalla deja de esperar a que
+                    // terminen suscripciones, listas, Shorts y enriquecimiento para mostrar contenido.
+                    launch {
+                        val page = popularDeferred.await()
+                        if (page.items.isNotEmpty()) _uiState.update { it.copy(popular = page.items.filterNot(::looksLikeShort), loading = false) }
+                    }
+                    launch {
+                        val page = liveDeferred.await()
+                        if (page.items.isNotEmpty()) _uiState.update { it.copy(live = page.items, loading = false) }
+                    }
+                    launch {
+                        val page = gamingDeferred.await()
+                        if (page.items.isNotEmpty()) _uiState.update { it.copy(gaming = page.items.filterNot(::looksLikeShort), loading = false) }
+                    }
+                    launch {
+                        val page = musicDeferred.await()
+                        if (page.items.isNotEmpty()) _uiState.update { it.copy(music = page.items.filterNot(::looksLikeShort), loading = false) }
+                    }
+
                     val baseProfile = userDeferred.await()
                     val channelDetails = runCatching { api.getMyChannel(token, baseProfile) }.getOrNull()
                     likesPlaylistId = channelDetails?.likesPlaylistId.orEmpty()

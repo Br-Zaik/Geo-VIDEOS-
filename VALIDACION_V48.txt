@@ -1,0 +1,55 @@
+GEO VIDEOS V48.0.0 - VALIDACION ESTATICA
+Fecha: 2026-08-10
+
+OBJETIVO DE ESTA VERSION
+- Corregir historial local que quedaba vacio o perdia progreso.
+- Rehacer el redimensionamiento de la ventana flotante mediante arrastre desde la esquina inferior derecha, manteniendo 16:9.
+- Simplificar los controles del flotante cuando la ventana es pequena.
+- Mantener selector de calidad real y panel compacto.
+- Quitar la apariencia de boton gris pesado del control de pantalla completa del reproductor principal.
+- Agregar en la notificacion: Anterior, Reproducir/Pausar, Siguiente y Cerrar.
+- Hacer que Cerrar detenga la reproduccion y retire la notificacion.
+- Reintentar Shorts con un stream progresivo alternativo cuando el stream inicial falla.
+- Publicar categorias de Inicio progresivamente para reducir la espera de la pagina.
+- Integrar Mix de forma mas compacta en el reproductor y en Inicio.
+- Mantener el inicio de sesion base intacto.
+
+VALIDACIONES REALIZADAS
+- 27 archivos XML analizados correctamente: OK.
+- 21 archivos Kotlin revisados por balance de delimitadores: OK.
+- MainActivity.kt: identico byte a byte a V47.
+- YouTubeApi.kt: identico byte a byte a V47.
+- GoogleConnectScreen en GeoVideosApp.kt: identico a V47.
+- Funciones base de autenticacion en GeoVideosViewModel.kt identicas a V47:
+  beginAuthorization, onSilentAuthorizationUnavailable, onSilentAuthorizationFailure,
+  onAuthorizationSuccess y onAuthorizationFailure.
+- No queda la logica antigua de tocar un boton para alternar el tamano del flotante.
+- El tamano del flotante se guarda y se restaura.
+- La relacion de aspecto del flotante permanece en 16:9 durante el arrastre.
+- La notificacion define cuatro acciones explicitas: anterior, play/pause, siguiente y cerrar.
+- El historial registra al abrir y actualiza progreso cada 5 segundos y al salir del reproductor.
+- Shorts tienen reintento progresivo de respaldo sin sobrescribir la calidad preferida del usuario.
+- La carga de Inicio publica categorias a medida que terminan en lugar de esperar al bloque completo.
+
+ARCHIVOS MODIFICADOS RESPECTO A V47
+- app/build.gradle.kts
+- app/src/main/java/com/geovideos/app/data/GeoVideosRepository.kt
+- app/src/main/java/com/geovideos/app/playback/FloatingPlayerService.kt
+- app/src/main/java/com/geovideos/app/playback/GeoPlayerConnection.kt
+- app/src/main/java/com/geovideos/app/playback/PlaybackService.kt
+- app/src/main/java/com/geovideos/app/ui/GeoVideosApp.kt
+- app/src/main/java/com/geovideos/app/ui/GeoVideosViewModel.kt
+- app/src/main/java/com/geovideos/app/ui/RecyclerHomeFeed.kt
+- app/src/main/java/com/geovideos/app/ui/RecyclerShortsScreen.kt
+- app/src/main/java/com/geovideos/app/ui/RecyclerVideoLists.kt
+- app/src/main/java/com/geovideos/app/ui/UnifiedPlayerOverlay.kt
+
+IMPORTANTE
+No se realizo compilacion Android completa dentro de este entorno porque no dispone del Android SDK/Gradle completo.
+La compilacion final debe verificarse mediante GitHub Actions y la prueba funcional definitiva debe hacerse en el telefono.
+
+HUELLAS DE ARCHIVOS BASE DE AUTENTICACION
+V47 MainActivity: 1ca0f27b1e2b7fc3ea725ef71ffa92a2b4db7c78b93d266846f3928bf09e8ea5
+V48 MainActivity: 1ca0f27b1e2b7fc3ea725ef71ffa92a2b4db7c78b93d266846f3928bf09e8ea5
+V47 YouTubeApi: 659eff54f8df20b33d31db53eb3c2dc673290047dfe815ecdc4717d735a0cbb5
+V48 YouTubeApi: 659eff54f8df20b33d31db53eb3c2dc673290047dfe815ecdc4717d735a0cbb5

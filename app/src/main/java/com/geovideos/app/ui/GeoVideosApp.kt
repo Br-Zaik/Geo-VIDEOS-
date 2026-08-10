@@ -142,6 +142,7 @@ import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.runtime.setValue
@@ -379,17 +380,34 @@ private fun PlaybackProgressSaver(
     val playback by playerConnection.progressState.collectAsStateWithLifecycle()
     var lastSavedVideoId by remember { mutableStateOf("") }
     var lastSavedPositionMs by remember { mutableLongStateOf(0L) }
+    val latestPlayback by rememberUpdatedState(playback)
+    val latestVideo by rememberUpdatedState(video)
+
+    LaunchedEffect(video?.id) {
+        val selected = video ?: return@LaunchedEffect
+        lastSavedVideoId = selected.id
+        lastSavedPositionMs = selected.resumePositionMs
+        // Registrar la reproducción de inmediato evita un historial vacío si el usuario
+        // sale antes del primer intervalo de guardado.
+        onSavePlayback(selected, selected.resumePositionMs, selected.durationMs)
+    }
 
     LaunchedEffect(video?.id, playback.positionMs, playback.durationMs) {
         val selected = video ?: return@LaunchedEffect
         if (playback.currentVideoId != selected.id) return@LaunchedEffect
-        if (lastSavedVideoId != selected.id) {
-            lastSavedVideoId = selected.id
-            lastSavedPositionMs = selected.resumePositionMs
-        }
-        if (kotlin.math.abs(playback.positionMs - lastSavedPositionMs) >= 10_000L) {
+        if (kotlin.math.abs(playback.positionMs - lastSavedPositionMs) >= 5_000L) {
             lastSavedPositionMs = playback.positionMs
             onSavePlayback(selected, playback.positionMs, playback.durationMs)
+        }
+    }
+
+    DisposableEffect(video?.id) {
+        onDispose {
+            val selected = latestVideo
+            val progress = latestPlayback
+            if (selected != null && progress.currentVideoId == selected.id) {
+                onSavePlayback(selected, progress.positionMs, progress.durationMs)
+            }
         }
     }
 }

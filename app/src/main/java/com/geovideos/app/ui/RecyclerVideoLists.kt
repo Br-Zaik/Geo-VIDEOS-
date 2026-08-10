@@ -703,7 +703,7 @@ private class PlayerHeaderHolder(context: Context) : RecyclerView.ViewHolder(Pla
         }
         view.mixBanner.visibility = if (data.mixAvailable) View.VISIBLE else View.GONE
         view.mixBanner.text = if (data.mixAvailable) {
-            "Mix automático · ${video.channelTitle.ifBlank { "videos relacionados" }} y más"
+            "◉  Mix: ${video.channelTitle.ifBlank { "videos relacionados" }} y más"
         } else {
             ""
         }
@@ -792,24 +792,25 @@ private class PlayerHeaderView(context: Context) : LinearLayout(context) {
         addView(tabs, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
 
         infoPanel.orientation = VERTICAL
+
+        mixBanner.setTextColor(Color.WHITE)
+        mixBanner.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+        mixBanner.setTypeface(mixBanner.typeface, android.graphics.Typeface.BOLD)
+        mixBanner.setPadding(dp(context, 11), dp(context, 8), dp(context, 11), dp(context, 8))
+        mixBanner.background = roundedDrawable(0xFF202024.toInt(), 8f, context)
+        mixBanner.visibility = View.GONE
+        infoPanel.addView(mixBanner, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { bottomMargin = dp(context, 9) })
+
         title.setTextColor(Color.WHITE)
-        title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 21f)
+        title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 19f)
         title.setTypeface(title.typeface, android.graphics.Typeface.BOLD)
         title.maxLines = 3
         title.ellipsize = TextUtils.TruncateAt.END
         infoPanel.addView(title)
 
         meta.setTextColor(0xFFAAA7B2.toInt())
-        meta.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
-        infoPanel.addView(meta, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(context, 5) })
-
-        mixBanner.setTextColor(Color.WHITE)
-        mixBanner.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13.5f)
-        mixBanner.setTypeface(mixBanner.typeface, android.graphics.Typeface.BOLD)
-        mixBanner.setPadding(dp(context, 12), dp(context, 10), dp(context, 12), dp(context, 10))
-        mixBanner.background = roundedDrawable(0xFF211A2B.toInt(), 11f, context)
-        mixBanner.visibility = View.GONE
-        infoPanel.addView(mixBanner, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(context, 9) })
+        meta.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12.5f)
+        infoPanel.addView(meta, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(context, 4) })
 
         val channelRow = LinearLayout(context).apply { orientation = HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
         avatar.scaleType = ImageView.ScaleType.CENTER_CROP
@@ -836,10 +837,10 @@ private class PlayerHeaderView(context: Context) : LinearLayout(context) {
         }
         val actions = LinearLayout(context).apply { orientation = HORIZONTAL }
         listOf(like, dislike, music, share, watchLater, window, download).forEach { item ->
-            actions.addView(item, LinearLayout.LayoutParams(dp(context, 64), dp(context, 54)))
+            actions.addView(item, LinearLayout.LayoutParams(dp(context, 56), dp(context, 48)))
         }
         scroll.addView(actions)
-        infoPanel.addView(scroll, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(context, 58)).apply { topMargin = dp(context, 5) })
+        infoPanel.addView(scroll, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(context, 50)).apply { topMargin = dp(context, 3) })
 
         descriptionToggle.setTextColor(Color.WHITE)
         descriptionToggle.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
@@ -1133,11 +1134,11 @@ private class PlayerActionView(context: Context, iconRes: Int, label: String) : 
         isFocusable = true
         icon.setImageResource(iconRes)
         icon.setColorFilter(Color.WHITE)
-        addView(icon, LayoutParams(dp(context, 21), dp(context, 21)))
+        addView(icon, LayoutParams(dp(context, 20), dp(context, 20)))
         labelView.text = label
         labelView.gravity = Gravity.CENTER
         labelView.setTextColor(Color.WHITE)
-        labelView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 9.2f)
+        labelView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 8.8f)
         labelView.maxLines = 2
         labelView.ellipsize = TextUtils.TruncateAt.END
         addView(labelView, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {

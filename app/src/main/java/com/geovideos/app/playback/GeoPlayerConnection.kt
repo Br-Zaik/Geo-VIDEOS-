@@ -136,6 +136,9 @@ class GeoPlayerConnection private constructor(context: Context) {
     private var pendingQueue: List<VideoItem> = emptyList()
     private var pendingQueueDataSaver: Boolean = false
     private var requestSerial: Long = 0L
+    private var activeRepeatPlayback = false
+    private var activeDataSaver = false
+    private var shortFallbackVideoId: String? = null
     private val pendingControllerActions = ArrayList<(MediaController) -> Unit>()
 
     private val listener = object : Player.Listener {
@@ -156,6 +159,26 @@ class GeoPlayerConnection private constructor(context: Context) {
         }
 
         override fun onPlayerError(error: PlaybackException) {
+            val video = currentVideo
+            if (
+                video != null &&
+                activeRepeatPlayback &&
+                shortFallbackVideoId != video.id
+            ) {
+                shortFallbackVideoId = video.id
+                openInternal(
+                    video = video.copy(resumePositionMs = 0L),
+                    autoplay = true,
+                    dataSaver = activeDataSaver,
+                    repeat = true,
+                    preferredHeight = null,
+                    forceReload = true,
+                    audioOnly = false,
+                    forceProgressive = true,
+                    updateQualityPreference = false
+                )
+                return
+            }
             _state.update {
                 it.copy(
                     resolving = false,
@@ -224,7 +247,9 @@ class GeoPlayerConnection private constructor(context: Context) {
         repeat: Boolean,
         preferredHeight: Int?,
         forceReload: Boolean,
-        audioOnly: Boolean
+        audioOnly: Boolean,
+        forceProgressive: Boolean = false,
+        updateQualityPreference: Boolean = true
     ) {
         val controllerNow = _controller.value
         if (
@@ -246,9 +271,14 @@ class GeoPlayerConnection private constructor(context: Context) {
         controllerNow?.pause()
         currentVideo = video
         activeAudioOnly = audioOnly
+        activeRepeatPlayback = repeat
+        activeDataSaver = dataSaver
+        if (!forceProgressive) shortFallbackVideoId = null
         _audioOnlyMode.value = audioOnly
-        _preferredQualityHeight.value = preferredHeight
-        playerPreferences.edit().putInt(KEY_PREFERRED_QUALITY, preferredHeight ?: 0).apply()
+        if (updateQualityPreference) {
+            _preferredQualityHeight.value = preferredHeight
+            playerPreferences.edit().putInt(KEY_PREFERRED_QUALITY, preferredHeight ?: 0).apply()
+        }
         resolveJob?.cancel()
         requestSerial += 1L
         val requestId = requestSerial
@@ -268,8 +298,8 @@ class GeoPlayerConnection private constructor(context: Context) {
                     StreamResolver.resolve(
                         video = video,
                         dataSaver = dataSaver,
-                        preferredHeight = preferredHeight,
-                        preferProgressive = repeat && preferredHeight == null
+                        preferredHeight = if (forceProgressive) null else preferredHeight,
+                        preferProgressive = forceProgressive || repeat
                     )
                 }
                 if (requestId != requestSerial || currentVideo?.id != video.id) return@launch
@@ -465,7 +495,9 @@ class GeoPlayerConnection private constructor(context: Context) {
             repeat = true,
             preferredHeight = _preferredQualityHeight.value,
             forceReload = true,
-            audioOnly = false
+            audioOnly = false,
+            forceProgressive = true,
+            updateQualityPreference = false
         )
     }
 
@@ -504,6 +536,9 @@ class GeoPlayerConnection private constructor(context: Context) {
         pendingQueue = emptyList()
         currentVideo = null
         activeAudioOnly = false
+        activeRepeatPlayback = false
+        activeDataSaver = false
+        shortFallbackVideoId = null
         _audioOnlyMode.value = false
         // Keep the user's quality preference when closing or leaving Shorts.
         // The next video reuses it, matching DayliTube/YouTube behavior.
@@ -511,6 +546,7 @@ class GeoPlayerConnection private constructor(context: Context) {
             it.stop()
             it.clearMediaItems()
         }
+        PlaybackService.stopPlayback(appContext)
         _state.value = PlaybackUiState(connecting = _controller.value == null)
     }
 

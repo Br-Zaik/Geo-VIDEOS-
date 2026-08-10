@@ -165,10 +165,16 @@ class GeoVideosRepository(context: Context) {
     }
 
     fun updatePlayback(video: VideoItem, positionMs: Long, durationMs: Long): List<VideoItem> {
+        val previousHistory = loadHistory()
+        val previous = previousHistory.firstOrNull { it.id == video.id }
         val safePosition = positionMs.coerceAtLeast(0L)
-        val safeDuration = durationMs.coerceAtLeast(0L)
+        val safeDuration = when {
+            durationMs > 0L -> durationMs
+            video.durationMs > 0L -> video.durationMs
+            else -> previous?.durationMs ?: 0L
+        }
         val normalizedPosition = if (safeDuration > 0L && safePosition >= safeDuration - 8_000L) 0L else safePosition
-        val current = loadHistory().filterNot { it.id == video.id }.toMutableList()
+        val current = previousHistory.filterNot { it.id == video.id }.toMutableList()
         current.add(
             0,
             video.copy(

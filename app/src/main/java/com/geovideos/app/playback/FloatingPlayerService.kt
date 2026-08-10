@@ -1,6 +1,5 @@
 package com.geovideos.app.playback
 
-import android.animation.ValueAnimator
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
@@ -95,7 +94,10 @@ class FloatingPlayerService : Service() {
     private var timeText: TextView? = null
     private var feedbackText: TextView? = null
     private var resizeHandle: View? = null
-    private var resizeAnimator: ValueAnimator? = null
+    private var openAppButton: View? = null
+    private var previousButton: View? = null
+    private var nextButton: View? = null
+    private var controlsRow: LinearLayout? = null
     private var ignoreSeekCallback = false
     private var lastSeekDirection = 0
     private var accumulatedSeekSeconds = 0
@@ -155,7 +157,6 @@ class FloatingPlayerService : Service() {
 
     override fun onDestroy() {
         qualityLoadingJob?.cancel()
-        resizeAnimator?.cancel()
         handler.removeCallbacksAndMessages(null)
         activeController?.removeListener(controllerListener)
         removeOverlay()
@@ -354,35 +355,34 @@ class FloatingPlayerService : Service() {
         val controls = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
+        }.also { controlsRow = it }
+        openAppButton = textButton("↩", 18f) { openPlayerInApp() }.also { button ->
+            controls.addView(button, LinearLayout.LayoutParams(dp(34), dp(32)))
         }
-        controls.addView(
-            textButton("↩", 18f) { openPlayerInApp() },
-            LinearLayout.LayoutParams(dp(34), dp(32))
-        )
         controls.addView(View(this), LinearLayout.LayoutParams(0, dp(30), 1f))
-        controls.addView(mediaButton(android.R.drawable.ic_media_previous, "Anterior") {
+        previousButton = mediaButton(android.R.drawable.ic_media_previous, "Anterior") {
             connection.playPrevious()
             showControls(autoHide = true)
-        })
+        }.also { controls.addView(it) }
         playButton = mediaButton(android.R.drawable.ic_media_play, "Reproducir") {
             if (connection.coreState.value.isPlaying) connection.pause() else connection.play()
             showControls(autoHide = true)
         }.also { controls.addView(it) }
-        controls.addView(mediaButton(android.R.drawable.ic_media_next, "Siguiente") {
+        nextButton = mediaButton(android.R.drawable.ic_media_next, "Siguiente") {
             connection.playNext()
             showControls(autoHide = true)
-        })
+        }.also { controls.addView(it) }
         controls.addView(View(this), LinearLayout.LayoutParams(0, dp(30), 1f))
         resizeHandle = ImageButton(this).apply {
             setImageResource(R.drawable.ic_player_resize)
-            contentDescription = "Agrandar o achicar ventana"
+            contentDescription = "Arrastra para cambiar el tamaño"
             setColorFilter(Color.WHITE)
             setBackgroundColor(Color.TRANSPARENT)
             scaleType = android.widget.ImageView.ScaleType.CENTER_INSIDE
-            setPadding(dp(7), dp(7), dp(7), dp(7))
-            setOnClickListener { toggleWindowSize() }
+            setPadding(dp(6), dp(6), dp(4), dp(4))
+            installResizeGesture(this)
         }.also { handle ->
-            controls.addView(handle, LinearLayout.LayoutParams(dp(38), dp(34)))
+            controls.addView(handle, LinearLayout.LayoutParams(dp(40), dp(36)))
         }
         bottomPanel.addView(
             controls,
@@ -440,6 +440,7 @@ class FloatingPlayerService : Service() {
                 Gravity.BOTTOM
             )
         )
+        updateControlDensity()
         return layer
     }
 
@@ -547,7 +548,6 @@ class FloatingPlayerService : Service() {
     private fun loadQualityOptions() {
         val video = currentVideo ?: return
         qualityLoadingJob?.cancel()
-        resizeAnimator?.cancel()
         qualityLoadingJob = scope.launch {
             qualityText?.text = "..."
             val options = runCatching {
@@ -760,60 +760,69 @@ class FloatingPlayerService : Service() {
     private val hideFeedbackRunnable = Runnable { feedbackText?.visibility = View.GONE }
     private val hideControlsRunnable = Runnable { hideControls() }
 
-    private fun toggleWindowSize() {
-        val params = windowParams ?: return
-        val screenWidth = resources.displayMetrics.widthPixels
-        val targetLarge = !windowLarge
-        val targetWidth = if (targetLarge) {
-            (screenWidth * LARGE_WIDTH_FRACTION).roundToInt()
-        } else {
-            (screenWidth * MINI_WIDTH_FRACTION).roundToInt()
-        }.coerceAtLeast(dp(170))
-        windowLarge = targetLarge
-        animateWindowSize(params.width, targetWidth)
-    }
-
-    private fun animateWindowSize(fromWidth: Int, toWidth: Int) {
-        val params = windowParams ?: return
-        val root = overlayRoot ?: return
-        resizeAnimator?.cancel()
-        val startX = params.x
-        val startY = params.y
-        val startWidth = params.width
-        val startHeight = params.height
-        val targetHeight = (toWidth * 9f / 16f).roundToInt()
-        val targetX = startX + (startWidth - toWidth) / 2
-        val targetY = startY + (startHeight - targetHeight) / 2
-        resizeAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
-            duration = 180L
-            addUpdateListener { animator ->
-                val fraction = animator.animatedValue as Float
-                params.width = (fromWidth + (toWidth - fromWidth) * fraction).roundToInt()
-                params.height = (params.width * 9f / 16f).roundToInt()
-                params.x = (startX + (targetX - startX) * fraction).roundToInt()
-                params.y = (startY + (targetY - startY) * fraction).roundToInt()
-                clampWindowPosition(params)
-                runCatching { windowManager.updateViewLayout(root, params) }
-            }
-            addListener(object : android.animation.AnimatorListenerAdapter() {
-                override fun onAnimationEnd(animation: android.animation.Animator) {
+    private fun installResizeGesture(handle: View) {
+        var downRawX = 0f
+        var startWidth = 0
+        handle.setOnTouchListener { _, event ->
+            val params = windowParams ?: return@setOnTouchListener false
+            val root = overlayRoot ?: return@setOnTouchListener false
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    downRawX = event.rawX
+                    startWidth = params.width
+                    handler.removeCallbacks(hideControlsRunnable)
+                    hideChoicePanels()
+                    true
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    val screenWidth = resources.displayMetrics.widthPixels
+                    val minWidth = dp(180)
+                    val maxWidth = (screenWidth * MAX_WIDTH_FRACTION).roundToInt()
+                        .coerceAtLeast(minWidth)
+                    val requested = (startWidth + (event.rawX - downRawX)).roundToInt()
+                    params.width = requested.coerceIn(minWidth, maxWidth)
+                    params.height = (params.width * 9f / 16f).roundToInt()
+                    windowLarge = params.width >= (screenWidth * LARGE_CONTROL_THRESHOLD).roundToInt()
+                    clampWindowPosition(params)
+                    runCatching { windowManager.updateViewLayout(root, params) }
+                    updateControlDensity()
+                    true
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                     saveWindowState()
                     showControls(autoHide = true)
+                    true
                 }
-            })
-            start()
+                else -> false
+            }
         }
+    }
+
+    private fun updateControlDensity() {
+        val width = windowParams?.width ?: return
+        val compact = width < dp(300)
+        openAppButton?.visibility = if (compact) View.GONE else View.VISIBLE
+        previousButton?.visibility = if (compact) View.GONE else View.VISIBLE
+        timeText?.visibility = if (compact) View.GONE else View.VISIBLE
+        // Pausa/reproducir, siguiente y el asa de tamaño se mantienen siempre accesibles.
+        nextButton?.visibility = View.VISIBLE
     }
 
     private fun initialWindowSize(): Pair<Int, Int> {
         val screenWidth = resources.displayMetrics.widthPixels
-        val width = if (windowLarge) {
+        val minWidth = dp(180)
+        val maxWidth = (screenWidth * MAX_WIDTH_FRACTION).roundToInt().coerceAtLeast(minWidth)
+        val fallbackWidth = if (windowLarge) {
             (screenWidth * LARGE_WIDTH_FRACTION).roundToInt()
         } else {
             (screenWidth * MINI_WIDTH_FRACTION).roundToInt()
-        }.coerceAtLeast(dp(170))
-        val height = (width * 9f / 16f).roundToInt()
-        return width to height
+        }
+        val width = preferences.getInt(KEY_WIDTH, 0)
+            .takeIf { it > 0 }
+            ?.coerceIn(minWidth, maxWidth)
+            ?: fallbackWidth.coerceIn(minWidth, maxWidth)
+        windowLarge = width >= (screenWidth * LARGE_CONTROL_THRESHOLD).roundToInt()
+        return width to (width * 9f / 16f).roundToInt()
     }
 
     private fun defaultX(width: Int): Int =
@@ -834,6 +843,7 @@ class FloatingPlayerService : Service() {
         preferences.edit()
             .putInt(KEY_X, params.x)
             .putInt(KEY_Y, params.y)
+            .putInt(KEY_WIDTH, params.width)
             .putBoolean(KEY_LARGE, windowLarge)
             .apply()
     }
@@ -867,6 +877,10 @@ class FloatingPlayerService : Service() {
         speedPanel = null
         feedbackText = null
         resizeHandle = null
+        openAppButton = null
+        previousButton = null
+        nextButton = null
+        controlsRow = null
         windowParams = null
         if (hadOverlay) _surfaceGeneration.value += 1
     }
@@ -1022,8 +1036,11 @@ class FloatingPlayerService : Service() {
         private const val KEY_X = "window_x"
         private const val KEY_Y = "window_y"
         private const val KEY_LARGE = "window_large"
-        private const val MINI_WIDTH_FRACTION = 0.52f
-        private const val LARGE_WIDTH_FRACTION = 0.90f
+        private const val KEY_WIDTH = "window_width"
+        private const val MINI_WIDTH_FRACTION = 0.48f
+        private const val LARGE_WIDTH_FRACTION = 0.84f
+        private const val MAX_WIDTH_FRACTION = 0.94f
+        private const val LARGE_CONTROL_THRESHOLD = 0.64f
 
         private val _surfaceGeneration = MutableStateFlow(0)
         val surfaceGeneration = _surfaceGeneration.asStateFlow()

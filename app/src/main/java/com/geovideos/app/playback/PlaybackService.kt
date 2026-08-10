@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import androidx.annotation.OptIn
+import androidx.core.app.NotificationCompat
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
@@ -22,9 +23,14 @@ import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.exoplayer.source.MergingMediaSource
 import androidx.media3.exoplayer.source.ProgressiveMediaSource
+import androidx.media3.session.CommandButton
+import androidx.media3.session.DefaultMediaNotificationProvider
+import androidx.media3.session.MediaNotification
 import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSessionService
 import com.geovideos.app.MainActivity
+import com.geovideos.app.R
+import com.google.common.collect.ImmutableList
 import java.io.File
 
 @OptIn(UnstableApi::class)
@@ -36,6 +42,9 @@ class PlaybackService : MediaSessionService() {
 
     override fun onCreate() {
         super.onCreate()
+        setMediaNotificationProvider(GeoMediaNotificationProvider(this).apply {
+            setSmallIcon(R.drawable.ic_notification)
+        })
 
         val httpFactory = DefaultHttpDataSource.Factory()
             .setUserAgent(USER_AGENT)
@@ -104,6 +113,31 @@ class PlaybackService : MediaSessionService() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        when (intent?.action) {
+            ACTION_NOTIFICATION_PREVIOUS -> {
+                exoPlayer?.let { player ->
+                    if (player.hasPreviousMediaItem()) player.seekToPreviousMediaItem() else player.seekTo(0L)
+                }
+                return START_NOT_STICKY
+            }
+            ACTION_NOTIFICATION_TOGGLE -> {
+                exoPlayer?.let { player ->
+                    if (player.isPlaying) player.pause() else {
+                        if (player.playbackState == Player.STATE_ENDED) player.seekTo(0L)
+                        player.play()
+                    }
+                }
+                return START_NOT_STICKY
+            }
+            ACTION_NOTIFICATION_NEXT -> {
+                exoPlayer?.let { player -> if (player.hasNextMediaItem()) player.seekToNextMediaItem() }
+                return START_NOT_STICKY
+            }
+            ACTION_NOTIFICATION_CLOSE -> {
+                closePlaybackFromNotification()
+                return START_NOT_STICKY
+            }
+        }
         val result = super.onStartCommand(intent, flags, startId)
         when (intent?.action) {
             ACTION_PLAY_RESOLVED -> playResolved(intent)
@@ -111,6 +145,23 @@ class PlaybackService : MediaSessionService() {
             ACTION_SET_CONTINUOUS_AUTOPLAY -> setContinuousAutoplay(intent)
         }
         return result
+    }
+
+    private fun closePlaybackFromNotification() {
+        exoPlayer?.run {
+            pause()
+            stop()
+            clearMediaItems()
+        }
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.N) {
+            stopForeground(STOP_FOREGROUND_REMOVE)
+        } else {
+            @Suppress("DEPRECATION")
+            stopForeground(true)
+        }
+        (getSystemService(Context.NOTIFICATION_SERVICE) as? android.app.NotificationManager)
+            ?.cancel(DefaultMediaNotificationProvider.DEFAULT_NOTIFICATION_ID)
+        stopSelf()
     }
 
     private fun playResolved(intent: Intent) {
@@ -197,10 +248,50 @@ class PlaybackService : MediaSessionService() {
         super.onDestroy()
     }
 
+    private class GeoMediaNotificationProvider(
+        private val appContext: Context
+    ) : DefaultMediaNotificationProvider(appContext) {
+        override fun addNotificationActions(
+            mediaSession: MediaSession,
+            mediaButtons: ImmutableList<CommandButton>,
+            builder: NotificationCompat.Builder,
+            actionFactory: MediaNotification.ActionFactory
+        ): IntArray {
+            // Four explicit controls keep the notification predictable on older Android skins:
+            // anterior, pausa/reproducir, siguiente and cerrar. The first three stay compact.
+            builder.addAction(notificationAction(android.R.drawable.ic_media_previous, "Anterior", ACTION_NOTIFICATION_PREVIOUS, 31))
+            builder.addAction(
+                notificationAction(
+                    if (mediaSession.player.isPlaying) android.R.drawable.ic_media_pause else android.R.drawable.ic_media_play,
+                    if (mediaSession.player.isPlaying) "Pausar" else "Reproducir",
+                    ACTION_NOTIFICATION_TOGGLE,
+                    32
+                )
+            )
+            builder.addAction(notificationAction(android.R.drawable.ic_media_next, "Siguiente", ACTION_NOTIFICATION_NEXT, 33))
+            builder.addAction(notificationAction(android.R.drawable.ic_menu_close_clear_cancel, "Cerrar", ACTION_NOTIFICATION_CLOSE, 34))
+            return intArrayOf(0, 1, 2)
+        }
+
+        private fun notificationAction(icon: Int, title: String, action: String, requestCode: Int): NotificationCompat.Action {
+            val pendingIntent = PendingIntent.getService(
+                appContext,
+                requestCode,
+                Intent(appContext, PlaybackService::class.java).setAction(action),
+                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+            )
+            return NotificationCompat.Action.Builder(icon, title, pendingIntent).build()
+        }
+    }
+
     companion object {
         private const val ACTION_PLAY_RESOLVED = "com.geovideos.app.action.PLAY_RESOLVED"
         private const val ACTION_APPEND_RESOLVED = "com.geovideos.app.action.APPEND_RESOLVED"
         private const val ACTION_SET_CONTINUOUS_AUTOPLAY = "com.geovideos.app.action.SET_CONTINUOUS_AUTOPLAY"
+        private const val ACTION_NOTIFICATION_PREVIOUS = "com.geovideos.app.action.NOTIFICATION_PREVIOUS"
+        private const val ACTION_NOTIFICATION_TOGGLE = "com.geovideos.app.action.NOTIFICATION_TOGGLE"
+        private const val ACTION_NOTIFICATION_NEXT = "com.geovideos.app.action.NOTIFICATION_NEXT"
+        private const val ACTION_NOTIFICATION_CLOSE = "com.geovideos.app.action.NOTIFICATION_CLOSE"
         private const val EXTRA_MEDIA_ID = "media_id"
         private const val EXTRA_TITLE = "title"
         private const val EXTRA_ARTIST = "artist"
@@ -213,6 +304,13 @@ class PlaybackService : MediaSessionService() {
         private const val EXTRA_AUTOPLAY = "autoplay"
         private const val EXTRA_REPEAT = "repeat"
         private const val EXTRA_CONTINUOUS_AUTOPLAY = "continuous_autoplay"
+
+        internal fun stopPlayback(context: Context) {
+            val intent = Intent(context, PlaybackService::class.java).apply {
+                action = ACTION_NOTIFICATION_CLOSE
+            }
+            runCatching { context.startService(intent) }
+        }
 
         internal fun setContinuousAutoplay(context: Context, enabled: Boolean) {
             val intent = Intent(context, PlaybackService::class.java).apply {
