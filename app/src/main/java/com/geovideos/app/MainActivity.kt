@@ -91,7 +91,14 @@ class MainActivity : ComponentActivity() {
 
         if (savedInstanceState == null) {
             window.decorView.postDelayed(
-                { requestGoogleAuthorization(allowResolution = false) },
+                {
+                    // Solo renovar silenciosamente una sesion que Geo Videos ya guardo.
+                    // En una instalacion/sesion limpia, esperar a que el usuario pulse
+                    // "Continuar con Google" para no saltarse el selector oficial.
+                    if (viewModel.uiState.value.profile != null) {
+                        requestGoogleAuthorization(allowResolution = false)
+                    }
+                },
                 350
             )
         }
@@ -247,9 +254,14 @@ class MainActivity : ComponentActivity() {
 
     private fun requestGoogleAuthorization(allowResolution: Boolean) {
         if (allowResolution) viewModel.beginAuthorization()
-        val request = AuthorizationRequest.builder()
+        val requestBuilder = AuthorizationRequest.builder()
             .setRequestedScopes(requestedScopes())
-            .build()
+        if (allowResolution) {
+            // El toque explicito en "Continuar con Google" siempre muestra el
+            // selector oficial, incluso si Google ya habia concedido los scopes.
+            requestBuilder.setPrompt(AuthorizationRequest.Prompt.SELECT_ACCOUNT)
+        }
+        val request = requestBuilder.build()
 
         Identity.getAuthorizationClient(this)
             .authorize(request)

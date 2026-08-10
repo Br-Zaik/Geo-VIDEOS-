@@ -842,13 +842,13 @@ private class ShortPageView(context: Context) : FrameLayout(context) {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER_HORIZONTAL
             listOf(like, share, save, download, quality).forEach { action ->
-                addView(action, LinearLayout.LayoutParams(dpShort(context, 50), dpShort(context, 52)).apply {
-                    bottomMargin = dpShort(context, 3)
+                addView(action, LinearLayout.LayoutParams(dpShort(context, 46), dpShort(context, 48)).apply {
+                    bottomMargin = dpShort(context, 2)
                 })
             }
         }
-        addView(actions, LayoutParams(dpShort(context, 58), ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM or Gravity.END).apply {
-            setMargins(0, 0, dpShort(context, 5), dpShort(context, 16))
+        addView(actions, LayoutParams(dpShort(context, 52), ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM or Gravity.END).apply {
+            setMargins(0, 0, dpShort(context, 4), dpShort(context, 14))
         })
     }
 
@@ -958,13 +958,13 @@ private class ShortActionView(context: Context, iconRes: Int, label: String) : L
         isFocusable = true
         icon.setImageResource(iconRes)
         icon.setColorFilter(Color.WHITE)
-        icon.setPadding(dpShort(context, 8), dpShort(context, 8), dpShort(context, 8), dpShort(context, 8))
-        icon.background = circleDrawable(0x72000000.toInt())
-        addView(icon, LayoutParams(dpShort(context, 39), dpShort(context, 39)))
+        icon.setPadding(dpShort(context, 7), dpShort(context, 7), dpShort(context, 7), dpShort(context, 7))
+        icon.background = circleDrawable(0x5E000000.toInt())
+        addView(icon, LayoutParams(dpShort(context, 34), dpShort(context, 34)))
         text.text = label
         text.gravity = Gravity.CENTER
         text.setTextColor(Color.WHITE)
-        text.setTextSize(TypedValue.COMPLEX_UNIT_SP, 8.8f)
+        text.setTextSize(TypedValue.COMPLEX_UNIT_SP, 8.2f)
         text.maxLines = 2
         text.ellipsize = TextUtils.TruncateAt.END
         addView(text, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {

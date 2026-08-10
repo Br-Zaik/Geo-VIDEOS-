@@ -515,19 +515,19 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
                     // terminen suscripciones, listas, Shorts y enriquecimiento para mostrar contenido.
                     launch {
                         val page = popularDeferred.await()
-                        if (page.items.isNotEmpty()) _uiState.update { it.copy(popular = page.items.filterNot(::looksLikeShort), loading = false) }
+                        if (page.items.isNotEmpty()) _uiState.update { it.copy(popular = page.items.filterNot(::looksLikeShort)) }
                     }
                     launch {
                         val page = liveDeferred.await()
-                        if (page.items.isNotEmpty()) _uiState.update { it.copy(live = page.items, loading = false) }
+                        if (page.items.isNotEmpty()) _uiState.update { it.copy(live = page.items) }
                     }
                     launch {
                         val page = gamingDeferred.await()
-                        if (page.items.isNotEmpty()) _uiState.update { it.copy(gaming = page.items.filterNot(::looksLikeShort), loading = false) }
+                        if (page.items.isNotEmpty()) _uiState.update { it.copy(gaming = page.items.filterNot(::looksLikeShort)) }
                     }
                     launch {
                         val page = musicDeferred.await()
-                        if (page.items.isNotEmpty()) _uiState.update { it.copy(music = page.items.filterNot(::looksLikeShort), loading = false) }
+                        if (page.items.isNotEmpty()) _uiState.update { it.copy(music = page.items.filterNot(::looksLikeShort)) }
                     }
 
                     val baseProfile = userDeferred.await()

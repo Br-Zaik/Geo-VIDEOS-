@@ -61,13 +61,14 @@ internal fun LiteHomeScreen(
         if (category != HomeCategory.FOR_YOU) emptyList()
         else (shorts + baseVideos.filter(::looksLikeHomeShort)).distinctBy { it.id }.take(18)
     }
-    val mixVideo = remember(category, music, personalized, popular) {
+    val mixVideo = remember(category, music, personalized, popular, loading) {
         if (category != HomeCategory.FOR_YOU) null
         else music.firstOrNull()
             ?: personalized.firstOrNull(::looksLikeMusicForMix)
             ?: popular.firstOrNull(::looksLikeMusicForMix)
-            ?: personalized.firstOrNull()
-            ?: popular.firstOrNull()
+            // Durante la primera carga no inventar un Mix con cualquier video solo
+            // para llenar el hueco. Esperar a que exista una senal musical real.
+            ?: if (!loading) personalized.firstOrNull() ?: popular.firstOrNull() else null
     }
     val videos = remember(baseVideos, homeShorts, mixVideo) {
         val hiddenIds = buildSet {

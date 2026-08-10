@@ -311,9 +311,10 @@ private class HomeFeedAdapter(
             when {
                 loadingMore && !refreshing -> add(HomeFeedRow.Loading)
                 loading && !hasContent -> {
+                    // Carga inicial compacta: reserva el espacio principal sin convertir
+                    // toda la pagina en una pila de bloques grises.
                     add(HomeFeedRow.Skeleton(index = 0, shortsStyle = true))
                     add(HomeFeedRow.Skeleton(index = 1))
-                    add(HomeFeedRow.Skeleton(index = 2))
                 }
                 !hasContent -> add(HomeFeedRow.Empty)
             }
@@ -556,7 +557,7 @@ private class SkeletonFeedView(context: Context) : LinearLayout(context) {
 
 private fun roundedSkeleton(context: Context, radiusDp: Float): GradientDrawable =
     GradientDrawable().apply {
-        setColor(0xFF24242A.toInt())
+        setColor(0xFF1B1B20.toInt())
         cornerRadius = dp(context, radiusDp.roundToInt()).toFloat()
     }
 

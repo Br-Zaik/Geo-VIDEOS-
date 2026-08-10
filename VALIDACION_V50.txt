@@ -1,0 +1,11 @@
+Geo Videos V50.0.0
+
+Correcciones:
+- El boton Continuar con Google fuerza el selector oficial mediante AuthorizationRequest.Prompt.SELECT_ACCOUNT.
+- La renovacion silenciosa al abrir solo se ejecuta cuando Geo Videos ya tiene un perfil guardado.
+- No se modificaron requestedScopes, switchGoogleAccount, OAuth de YouTube, huella/firma ni pantalla de login.
+- Inicio conserva la carga progresiva, pero evita marcar la carga como terminada con el primer bloque parcial.
+- Mix no usa un video arbitrario como relleno mientras la carga inicial sigue activa.
+- Skeleton inicial reducido y menos invasivo.
+
+Validacion final pendiente: compilar en GitHub Actions y probar el selector de cuenta en dispositivo.
