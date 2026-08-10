@@ -20,6 +20,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import com.geovideos.app.data.VideoItem
 import com.geovideos.app.playback.FloatingPlayerService
+import com.geovideos.app.ui.AuthStatus
 import com.geovideos.app.ui.GeoVideosApp
 import com.geovideos.app.ui.GeoVideosViewModel
 import com.geovideos.app.ui.theme.GeoVideosTheme
@@ -73,6 +74,13 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        // V48 could restore the cached account and immediately complete the silent
+        // Google authorization before the user had a chance to use the login screen.
+        // Apply this migration only once: it invalidates only the local connected flag,
+        // keeps the profile/cache intact and does not change scopes, OAuth or UI.
+        val requireManualLogin = requireManualLoginMigration()
+
         setContent {
             GeoVideosTheme {
                 GeoVideosApp(
@@ -90,20 +98,37 @@ class MainActivity : ComponentActivity() {
         handlePlaybackIntent(intent)
 
         if (savedInstanceState == null) {
-            window.decorView.postDelayed(
-                { requestGoogleAuthorization(allowResolution = false) },
-                350
-            )
+            // Silent renewal is only valid for a session that was already connected.
+            // A fresh/disconnected session must stay on "Continuar con Google" until
+            // the user explicitly taps it.
+            if (!requireManualLogin && viewModel.uiState.value.authStatus == AuthStatus.CONNECTED) {
+                window.decorView.postDelayed(
+                    { requestGoogleAuthorization(allowResolution = false) },
+                    350
+                )
+            }
             window.decorView.postDelayed(
                 {
                     val state = viewModel.uiState.value
-                    if (state.youtubeSyncEnabled && state.profile != null) {
+                    if (state.authStatus == AuthStatus.CONNECTED && state.youtubeSyncEnabled && state.profile != null) {
                         requestYouTubeSyncAuthorization(allowResolution = false)
                     }
                 },
                 1_250
             )
         }
+    }
+
+    private fun requireManualLoginMigration(): Boolean {
+        val preferences = getSharedPreferences(APP_PREFERENCES, MODE_PRIVATE)
+        if (preferences.getBoolean(KEY_MANUAL_LOGIN_MIGRATION_V48_1, false)) return false
+
+        val hadConnectedAccount = preferences.getBoolean(KEY_CONNECTED_ACCOUNT, false)
+        preferences.edit()
+            .putBoolean(KEY_MANUAL_LOGIN_MIGRATION_V48_1, true)
+            .putBoolean(KEY_CONNECTED_ACCOUNT, false)
+            .apply()
+        return hadConnectedAccount
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -366,5 +391,8 @@ class MainActivity : ComponentActivity() {
         const val EXTRA_OPEN_FULLSCREEN_PLAYER = "com.geovideos.app.extra.OPEN_FULLSCREEN_PLAYER"
         const val EXTRA_EXPAND_PLAYER = "com.geovideos.app.extra.EXPAND_PLAYER"
         private const val YOUTUBE_FORCE_SSL_SCOPE = "https://www.googleapis.com/auth/youtube.force-ssl"
+        private const val APP_PREFERENCES = "geo_videos_v4"
+        private const val KEY_CONNECTED_ACCOUNT = "connected_account"
+        private const val KEY_MANUAL_LOGIN_MIGRATION_V48_1 = "manual_login_migration_v48_1"
     }
 }
