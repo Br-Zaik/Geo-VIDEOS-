@@ -23,6 +23,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import com.geovideos.app.data.MediaKind
 import com.geovideos.app.data.VideoItem
 
 @Composable
@@ -73,7 +74,9 @@ internal fun LiteHomeScreen(
             homeShorts.forEach { add(it.id) }
             mixVideo?.id?.let { add(it) }
         }
-        baseVideos.filterNot { video -> video.id in hiddenIds || looksLikeHomeShort(video) }
+        baseVideos.filter { video ->
+            video.id !in hiddenIds && isEligibleHomeVideoCard(video)
+        }
     }
     val watchLaterIds = remember(watchLater) {
         watchLater.asSequence().map { it.id }.toHashSet()
@@ -107,6 +110,7 @@ internal fun LiteHomeScreen(
                 modifier = Modifier.fillMaxSize(),
                 videos = videos,
                 shorts = homeShorts,
+                showShortsShelf = category == HomeCategory.FOR_YOU,
                 mixVideo = mixVideo,
                 loading = loading,
                 refreshing = refreshing,
@@ -145,7 +149,15 @@ internal fun looksLikeHomeShort(video: VideoItem): Boolean {
     val taggedAsShort = listOf(
         "#shorts", " shorts", "short ", "tiktok", "reel", "vertical", "status video"
     ).any { it in text }
-    return taggedAsShort || video.durationMs in 1..90_000L
+    return taggedAsShort || video.durationMs in 1..180_000L
+}
+
+private fun isEligibleHomeVideoCard(video: VideoItem): Boolean {
+    if (video.isLive) return true
+    if (video.mediaKind != MediaKind.YOUTUBE) return !looksLikeHomeShort(video)
+    // Para Principal no mostrar elementos de YouTube sin duración confirmada: un Short con
+    // metadatos incompletos era exactamente lo que terminaba apareciendo como tarjeta normal.
+    return video.durationMs > 180_000L && !looksLikeHomeShort(video)
 }
 
 private fun looksLikeMusicForMix(video: VideoItem): Boolean {

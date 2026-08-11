@@ -469,13 +469,17 @@ internal fun UnifiedPlayerOverlay(
         val screenWidthPx = with(density) { maxWidth.toPx() }
         val screenHeightPx = with(density) { availableMaxHeight.toPx() }
         val fullPlayerHeightPx = screenWidthPx * 9f / 16f
-        val miniSizePx = with(density) { 72.dp.toPx() }
+        // Mini reproductor tipo DayliTube: rectangular 16:9 compacto, no burbuja circular ni
+        // barra de ancho completo. Se mantiene flotando sobre la navegación inferior.
+        val miniWidthPx = with(density) { 184.dp.toPx() }
+        val miniHeightPx = miniWidthPx * 9f / 16f
         val miniMarginPx = with(density) { 12.dp.toPx() }
         val miniBottomClearancePx = with(density) { 88.dp.toPx() }
-        val miniLeftPx = (screenWidthPx - miniMarginPx - miniSizePx).coerceAtLeast(1f)
-        val miniTopPx = (screenHeightPx - miniBottomClearancePx - miniSizePx).coerceAtLeast(1f)
-        val miniScaleX = (miniSizePx / screenWidthPx).coerceIn(0.16f, 1f)
-        val miniScaleY = (miniSizePx / fullPlayerHeightPx).coerceIn(0.16f, 1f)
+        val miniLeftPx = (screenWidthPx - miniMarginPx - miniWidthPx).coerceAtLeast(1f)
+        val miniTopPx = (screenHeightPx - miniBottomClearancePx - miniHeightPx).coerceAtLeast(1f)
+        val miniScaleX = (miniWidthPx / screenWidthPx).coerceIn(0.16f, 1f)
+        val miniScaleY = (miniHeightPx / fullPlayerHeightPx).coerceIn(0.16f, 1f)
+        val miniShape = RoundedCornerShape(10.dp)
         val velocityThresholdPx = with(density) { 920.dp.toPx() }
         val p = transition.coerceIn(0f, 1f)
         // Mantener un fondo opaco durante casi toda la minimizacion evita ver Principal,
@@ -585,7 +589,8 @@ internal fun UnifiedPlayerOverlay(
             Box(
                 modifier = Modifier
                     .offset { IntOffset(miniLeftPx.roundToInt(), miniTopPx.roundToInt()) }
-                    .size(with(density) { miniSizePx.toDp() })
+                    .width(with(density) { miniWidthPx.toDp() })
+                    .height(with(density) { miniHeightPx.toDp() })
                     .zIndex(90f)
                     .graphicsLayer { alpha = miniAlpha }
                     .then(dragModifier)
@@ -594,7 +599,7 @@ internal fun UnifiedPlayerOverlay(
                     modifier = Modifier
                         .fillMaxSize()
                         .clickable(enabled = !dragging && !settling) { settle(0f, fast = true) },
-                    shape = CircleShape,
+                    shape = miniShape,
                     color = Color.Black,
                     tonalElevation = 8.dp,
                     shadowElevation = 10.dp
@@ -604,8 +609,8 @@ internal fun UnifiedPlayerOverlay(
                             url = video.thumbnailUrl,
                             description = video.title,
                             modifier = Modifier.fillMaxSize(),
-                            widthPx = 320,
-                            heightPx = 320,
+                            widthPx = 640,
+                            heightPx = 360,
                             contentScale = ContentScale.Crop
                         )
                         if (
@@ -615,12 +620,12 @@ internal fun UnifiedPlayerOverlay(
                             !playback.connecting &&
                             !playback.resolving
                         ) {
-                            key(floatingSurfaceGeneration, "mini-bubble") {
+                            key(floatingSurfaceGeneration, "mini-rectangle") {
                                 LitePlayerView(
                                     controller = controller!!,
                                     modifier = Modifier.fillMaxSize(),
                                     useController = false,
-                                    resizeMode = AspectRatioFrameLayout.RESIZE_MODE_ZOOM,
+                                    resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT,
                                     useTextureView = true,
                                     gesturesEnabled = false
                                 )
@@ -630,7 +635,7 @@ internal fun UnifiedPlayerOverlay(
                             Surface(
                                 modifier = Modifier
                                     .align(Alignment.Center)
-                                    .size(30.dp),
+                                    .size(34.dp),
                                 shape = CircleShape,
                                 color = Color.Black.copy(alpha = 0.58f)
                             ) {
@@ -642,7 +647,7 @@ internal fun UnifiedPlayerOverlay(
                                         Icons.Default.PlayArrow,
                                         contentDescription = "Reproducir",
                                         tint = Color.White,
-                                        modifier = Modifier.size(20.dp)
+                                        modifier = Modifier.size(22.dp)
                                     )
                                 }
                             }
@@ -694,7 +699,7 @@ internal fun UnifiedPlayerOverlay(
                     alpha = if (p <= 0.90f) 1f else (1f - ((p - 0.90f) / 0.07f)).coerceIn(0f, 1f)
                     if (p >= 0.86f) {
                         clip = true
-                        shape = CircleShape
+                        shape = miniShape
                         shadowElevation = with(density) { 6.dp.toPx() }
                     } else {
                         clip = false

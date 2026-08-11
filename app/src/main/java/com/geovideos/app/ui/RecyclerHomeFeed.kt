@@ -35,6 +35,7 @@ internal fun RecyclerHomeFeed(
     modifier: Modifier,
     videos: List<VideoItem>,
     shorts: List<VideoItem>,
+    showShortsShelf: Boolean,
     mixVideo: VideoItem?,
     loading: Boolean,
     refreshing: Boolean,
@@ -215,6 +216,7 @@ internal fun RecyclerHomeFeed(
             homeAdapter.submitFeed(
                 videos = videos,
                 shorts = shorts,
+                showShortsShelf = showShortsShelf,
                 mixVideo = mixVideo,
                 watchLaterIds = watchLaterIds,
                 loading = loading,
@@ -297,6 +299,7 @@ private class HomeFeedAdapter(
     fun submitFeed(
         videos: List<VideoItem>,
         shorts: List<VideoItem>,
+        showShortsShelf: Boolean,
         mixVideo: VideoItem?,
         watchLaterIds: Set<String>,
         loading: Boolean,
@@ -305,9 +308,13 @@ private class HomeFeedAdapter(
     ) {
         val hasContent = videos.isNotEmpty() || shorts.isNotEmpty() || mixVideo != null
         val rows = buildList {
-            // El refresco principal usa un unico indicador flotante. No insertar otra fila
-            // de carga dentro del feed porque desplaza el contenido y duplica el circulo.
-            if (shorts.isNotEmpty()) add(HomeFeedRow.Shorts(shorts.take(14)))
+            // Principal siempre reserva primero la zona de Shorts. En una cuenta recién
+            // conectada se ve el skeleton de esa fila mientras llegan Shorts reales, y debajo
+            // pueden aparecer ya los videos de suscripciones sin invertir el orden de la Home.
+            if (showShortsShelf) {
+                if (shorts.isNotEmpty()) add(HomeFeedRow.Shorts(shorts.take(14)))
+                else if (loading) add(HomeFeedRow.Skeleton(index = 0, shortsStyle = true))
+            }
             mixVideo?.let { add(HomeFeedRow.Mix(it)) }
             videos.forEach { video ->
                 add(HomeFeedRow.Video(video, video.id in watchLaterIds))
@@ -315,9 +322,8 @@ private class HomeFeedAdapter(
             when {
                 loadingMore && !refreshing -> add(HomeFeedRow.Loading)
                 loading && !hasContent -> {
-                    // Carga inicial compacta: reserva el espacio principal sin convertir
-                    // toda la pagina en una pila de bloques grises.
-                    add(HomeFeedRow.Skeleton(index = 0, shortsStyle = true))
+                    // La fila de Shorts ya reservó su espacio arriba; este segundo skeleton es
+                    // la primera tarjeta de video normal.
                     add(HomeFeedRow.Skeleton(index = 1))
                 }
                 !hasContent -> add(HomeFeedRow.Empty)
@@ -445,14 +451,16 @@ private class VideoHolder(
 
         if (video.channelThumbnailUrl.isBlank()) {
             Glide.with(card.avatar).clear(card.avatar)
-            card.avatar.setImageDrawable(ColorDrawable(0xFF4A2A79.toInt()))
+            card.avatar.setImageDrawable(null)
+            card.avatar.background = avatarPlaceholder()
         } else {
+            card.avatar.background = avatarPlaceholder()
             Glide.with(card.avatar)
                 .load(video.channelThumbnailUrl)
                 .override(72, 72)
                 .dontAnimate()
-                .placeholder(ColorDrawable(0xFF303036.toInt()))
-                .error(ColorDrawable(0xFF4A2A79.toInt()))
+                .placeholder(avatarPlaceholder())
+                .error(avatarPlaceholder())
                 .circleCrop()
                 .into(card.avatar)
         }
@@ -467,6 +475,8 @@ private class VideoHolder(
         card.durationBadge.visibility = View.GONE
         Glide.with(card.thumbnail).clear(card.thumbnail)
         Glide.with(card.avatar).clear(card.avatar)
+        card.avatar.setImageDrawable(null)
+        card.avatar.background = avatarPlaceholder()
         card.setOnClickListener(null)
         card.moreButton.setOnClickListener(null)
     }
@@ -557,6 +567,11 @@ private class SkeletonFeedView(context: Context) : LinearLayout(context) {
         }
         alpha = 0.86f
     }
+}
+
+private fun avatarPlaceholder(): GradientDrawable = GradientDrawable().apply {
+    shape = GradientDrawable.OVAL
+    setColor(0xFF2B2B31.toInt())
 }
 
 private fun roundedSkeleton(context: Context, radiusDp: Float): GradientDrawable =
@@ -717,7 +732,8 @@ private class VideoCardView(context: Context) : LinearLayout(context) {
         }
         info.addView(avatar.apply {
             scaleType = ImageView.ScaleType.CENTER_CROP
-            setBackgroundColor(0xFF303036.toInt())
+            background = avatarPlaceholder()
+            clipToOutline = true
         }, LayoutParams(dp(context, 40), dp(context, 40)))
 
         info.addView(LinearLayout(context).apply {
@@ -891,7 +907,7 @@ private fun loadClearThumbnail(
             .override(width, height)
             .dontAnimate()
             .placeholder(placeholder)
-            .error(ColorDrawable(0xFF2B1B45.toInt()))
+            .error(ColorDrawable(0xFF242428.toInt()))
         if (fitCenter) request.fitCenter() else request.centerCrop()
         request.into(view)
         return

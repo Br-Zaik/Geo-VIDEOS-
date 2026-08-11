@@ -1,0 +1,46 @@
+GEO VIDEOS V50.6.0 / VERSION CODE 507
+
+OBJETIVO DE ESTA REVISION
+- Corregir Principal para que no mezcle videos genéricos/Me gusta/historial como si fueran el feed.
+- Mantener Shorts solo en la fila superior y evitar Shorts dentro de las tarjetas normales.
+- Hacer que el gesto de actualizar rote la tanda visible de Shorts.
+- Sustituir la burbuja circular del mini reproductor por un rectángulo 16:9 compacto.
+- Eliminar el bloque morado cuadrado usado cuando falta el avatar de un canal.
+
+CAMBIOS APLICADOS
+1. FEED PRINCIPAL
+- "Para ti" se construye con publicaciones de canales realmente suscritos.
+- Me gusta, historial y búsquedas se usan como señales para ordenar los canales, no para inyectar videos directamente.
+- Tendencias no se usa como sustituto de Principal.
+- Se invalida una sola vez el cache remoto de V50.5 (feed schema 3), conservando cuenta, historial, descargas y ajustes.
+
+2. SHORTS ARRIBA / VIDEOS ABAJO
+- Principal reserva primero la fila de Shorts; durante la primera carga muestra un skeleton arriba y videos debajo.
+- Los videos normales de YouTube solo se publican cuando su duración está confirmada y supera 3 minutos; esto evita que Shorts con metadatos incompletos se cuelen abajo.
+- La UI aplica una segunda barrera para no renderizar Shorts en las tarjetas normales.
+
+3. REFRESH DE SHORTS
+- El refresh de Principal rota fuera de la primera tanda los IDs que ya estaban visibles.
+- Si YouTube devuelve el mismo pool, se rota el pool para que el gesto no deje exactamente los mismos Shorts arriba.
+- El refresh de la pestaña Shorts usa el siguiente pageToken cuando existe y también rota el contenido visible.
+
+4. MINI REPRODUCTOR
+- Eliminada la burbuja circular de 72 dp.
+- Nuevo mini reproductor flotante rectangular 16:9 de 184 dp de ancho, sobre la navegación inferior.
+- Se mantiene TextureView, play central y X para cerrar.
+- La transición final recorta con RoundedCornerShape en vez de CircleShape.
+
+5. AVATARES
+- Si falta el avatar ya no aparece un cuadrado morado.
+- Se usa placeholder circular gris oscuro y se conserva circleCrop cuando llega la foto real.
+- Si falla una miniatura remota, el fallback también es gris oscuro neutro en vez de morado.
+
+6. SINCRONIZACION YOUTUBE
+- Se mantienen los scopes de lectura de YouTube en la cuenta principal.
+- Suscripciones, Me gusta, listas y subidos siguen cargándose desde la cuenta autorizada.
+- No se modifica el flujo OAuth/login de V50.5.
+
+VALIDACION LOCAL
+- 21 archivos Kotlin: delimitadores estructurales balanceados.
+- XML de recursos: parseo correcto.
+- Se intentó :app:compileDebugKotlin, pero el entorno no puede resolver services.gradle.org para descargar Gradle 8.13; la compilación Android completa queda para GitHub Actions.
