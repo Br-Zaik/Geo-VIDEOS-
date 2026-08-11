@@ -15,6 +15,7 @@ import com.geovideos.app.network.YouTubeApi
 import com.geovideos.app.network.YouTubeApiException
 import com.geovideos.app.playback.StreamResolver
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
@@ -26,6 +27,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.supervisorScope
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.withContext
 
 enum class AuthStatus {
@@ -122,6 +124,16 @@ data class GeoVideosUiState(
 
 private class GoogleAccountMismatchException(message: String) : IllegalStateException(message)
 
+private data class AccountSyncResult(
+    val profile: GoogleProfile,
+    val subscriptions: List<ChannelItem>,
+    val playlists: List<PlaylistItem>,
+    val liked: List<VideoItem>,
+    val uploads: List<VideoItem>,
+    val likesPlaylistId: String,
+    val uploadsPlaylistId: String
+)
+
 class GeoVideosViewModel(application: Application) : AndroidViewModel(application) {
     private val repository = GeoVideosRepository(application)
     private val api = YouTubeApi()
@@ -135,7 +147,7 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
     private var gamingNextToken: String = ""
     private var musicNextToken: String = ""
     private var shortsNextToken: String = ""
-    private var shortsQuery: String = "shorts virales humor gaming musica anime deportes animales curiosidades tecnologia español"
+    private var shortsQuery: String = ""
     private var uploadsNextToken: String = ""
     private var likedNextToken: String = ""
     private var searchNextToken: String = ""
@@ -194,7 +206,10 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
                         personalized = personalized,
                         popular = popular,
                         lastSyncMs = lastSyncMs,
-                        loading = false
+                        // Si la migración eliminó un feed genérico antiguo, mantener skeleton
+                        // mientras se hidratan las señales reales de la cuenta; no mostrar un
+                        // estado vacío falso entre ambas lecturas de disco.
+                        loading = personalized.isEmpty() && state.profile != null
                     )
                 } else {
                     // An account switch completed while disk hydration was running. Do not
@@ -254,7 +269,23 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
                 val currentAccountEmail = state.profile?.email.orEmpty().trim()
                 val sameAccount = currentAccountEmail.equals(hydratedAccountEmail, ignoreCase = true)
                 if (sameAccount) {
+                    // Si una migración invalida el antiguo "Para ti", no dejar Principal vacío
+                    // mientras llega la red. Reconstruir de inmediato una semilla SOLO con datos
+                    // de esta cuenta (Me gusta + historial local) y Shorts ya guardados.
+                    val cachedAccountFeed = mergeUniqueVideos(
+                        liked.filterNot(::looksLikeShort),
+                        localLikedVideos.filterNot(::looksLikeShort),
+                        history.filterNot(::looksLikeShort)
+                    ).take(MAX_HOME_ITEMS)
+                    val cachedAccountShorts = mergeUniqueVideos(
+                        shorts,
+                        liked.filter(::looksLikeShort),
+                        localLikedVideos.filter(::looksLikeShort),
+                        history.filter(::looksLikeShort)
+                    ).take(40)
                     state.copy(
+                        personalized = state.personalized.ifEmpty { cachedAccountFeed },
+                        shorts = state.shorts.ifEmpty { cachedAccountShorts },
                         subscriptions = subscriptions,
                         playlists = playlists,
                         liked = liked,
@@ -267,7 +298,7 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
                         localLikedVideos = localLikedVideos,
                         downloads = downloads,
                         searchHistory = searchHistory,
-                        loading = false
+                        loading = state.personalized.isEmpty() && cachedAccountFeed.isEmpty() && cachedAccountShorts.isEmpty()
                     )
                 } else {
                     // Local-only data is account-independent in Geo Videos and is safe to
@@ -395,21 +426,49 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
 
     private fun refreshSynchronizedAccountData() {
         val token = youtubeWriteToken ?: return
+        val profile = _uiState.value.profile ?: return
         viewModelScope.launch {
             runCatching {
-                val subscriptions = api.subscriptions(token)
-                val playlists = api.playlists(token)
-                subscriptions to playlists
-            }.onSuccess { (subscriptions, playlists) ->
-                repository.saveSubscriptions(subscriptions)
-                _uiState.update {
-                    it.copy(
-                        subscriptions = subscriptions,
-                        playlists = playlists,
-                        youtubeSyncAuthorized = true,
-                        youtubeSyncBusy = false
+                supervisorScope {
+                    val subscriptionsDeferred = async { api.subscriptions(token) }
+                    val playlistsDeferred = async { api.playlists(token) }
+                    val channel = api.getMyChannel(token, profile)
+                    val likedDeferred = async {
+                        api.playlistVideosPage(token, channel.likesPlaylistId, maxResults = 50)
+                    }
+                    val uploadsDeferred = async {
+                        api.playlistVideosPage(token, channel.uploadsPlaylistId, maxResults = 25)
+                    }
+                    AccountSyncResult(
+                        profile = channel.profile,
+                        subscriptions = subscriptionsDeferred.await(),
+                        playlists = playlistsDeferred.await(),
+                        liked = likedDeferred.await().items,
+                        uploads = uploadsDeferred.await().items,
+                        likesPlaylistId = channel.likesPlaylistId,
+                        uploadsPlaylistId = channel.uploadsPlaylistId
                     )
                 }
+            }.onSuccess { result ->
+                likesPlaylistId = result.likesPlaylistId
+                uploadsPlaylistId = result.uploadsPlaylistId
+                repository.saveConnectedProfile(result.profile)
+                repository.saveSubscriptions(result.subscriptions)
+                repository.saveLikedVideos(result.liked)
+                _uiState.update {
+                    it.copy(
+                        profile = result.profile,
+                        subscriptions = result.subscriptions,
+                        playlists = result.playlists,
+                        liked = result.liked,
+                        uploads = result.uploads,
+                        youtubeSyncAuthorized = true,
+                        youtubeSyncBusy = false,
+                        message = "YouTube sincronizado: suscripciones, Me gusta, listas y subidos actualizados."
+                    )
+                }
+                // Reordenar Principal con las señales recién sincronizadas sin bloquear la UI.
+                if (!accessToken.isNullOrBlank()) refresh()
             }.onFailure { error ->
                 if (error is YouTubeApiException && error.statusCode == 401) youtubeWriteToken = null
                 _uiState.update { it.copy(youtubeSyncBusy = false) }
@@ -708,23 +767,56 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
         return try {
             when (snapshot.homeCategory) {
                 HomeCategory.FOR_YOU -> {
-                    // El gesto manual espera una sola solicitud visible. Actividad, suscripciones,
-                    // Shorts y enriquecimiento quedan para la sincronizacion silenciosa posterior.
-                    val popularPage = api.mostPopularPage(token)
-                    val popular = popularPage.items.filterNot(::looksLikeShort)
+                    // Actualizar "Para ti" significa renovar datos REALES de la cuenta. La
+                    // versión anterior pedía Tendencias Perú y por eso el círculo terminaba
+                    // mostrando videos ajenos. Aquí se refrescan suscripciones recientes y se
+                    // conservan Likes/historial como señales secundarias.
+                    val subscriptions = snapshot.subscriptions.ifEmpty {
+                        runCatching { api.subscriptions(token, maxPages = 1) }.getOrDefault(emptyList())
+                    }
+                    val batchSize = minOf(FAST_REFRESH_SUBSCRIPTION_BATCH, subscriptions.size)
+                    val start = if (subscriptions.isEmpty()) 0 else subscriptionRefreshCursor % subscriptions.size
+                    val window = List(batchSize) { index ->
+                        subscriptions[(start + index) % subscriptions.size]
+                    }
+                    if (subscriptions.isNotEmpty()) {
+                        subscriptionRefreshCursor = (start + window.size) % subscriptions.size
+                    }
+                    val rawRecent = withTimeoutOrNull(5_500L) {
+                        supervisorScope {
+                            window.map { channel ->
+                                async {
+                                    runCatching { api.channelActivities(token, channel.id, 6) }
+                                        .getOrDefault(emptyList())
+                                }
+                            }.awaitAll().flatten()
+                        }
+                    }.orEmpty().sortedByDescending { it.publishedAt }
+                    // Ocultar el círculo apenas llegaron las publicaciones recientes. No
+                    // encadenar aquí llamadas de duración/avatares: la sincronización silenciosa
+                    // que continúa debajo las completa después sin mantener el gesto bloqueado.
+                    val freshShorts = rawRecent.filter(::looksLikeShort)
+                    val freshVideos = rawRecent.filterNot(::looksLikeShort)
                     val personalized = mergeUniqueVideos(
-                        popular.take(18),
-                        snapshot.personalized,
-                        snapshot.localLikedVideos.take(8),
-                        snapshot.history.take(8)
+                        freshVideos,
+                        snapshot.liked.take(18),
+                        snapshot.localLikedVideos.take(12),
+                        snapshot.history.take(12),
+                        snapshot.personalized
                     ).take(MAX_HOME_ITEMS)
-                    popularNextToken = popularPage.nextPageToken
+                    val shorts = prioritizeShortsForUser(
+                        mergeUniqueVideos(freshShorts, snapshot.shorts),
+                        snapshot.copy(subscriptions = subscriptions),
+                        40
+                    )
+                    subscriptionOffset = minOf(INITIAL_SUBSCRIPTION_BATCH, subscriptions.size)
                     _uiState.update { current ->
                         current.copy(
                             refreshing = false,
-                            popular = if (popular.isNotEmpty()) popular else current.popular,
+                            subscriptions = subscriptions,
                             personalized = if (personalized.isNotEmpty()) personalized else current.personalized,
-                            canLoadMoreForYou = popularPage.nextPageToken.isNotBlank() || current.canLoadMoreForYou,
+                            shorts = if (shorts.isNotEmpty()) shorts else current.shorts,
+                            canLoadMoreForYou = subscriptionOffset < subscriptions.size,
                             message = null
                         )
                     }
@@ -807,7 +899,7 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
 
                 supervisorScope {
                     val userDeferred = async { api.getUserInfo(token) }
-                    val popularDeferred = async {
+                    val popularDeferred = async(start = CoroutineStart.LAZY) {
                         if (fastRefreshedCategory == HomeCategory.FOR_YOU) {
                             VideoPage(previous.popular, popularNextToken)
                         } else {
@@ -815,7 +907,7 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
                                 .getOrDefault(VideoPage(previous.popular))
                         }
                     }
-                    val liveDeferred = async {
+                    val liveDeferred = async(start = CoroutineStart.LAZY) {
                         if (fastRefreshedCategory == HomeCategory.LIVE) {
                             VideoPage(previous.live, liveNextToken)
                         } else {
@@ -823,7 +915,7 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
                                 .getOrDefault(VideoPage(previous.live))
                         }
                     }
-                    val gamingDeferred = async {
+                    val gamingDeferred = async(start = CoroutineStart.LAZY) {
                         if (fastRefreshedCategory == HomeCategory.GAMING) {
                             VideoPage(previous.gaming, gamingNextToken)
                         } else {
@@ -831,7 +923,7 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
                                 .getOrDefault(VideoPage(previous.gaming))
                         }
                     }
-                    val musicDeferred = async {
+                    val musicDeferred = async(start = CoroutineStart.LAZY) {
                         if (fastRefreshedCategory == HomeCategory.MUSIC) {
                             VideoPage(previous.music, musicNextToken)
                         } else {
@@ -841,36 +933,19 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
                     }
                     val shortsDeferred = async { VideoPage(previous.shorts) }
                     val subscriptionsDeferred = async {
-                        runCatching { api.subscriptions(token) }.getOrDefault(previous.subscriptions)
+                        val pages = if (initialLoad) 1 else 2
+                        runCatching { api.subscriptions(token, maxPages = pages) }
+                            .getOrDefault(previous.subscriptions)
                     }
-                    val playlistsDeferred = async {
+                    val playlistsDeferred = async(start = CoroutineStart.LAZY) {
                         runCatching { api.playlists(token) }.getOrDefault(previous.playlists)
                     }
-                    val activitiesDeferred = async {
+                    val activitiesDeferred = async(start = CoroutineStart.LAZY) {
                         if (previous.notificationsEnabled) {
                             runCatching { api.homeActivities(token) }.getOrDefault(previous.notifications)
                         } else {
                             emptyList()
                         }
-                    }
-
-                    // Publicar cada bloque en cuanto llegue. La pantalla deja de esperar a que
-                    // terminen suscripciones, listas, Shorts y enriquecimiento para mostrar contenido.
-                    launch {
-                        val page = popularDeferred.await()
-                        if (page.items.isNotEmpty()) _uiState.update { it.copy(popular = page.items.filterNot(::looksLikeShort)) }
-                    }
-                    launch {
-                        val page = liveDeferred.await()
-                        if (page.items.isNotEmpty()) _uiState.update { it.copy(live = page.items) }
-                    }
-                    launch {
-                        val page = gamingDeferred.await()
-                        if (page.items.isNotEmpty()) _uiState.update { it.copy(gaming = page.items.filterNot(::looksLikeShort)) }
-                    }
-                    launch {
-                        val page = musicDeferred.await()
-                        if (page.items.isNotEmpty()) _uiState.update { it.copy(music = page.items.filterNot(::looksLikeShort)) }
                     }
 
                     val baseProfile = userDeferred.await()
@@ -893,14 +968,20 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
                     likesPlaylistId = channelDetails?.likesPlaylistId.orEmpty()
                     uploadsPlaylistId = channelDetails?.uploadsPlaylistId.orEmpty()
 
-                    val uploadsPage = runCatching {
-                        api.playlistVideosPage(token, uploadsPlaylistId, maxResults = 25)
-                    }.getOrDefault(VideoPage(previous.uploads))
-                    val likedPage = runCatching {
-                        api.playlistVideosPage(token, likesPlaylistId, maxResults = 50)
-                    }.getOrDefault(VideoPage(previous.liked))
+                    val uploadsPageDeferred = async {
+                        runCatching {
+                            api.playlistVideosPage(token, uploadsPlaylistId, maxResults = 25)
+                        }.getOrDefault(VideoPage(previous.uploads))
+                    }
+                    val likedPageDeferred = async {
+                        runCatching {
+                            api.playlistVideosPage(token, likesPlaylistId, maxResults = 50)
+                        }.getOrDefault(VideoPage(previous.liked))
+                    }
+                    var subscriptions = subscriptionsDeferred.await()
+                    val uploadsPage = uploadsPageDeferred.await()
+                    val likedPage = likedPageDeferred.await()
                     val likedRaw = likedPage.items
-                    val subscriptions = subscriptionsDeferred.await()
                     subscriptionOffset = minOf(INITIAL_SUBSCRIPTION_BATCH, subscriptions.size)
                     val subscriptionWindow = if (subscriptions.isEmpty()) {
                         emptyList()
@@ -928,34 +1009,144 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
                         .flatten()
                         .sortedByDescending { it.publishedAt }
 
-                    val popularPage = popularDeferred.await()
-                    val livePage = liveDeferred.await()
-                    val gamingPage = gamingDeferred.await()
-                    val musicPage = musicDeferred.await()
+                    // Publicar primero el feed de la CUENTA: canales suscritos, Me gusta,
+                    // historial local y señales guardadas. Esto ocurre antes de Tendencias, En vivo,
+                    // Juegos o Música para que al entrar no aparezca contenido ajeno mientras
+                    // termina la sincronización secundaria.
+                    val earlyAccountRaw = mergeUniqueVideos(
+                        subscriptionFeedRaw,
+                        likedRaw.take(30),
+                        previous.localLikedVideos.take(16),
+                        previous.history.take(18)
+                    ).take(110)
+                    val accountProfile = channelDetails?.profile ?: baseProfile
+                    // Perfil, suscripciones, Me gusta y subidos ya están sincronizados. Publicarlos
+                    // antes de enriquecer tarjetas para que Cuenta/Colección no esperen al feed.
+                    _uiState.update { current ->
+                        current.copy(
+                            profile = accountProfile,
+                            subscriptions = subscriptions,
+                            liked = likedRaw,
+                            uploads = uploadsPage.items
+                        )
+                    }
+                    val earlyAccountEnriched = enrichVideosWithCache(token, earlyAccountRaw)
+                    val earlyShortsRaw = earlyAccountEnriched.filter(::looksLikeShort)
+                    val earlyVideos = earlyAccountEnriched.filterNot(::looksLikeShort)
+                    val earlyPersonalized = mergeUniqueVideos(
+                        earlyVideos,
+                        if (initialLoad) emptyList() else previous.personalized
+                    ).take(MAX_HOME_ITEMS)
+                    val earlyShorts = prioritizeShortsForUser(
+                        mergeUniqueVideos(
+                            earlyShortsRaw,
+                            if (initialLoad) emptyList() else previous.shorts
+                        ),
+                        previous.copy(
+                            subscriptions = subscriptions,
+                            liked = likedRaw
+                        ),
+                        40
+                    )
+                    _uiState.update { current ->
+                        current.copy(
+                            loading = false,
+                            profile = accountProfile,
+                            subscriptions = subscriptions,
+                            liked = likedRaw,
+                            uploads = uploadsPage.items,
+                            personalized = if (earlyPersonalized.isNotEmpty()) earlyPersonalized else current.personalized,
+                            shorts = if (earlyShorts.isNotEmpty()) earlyShorts else current.shorts,
+                            canLoadMoreForYou = subscriptionOffset < subscriptions.size,
+                            message = null
+                        )
+                    }
+
+                    // Si los canales recientes no aportaron suficientes Shorts, completar la fila
+                    // con UNA sola búsqueda basada en señales de esta cuenta. La pantalla ya está
+                    // visible, así que esta búsqueda nunca bloquea el primer feed.
                     shortsQuery = buildShortsQuery(
                         history = previous.history,
                         liked = likedRaw,
                         subscriptions = subscriptions,
                         searchHistory = previous.searchHistory
                     )
-                    val (loadedShortsPage, loadedShortsQuery) = runCatching {
-                        loadShortsSearchPage(token, shortsQuery, maxResults = 24)
-                    }.getOrDefault(shortsDeferred.await() to shortsQuery)
+                    if (_uiState.value.shorts.size < 10 && shortsQuery.isNotBlank()) {
+                        val quickPage = runCatching {
+                            loadShortsSearchPage(token, shortsQuery, maxResults = 18).first
+                        }.getOrDefault(VideoPage(emptyList()))
+                        val quickCandidates = enrichVideosWithCache(token, quickPage.items)
+                            .filter(::looksLikeShort)
+                            .filter(::isAcceptableShort)
+                        val quickShorts = prioritizeShortsForUser(
+                            mergeUniqueVideos(earlyShorts, quickCandidates),
+                            previous.copy(subscriptions = subscriptions, liked = likedRaw),
+                            40
+                        )
+                        if (quickShorts.isNotEmpty()) {
+                            _uiState.update { current -> current.copy(shorts = quickShorts) }
+                        }
+                        shortsNextToken = quickPage.nextPageToken
+                    }
+
+                    // Principal ya está visible. Completar primero los datos de la CUENTA
+                    // (listas) y publicarlos enseguida; Tendencias/En vivo/Juegos/Música quedan
+                    // realmente en segundo plano y no retrasan la sincronización visible.
+                    playlistsDeferred.start()
+                    activitiesDeferred.start()
+                    val accountPlaylists = playlistsDeferred.await()
+                    _uiState.update { current ->
+                        current.copy(playlists = accountPlaylists)
+                    }
+
+                    // Ya están visibles Principal y los datos básicos de Cuenta. Recién ahora
+                    // ampliar la lista de suscripciones completa, sin retrasar ninguna pantalla.
+                    if (subscriptions.size >= 50) {
+                        val expandedSubscriptions = runCatching {
+                            api.subscriptions(token, maxPages = 4)
+                        }.getOrDefault(subscriptions)
+                        if (expandedSubscriptions.size > subscriptions.size) {
+                            subscriptions = expandedSubscriptions
+                            _uiState.update { current ->
+                                current.copy(
+                                    subscriptions = expandedSubscriptions,
+                                    canLoadMoreForYou = subscriptionOffset < expandedSubscriptions.size
+                                )
+                            }
+                        }
+                    }
+
+                    popularDeferred.start()
+                    liveDeferred.start()
+                    gamingDeferred.start()
+                    musicDeferred.start()
+
+                    val popularPage = popularDeferred.await()
+                    val livePage = liveDeferred.await()
+                    val gamingPage = gamingDeferred.await()
+                    val musicPage = musicDeferred.await()
+                    val (loadedShortsPage, loadedShortsQuery) = if (_uiState.value.shorts.size >= 10) {
+                        VideoPage(emptyList(), shortsNextToken) to shortsQuery
+                    } else {
+                        runCatching {
+                            loadShortsSearchPage(token, shortsQuery, maxResults = 24)
+                        }.getOrDefault(shortsDeferred.await() to shortsQuery)
+                    }
                     val shortsPage = loadedShortsPage
                     shortsQuery = loadedShortsQuery
                     val shortsRaw = shortsPage.items.distinctBy { it.id }.take(50)
                     val notificationsRaw = activitiesDeferred.await()
                     val activityVideosRaw = notificationsRaw.mapNotNull { it.video }
-                    // La sección Shorts no debe quedar limitada a suscripciones. La actividad
-                    // personal sirve como una señal secundaria; el descubrimiento público manda.
+                    // Shorts de Principal se construye primero con señales reales de la cuenta.
+                    // Nada de tendencias genéricas ni búsquedas por temas aleatorios delante de
+                    // los canales que el usuario realmente sigue.
                     val personalShortsRaw = mergeUniqueVideos(
+                        subscriptionFeedRaw.take(60),
+                        likedRaw.take(24),
+                        previous.localLikedVideos.take(20),
                         previous.history.take(24),
-                        likedRaw.take(18),
-                        previous.localLikedVideos.take(18),
-                        popularPage.items.take(18),
-                        activityVideosRaw.take(12),
-                        subscriptionFeedRaw.take(12)
-                    ).take(80)
+                        _uiState.value.shorts.take(30)
+                    ).take(120)
 
                     val allRaw = mergeUniqueVideos(
                         subscriptionFeedRaw,
@@ -992,7 +1183,10 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
                                 personalShortCandidates.filter(::looksLikeStrongShort),
                             limit = 48
                         ),
-                        previous,
+                        previous.copy(
+                            subscriptions = subscriptions,
+                            liked = likedRaw
+                        ),
                         40
                     )
                     val liked = enriched(likedRaw)
@@ -1007,11 +1201,10 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
 
                     val personalizedBase = mergeUniqueVideos(
                         normalSubscriptionFeed,
-                        normalActivityVideos,
-                        if (initialLoad) emptyList() else previous.personalized,
-                        liked.take(12),
-                        previous.history.take(10),
-                        popular
+                        liked.filterNot(::looksLikeShort).take(18),
+                        previous.localLikedVideos.filterNot(::looksLikeShort).take(12),
+                        previous.history.filterNot(::looksLikeShort).take(12),
+                        if (initialLoad) emptyList() else previous.personalized
                     ).take(MAX_HOME_ITEMS)
                     val previousPersonalizedIds = previous.personalized.asSequence()
                         .map { it.id }
@@ -1048,8 +1241,8 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
                         shorts
                     ).count { it.id !in previousRemoteIds }
 
-                    val profile = channelDetails?.profile ?: baseProfile
-                    val playlists = playlistsDeferred.await()
+                    val profile = accountProfile
+                    val playlists = accountPlaylists
                     val syncTime = System.currentTimeMillis()
 
                     withContext(Dispatchers.IO) {
@@ -1078,7 +1271,7 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
                             loadingMoreCategory = null,
                             shortsLoadingMore = false,
                             uploadsLoadingMore = false,
-                            canLoadMoreForYou = subscriptionOffset < subscriptions.size || popularNextToken.isNotBlank(),
+                            canLoadMoreForYou = subscriptionOffset < subscriptions.size,
                             canLoadMoreLive = liveNextToken.isNotBlank(),
                             canLoadMoreGaming = gamingNextToken.isNotBlank(),
                             canLoadMoreMusic = musicNextToken.isNotBlank(),
@@ -1399,31 +1592,23 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
             }
         }
 
-        // The pagination token is intentionally not persisted. After a cache-first app start
-        // it can therefore be blank even though the cached feed already has content. Fetching
-        // the first popular page on the first explicit load-more restores a valid next token;
-        // mergeUniqueVideos below prevents the cached first page from being duplicated.
-        val popularMorePage = if (subscriptionMore.size < 8) {
-            runCatching { api.mostPopularPage(token, pageToken = popularNextToken) }
-                .getOrDefault(VideoPage(emptyList(), popularNextToken))
-        } else {
-            VideoPage(emptyList(), popularNextToken)
-        }
-        popularNextToken = popularMorePage.nextPageToken
-
-        val raw = mergeUniqueVideos(subscriptionMore, popularMorePage.items)
-        val enriched = enrichVideosWithCache(token, raw)
-        val appended = mergeUniqueVideos(current.personalized, enriched).take(MAX_HOME_ITEMS)
-        val canContinue = subscriptionOffset < subscriptions.size || popularNextToken.isNotBlank()
-        val popularPageIds = popularMorePage.items.asSequence().map { it.id }.toHashSet()
+        // "Para ti" pagina únicamente sobre las suscripciones de la cuenta. No rellenar
+        // el final con Tendencias porque eso vuelve a introducir videos que el usuario no sigue.
+        val enriched = enrichVideosWithCache(token, subscriptionMore)
+        val normalVideos = enriched.filterNot(::looksLikeShort)
+        val moreShorts = enriched.filter(::looksLikeShort)
+        val appended = mergeUniqueVideos(current.personalized, normalVideos).take(MAX_HOME_ITEMS)
+        val shorts = prioritizeShortsForUser(
+            mergeUniqueVideos(current.shorts, moreShorts),
+            current,
+            40
+        )
+        val canContinue = subscriptionOffset < subscriptions.size
 
         _uiState.update {
             it.copy(
                 personalized = appended,
-                popular = mergeUniqueVideos(
-                    it.popular,
-                    enriched.filter { video -> video.id in popularPageIds }
-                ).take(MAX_HOME_ITEMS),
+                shorts = shorts,
                 loadingMoreCategory = null,
                 canLoadMoreForYou = canContinue
             )
@@ -2279,11 +2464,13 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
 
         val interests = (categoryTerms + frequentWords)
             .distinct()
-            .take(3)
+            .take(4)
         return if (interests.isEmpty()) {
-            "shorts virales humor gaming musica anime deportes animales curiosidades tecnologia español"
+            // Sin señales reales de la cuenta no hacer una búsqueda genérica que llene
+            // Principal con Shorts aleatorios.
+            ""
         } else {
-            "shorts ${interests.joinToString(" ")} virales humor tendencias español"
+            "shorts ${interests.joinToString(" ")}"
         }
     }
 
@@ -2306,8 +2493,7 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
             state.localLikedVideos.take(20),
             state.liked.take(20),
             state.personalized.take(35),
-            subscriptionVideos.take(20),
-            state.popular.take(20)
+            subscriptionVideos.take(30)
         ).take(100)
         val enriched = enrichVideosWithCache(token, raw)
             .filter(::looksLikeShort)
@@ -2350,43 +2536,28 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
         preferredQuery: String,
         maxResults: Int
     ): Pair<VideoPage, String> {
-        val normalizedPreferred = preferredQuery.trim().ifBlank {
-            "shorts virales humor gaming musica anime deportes animales curiosidades tecnologia español"
+        val normalizedPreferred = preferredQuery
+            .replace(Regex("""\s+"""), " ")
+            .trim()
+        if (normalizedPreferred.isBlank()) {
+            return VideoPage(emptyList()) to ""
         }
-        val queries = listOf(
-            "shorts virales humor animales curiosidades español",
-            "shorts deportes futbol comida viajes tecnologia español",
-            "shorts gaming musica baile retos español",
-            normalizedPreferred
-        )
-            .map { it.replace(Regex("""\s+"""), " ").trim() }
-            .filter { it.isNotBlank() }
-            .distinct()
-            .take(4)
 
-        val collected = ArrayList<VideoItem>(maxResults)
-        var primaryQuery = queries.first()
-        var primaryToken = ""
-        val perQuery = (maxResults / queries.size.coerceAtLeast(1)).coerceIn(12, 25)
-        queries.forEachIndexed { index, query ->
-            val page = runCatching {
-                api.searchVideosPage(
-                    token = token,
-                    query = query,
-                    shortOnly = true,
-                    maxResults = perQuery
-                )
-            }.getOrNull() ?: return@forEachIndexed
-            if (index == 0) {
-                primaryQuery = query
-                primaryToken = page.nextPageToken
-            }
-            collected += page.items.filter(::isAcceptableShort)
-        }
+        // Una sola búsqueda derivada de intereses reales. La versión anterior lanzaba cuatro
+        // búsquedas temáticas genéricas y terminaba metiendo humor/animales/deportes aunque la
+        // cuenta no mostrara esas señales.
+        val page = runCatching {
+            api.searchVideosPage(
+                token = token,
+                query = normalizedPreferred,
+                shortOnly = true,
+                maxResults = maxResults.coerceIn(12, 30)
+            )
+        }.getOrDefault(VideoPage(emptyList()))
         return VideoPage(
-            items = limitShortsPerChannel(collected.distinctBy { it.id }, maxResults),
-            nextPageToken = primaryToken
-        ) to primaryQuery
+            items = limitShortsPerChannel(page.items.filter(::isAcceptableShort), maxResults),
+            nextPageToken = page.nextPageToken
+        ) to normalizedPreferred
     }
 
     private fun buildDiverseShortFeed(
@@ -2395,25 +2566,15 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
         fallback: List<VideoItem>,
         limit: Int
     ): List<VideoItem> {
-        // DailyTube-style discovery: rotate themes before using personal signals,
-        // so one interest or subscription cannot fill the whole shelf.
+        // Señales personales primero. El descubrimiento solo completa huecos y nunca ocupa
+        // la primera posición por encima de Shorts de suscripciones/Me gusta/historial.
         val allDiscovered = mergeUniqueVideos(discovered, fallback)
-        val buckets = allDiscovered.groupBy(::shortDiscoveryCategory)
-        val themed = roundRobinVideos(
-            buckets["humor"].orEmpty(),
-            buckets["animals"].orEmpty(),
-            buckets["sports"].orEmpty(),
-            buckets["gaming"].orEmpty(),
-            buckets["music"].orEmpty(),
-            buckets["tech"].orEmpty(),
-            buckets["anime"].orEmpty(),
-            buckets["other"].orEmpty()
-        )
         val weighted = roundRobinVideos(
-            themed,
-            allDiscovered.drop(1),
-            personalized.take((limit / 4).coerceAtLeast(4)),
-            allDiscovered.drop(2)
+            personalized,
+            personalized.drop(1),
+            allDiscovered,
+            personalized.drop(2),
+            allDiscovered.drop(1)
         )
         return limitShortsPerChannel(weighted, limit)
     }
@@ -2464,18 +2625,18 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
             var score = 0
             val interestHits = interestTerms.count { it in text }
             score += interestHits * 5
-            if (video.channelId.isNotBlank() && state.subscriptions.any { it.id == video.channelId }) score += 3
-            if (state.localLikedVideos.any { it.channelId.isNotBlank() && it.channelId == video.channelId }) score += 2
-            if (listOf(
-                    " el ", " la ", " los ", " las ", " que ", " como ", " para ", " con ", " de ",
-                    "español", "latino", "hoy", "nuevo", "nueva", "música", "musica", "juego", "humor"
-                ).any { it in " $text " }) score += 4
-            if (listOf("anime", "donghua", "manhwa", "naruto", "minecraft", "free fire", "rap", "fútbol", "futbol", "perro", "gato").any { it in text }) score += 2
-            val genericEnglish = listOf(
+            if (video.channelId.isNotBlank() && state.subscriptions.any { it.id == video.channelId }) score += 9
+            if (state.localLikedVideos.any { it.channelId.isNotBlank() && it.channelId == video.channelId }) score += 5
+            if (state.liked.any { it.channelId.isNotBlank() && it.channelId == video.channelId }) score += 4
+            if (state.history.any { it.channelId.isNotBlank() && it.channelId == video.channelId }) score += 3
+            // No sumar gustos prefabricados (anime, humor, fútbol, etc.). Si un tema interesa,
+            // ya aparece en interestTerms porque proviene de esta cuenta. Esto evita que Geo
+            // Videos vuelva a imponer categorías genéricas por encima de las señales reales.
+            val genericSpam = listOf(
                 "watch till the end", "viral shorts", "funny video", "subscribe now",
                 "best moments", "daily vlog", "prank video", "random facts"
             ).any { it in text }
-            if (genericEnglish && interestHits == 0) score -= 6
+            if (genericSpam && interestHits == 0) score -= 6
             return score
         }
 
@@ -2562,8 +2723,9 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
         const val AUTO_REFRESH_INTERVAL_MS = 10L * 60L * 1000L
         const val MAX_HISTORY_ITEMS_IN_MEMORY = 300
         const val FIRST_RELATED_PAGE = "__first__"
-        const val INITIAL_SUBSCRIPTION_BATCH = 4
-        const val SUBSCRIPTION_PAGE_SIZE = 4
+        const val FAST_REFRESH_SUBSCRIPTION_BATCH = 4
+        const val INITIAL_SUBSCRIPTION_BATCH = 8
+        const val SUBSCRIPTION_PAGE_SIZE = 8
         const val GEO_WATCH_LATER_TITLE = "Geo Videos - Ver después"
         const val MAX_HOME_ITEMS = 60
     }

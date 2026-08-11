@@ -1,0 +1,45 @@
+GEO VIDEOS V50.5.0 / VERSION CODE 506
+Fecha: 2026-08-11
+
+OBJETIVO DE ESTA VERSION
+Corregir el feed inicial incorrecto, el refresh lento/feo, la sincronizacion de datos de YouTube y el mini reproductor grande detectados en la prueba V50.4.
+
+CAMBIOS APLICADOS
+1. PRINCIPAL / PARA TI
+- "Para ti" ya no usa Tendencias como fallback.
+- Al actualizar tampoco se inyecta mostPopular en el feed personal.
+- Se invalida una sola vez el cache V50.4 contaminado con descubrimiento generico.
+- Se reutilizan Me gusta e historial de la cuenta como semilla inmediata mientras llega la red.
+- Se cargan publicaciones recientes de canales suscritos antes de las categorias publicas.
+- Shorts se mantiene como primera fila de Principal y los videos normales quedan debajo.
+- El feed principal deja de insertar los videos subidos por el propio usuario como recomendaciones.
+- Se eliminaron preferencias tematicas prefabricadas del ranking de Shorts; ahora pesan las suscripciones, Me gusta, historial y terminos derivados de la cuenta.
+
+2. ACTUALIZACION
+- Un solo indicador de refresh, mas pequeno y sin desplazar todo el RecyclerView.
+- La pasada visible usa las suscripciones ya sincronizadas cuando existen.
+- La consulta visible de canales tiene una ventana maxima de 5.5 s; el trabajo pesado continua silenciosamente.
+- Duraciones de videos se consultan por bloques en paralelo para reducir la primera carga.
+- Tendencias, En vivo, Juegos y Musica se inician solo despues de que Principal ya es util.
+
+3. SINCRONIZACION CON YOUTUBE
+- youtube.readonly sigue incluido en la autorizacion principal.
+- Suscripciones se paginan hasta 4 paginas (hasta 200 elementos) y playlists hasta 4 paginas.
+- Suscripciones, Me gusta, subidos y perfil se publican antes de enriquecer el feed.
+- Playlists de la cuenta se publican antes de cargar categorias publicas secundarias.
+- La autorizacion youtube.force-ssl para acciones de escritura queda fijada al mismo correo Google ya verificado, evitando que otra cuenta del telefono se use por error.
+- La pantalla Cuenta muestra contadores de suscripciones, Me gusta, listas y subidos para verificar visualmente la sincronizacion.
+- El historial oficial de YouTube NO se falsea: Geo Videos conserva un historial local persistente por cuenta, porque la API publica no permite escribir/leer el historial oficial como si fuera la app de YouTube.
+
+4. REPRODUCTOR
+- El mini reproductor de barra completa fue eliminado.
+- Nuevo mini reproductor flotante circular de 72 dp, con video/miniatura, play cuando esta pausado y X compacta para cerrar.
+- La transicion al mini reproductor evita superponer dos superficies de video.
+- Se conserva TextureView para evitar que el video atraviese capas durante scroll/transiciones.
+- Se conservan los selectores de calidad y velocidad, fallbacks de stream y la X de la notificacion incorporados en V50.4.
+
+VALIDACIONES LOCALES
+- Balance lexico de (), [] y {} correcto en los 21 archivos Kotlin del proyecto.
+- Los 28 XML de recursos se parsean correctamente.
+- Integridad del ZIP se verifica despues de generarlo.
+- Se intento ejecutar :app:compileDebugKotlin, pero este entorno no puede resolver services.gradle.org y no pudo descargar Gradle 8.13. Por tanto NO se afirma una compilacion Android completa local; GitHub Actions debe realizar esa comprobacion final.

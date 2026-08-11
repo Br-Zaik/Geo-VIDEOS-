@@ -90,13 +90,13 @@ internal fun RecyclerHomeFeed(
             val indicator = ProgressBar(context).apply {
                 visibility = View.GONE
                 alpha = 0f
-                scaleX = 0.72f
-                scaleY = 0.72f
+                scaleX = 0.70f
+                scaleY = 0.70f
             }
             root.addView(
                 indicator,
-                FrameLayout.LayoutParams(dp(context, 42), dp(context, 42), Gravity.TOP or Gravity.CENTER_HORIZONTAL).apply {
-                    topMargin = dp(context, 3)
+                FrameLayout.LayoutParams(dp(context, 34), dp(context, 34), Gravity.TOP or Gravity.CENTER_HORIZONTAL).apply {
+                    topMargin = dp(context, 5)
                 }
             )
 
@@ -124,16 +124,18 @@ internal fun RecyclerHomeFeed(
                             runtime.pullDistance = (raw * 0.28f).coerceAtMost(48f * density)
                             // Mantener el feed fijo. Solo el indicador acompana levemente el gesto,
                             // evitando que toda la lista se desplace y se vea como una capa suelta.
-                            indicator.visibility = View.VISIBLE
-                            val pullProgress = (runtime.pullDistance / (38f * density)).coerceIn(0f, 1f)
-                            indicator.alpha = pullProgress.coerceAtLeast(0.18f)
-                            indicator.translationY = (18f * density * pullProgress)
+                            val pullProgress = (runtime.pullDistance / (34f * density)).coerceIn(0f, 1f)
+                            if (runtime.pullDistance >= 10f * density) {
+                                indicator.visibility = View.VISIBLE
+                                indicator.alpha = pullProgress
+                                indicator.translationY = (8f * density * pullProgress)
+                            }
                         }
                     }
                     MotionEvent.ACTION_UP -> {
                         val shouldRefresh = runtime.pullEligible &&
                             !runtime.refreshing &&
-                            runtime.pullDistance >= 42f * density
+                            runtime.pullDistance >= 36f * density
                         runtime.pullDistance = 0f
                         runtime.pullEligible = false
                         if (shouldRefresh) {

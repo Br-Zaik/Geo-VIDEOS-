@@ -469,20 +469,22 @@ internal fun UnifiedPlayerOverlay(
         val screenWidthPx = with(density) { maxWidth.toPx() }
         val screenHeightPx = with(density) { availableMaxHeight.toPx() }
         val fullPlayerHeightPx = screenWidthPx * 9f / 16f
-        val miniWidthPx = with(density) { 128.dp.toPx() }
-        val miniHeightPx = miniWidthPx * 9f / 16f
-        val miniBottomClearancePx = with(density) { 78.dp.toPx() }
-        val miniTopPx = (screenHeightPx - miniBottomClearancePx - miniHeightPx).coerceAtLeast(1f)
-        val miniScale = (miniWidthPx / screenWidthPx).coerceIn(0.18f, 1f)
+        val miniSizePx = with(density) { 72.dp.toPx() }
+        val miniMarginPx = with(density) { 12.dp.toPx() }
+        val miniBottomClearancePx = with(density) { 88.dp.toPx() }
+        val miniLeftPx = (screenWidthPx - miniMarginPx - miniSizePx).coerceAtLeast(1f)
+        val miniTopPx = (screenHeightPx - miniBottomClearancePx - miniSizePx).coerceAtLeast(1f)
+        val miniScaleX = (miniSizePx / screenWidthPx).coerceIn(0.16f, 1f)
+        val miniScaleY = (miniSizePx / fullPlayerHeightPx).coerceIn(0.16f, 1f)
         val velocityThresholdPx = with(density) { 920.dp.toPx() }
         val p = transition.coerceIn(0f, 1f)
         // Mantener un fondo opaco durante casi toda la minimizacion evita ver Principal,
         // Info, Mix y relacionados mezclados entre si. El detalle desaparece solo al final,
         // cuando el mini reproductor ya esta practicamente colocado.
         val detailsAlpha = when {
-            p <= 0.86f -> 1f
-            p >= 0.985f -> 0f
-            else -> 1f - ((p - 0.86f) / 0.125f)
+            p <= 0.72f -> 1f
+            p >= 0.90f -> 0f
+            else -> 1f - ((p - 0.72f) / 0.18f)
         }.coerceIn(0f, 1f)
 
         val dragState = rememberDraggableState { delta: Float ->
@@ -508,7 +510,7 @@ internal fun UnifiedPlayerOverlay(
             }
         )
 
-        if (!fullscreen && p < 0.999f) {
+        if (!fullscreen && p < 0.91f) {
             Surface(
                 modifier = Modifier
                     .fillMaxSize()
@@ -577,85 +579,102 @@ internal fun UnifiedPlayerOverlay(
             }
         }
 
-        val miniVisible = !fullscreen && (p > 0.82f || (!expanded && !dragging))
+        val miniVisible = !fullscreen && (p >= 0.965f || (!expanded && !dragging && !settling))
         if (miniVisible) {
-            Surface(
+            val miniAlpha = ((p - 0.965f) / 0.035f).coerceIn(0f, 1f)
+            Box(
                 modifier = Modifier
-                    .offset { IntOffset(0, miniTopPx.roundToInt()) }
-                    .fillMaxWidth()
-                    .height(with(density) { miniHeightPx.toDp() })
-                    .zIndex(70f)
-                    .graphicsLayer {
-                        alpha = ((p - 0.82f) / 0.18f).coerceIn(0f, 1f)
-                    }
-                    .then(dragModifier),
-                color = MaterialTheme.colorScheme.surface,
-                tonalElevation = 6.dp,
-                shadowElevation = 8.dp
+                    .offset { IntOffset(miniLeftPx.roundToInt(), miniTopPx.roundToInt()) }
+                    .size(with(density) { miniSizePx.toDp() })
+                    .zIndex(90f)
+                    .graphicsLayer { alpha = miniAlpha }
+                    .then(dragModifier)
             ) {
-                Row(
-                    modifier = Modifier.fillMaxSize(),
-                    verticalAlignment = Alignment.CenterVertically
+                Surface(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .clickable(enabled = !dragging && !settling) { settle(0f, fast = true) },
+                    shape = CircleShape,
+                    color = Color.Black,
+                    tonalElevation = 8.dp,
+                    shadowElevation = 10.dp
                 ) {
-                    Spacer(Modifier.width(with(density) { miniWidthPx.toDp() }))
-                    Column(
-                        modifier = Modifier
-                            .weight(1f)
-                            .clickable { settle(0f, fast = true) }
-                            .padding(horizontal = 10.dp),
-                        verticalArrangement = Arrangement.Center
-                    ) {
-                        Text(
-                            video.title,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            fontWeight = FontWeight.SemiBold
+                    Box(Modifier.fillMaxSize()) {
+                        LiteThumbnail(
+                            url = video.thumbnailUrl,
+                            description = video.title,
+                            modifier = Modifier.fillMaxSize(),
+                            widthPx = 320,
+                            heightPx = 320,
+                            contentScale = ContentScale.Crop
                         )
-                        Text(
-                            video.channelTitle,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                    IconButton(onClick = {
-                        if (playback.isPlaying) playerConnection.pause() else playerConnection.play()
-                    }) {
-                        Icon(
-                            if (playback.isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
-                            if (playback.isPlaying) "Pausar" else "Reproducir"
-                        )
-                    }
-                    IconButton(onClick = {
-                        saveProgress()
-                        onClose()
-                    }) {
-                        Icon(Icons.Default.Close, "Cerrar")
+                        if (
+                            p >= 0.97f &&
+                            controller != null &&
+                            controller?.currentMediaItem?.mediaId == video.id &&
+                            !playback.connecting &&
+                            !playback.resolving
+                        ) {
+                            key(floatingSurfaceGeneration, "mini-bubble") {
+                                LitePlayerView(
+                                    controller = controller!!,
+                                    modifier = Modifier.fillMaxSize(),
+                                    useController = false,
+                                    resizeMode = AspectRatioFrameLayout.RESIZE_MODE_ZOOM,
+                                    useTextureView = true,
+                                    gesturesEnabled = false
+                                )
+                            }
+                        }
+                        if (!playback.isPlaying) {
+                            Surface(
+                                modifier = Modifier
+                                    .align(Alignment.Center)
+                                    .size(30.dp),
+                                shape = CircleShape,
+                                color = Color.Black.copy(alpha = 0.58f)
+                            ) {
+                                IconButton(
+                                    onClick = { playerConnection.play() },
+                                    modifier = Modifier.fillMaxSize()
+                                ) {
+                                    Icon(
+                                        Icons.Default.PlayArrow,
+                                        contentDescription = "Reproducir",
+                                        tint = Color.White,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                }
+                            }
+                        }
                     }
                 }
-            }
 
-            if (progressState.durationMs > 0L) {
-                LinearProgressIndicator(
-                    progress = {
-                        (progressState.positionMs.toFloat() / progressState.durationMs.toFloat())
-                            .coerceIn(0f, 1f)
-                    },
+                Surface(
                     modifier = Modifier
-                        .offset {
-                            IntOffset(
-                                0,
-                                (miniTopPx + miniHeightPx - with(density) { 3.dp.toPx() }).roundToInt()
-                            )
-                        }
-                        .fillMaxWidth()
-                        .height(3.dp)
-                        .zIndex(73f)
-                        .graphicsLayer {
-                            alpha = ((p - 0.82f) / 0.18f).coerceIn(0f, 1f)
-                        }
-                )
+                        .align(Alignment.TopEnd)
+                        .offset(x = 5.dp, y = (-5).dp)
+                        .size(24.dp)
+                        .zIndex(92f),
+                    shape = CircleShape,
+                    color = Color.Black.copy(alpha = 0.82f),
+                    shadowElevation = 4.dp
+                ) {
+                    IconButton(
+                        onClick = {
+                            saveProgress()
+                            onClose()
+                        },
+                        modifier = Modifier.fillMaxSize()
+                    ) {
+                        Icon(
+                            Icons.Default.Close,
+                            contentDescription = "Cerrar reproductor",
+                            tint = Color.White,
+                            modifier = Modifier.size(15.dp)
+                        )
+                    }
+                }
             }
         }
 
@@ -667,13 +686,15 @@ internal fun UnifiedPlayerOverlay(
                 .height(with(density) { fullPlayerHeightPx.toDp() })
                 .zIndex(if (p >= 0.82f) 72f else 50f)
                 .graphicsLayer {
+                    translationX = miniLeftPx * p
                     translationY = miniTopPx * p
-                    scaleX = 1f - ((1f - miniScale) * p)
-                    scaleY = 1f - ((1f - miniScale) * p)
+                    scaleX = 1f - ((1f - miniScaleX) * p)
+                    scaleY = 1f - ((1f - miniScaleY) * p)
                     transformOrigin = TransformOrigin(0f, 0f)
-                    if (p >= 0.97f) {
+                    alpha = if (p <= 0.90f) 1f else (1f - ((p - 0.90f) / 0.07f)).coerceIn(0f, 1f)
+                    if (p >= 0.86f) {
                         clip = true
-                        shape = RoundedCornerShape(8.dp)
+                        shape = CircleShape
                         shadowElevation = with(density) { 6.dp.toPx() }
                     } else {
                         clip = false
@@ -682,7 +703,7 @@ internal fun UnifiedPlayerOverlay(
                 }
         }
 
-        Box(
+        if (fullscreen || p < 0.97f) Box(
             modifier = playerLayerModifier
                 .background(Color.Black)
                 .then(if (fullscreen) Modifier else dragModifier)

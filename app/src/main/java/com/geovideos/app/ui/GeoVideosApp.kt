@@ -92,6 +92,7 @@ import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Subscriptions
+import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material.icons.filled.Timer
 import androidx.compose.material.icons.filled.VideoLibrary
 import androidx.compose.material.icons.filled.WatchLater
@@ -293,7 +294,7 @@ fun GeoVideosApp(
         delay(1_100L)
         if (state.section != MainSection.HOME || selectedVideo != null || state.refreshing) return@LaunchedEffect
         val candidates = when (state.homeCategory) {
-            HomeCategory.FOR_YOU -> state.personalized.ifEmpty { state.popular }
+            HomeCategory.FOR_YOU -> state.personalized
             HomeCategory.LIVE -> state.live
             HomeCategory.GAMING -> state.gaming
             HomeCategory.MUSIC -> state.music
@@ -689,7 +690,7 @@ private fun MainShell(
     ) { padding ->
         val contentModifier = Modifier
             .padding(padding)
-            .padding(bottom = if (miniPlayerVisible) 80.dp else 0.dp)
+            .padding(bottom = if (miniPlayerVisible) 8.dp else 0.dp)
         when (state.section) {
             MainSection.HOME -> LiteHomeScreen(
                 modifier = contentModifier,
@@ -827,6 +828,13 @@ private fun MainShell(
             MainSection.ACCOUNT -> AccountScreen(
                 modifier = contentModifier,
                 profile = state.profile,
+                subscriptionsCount = state.subscriptions.size,
+                likedCount = state.liked.size,
+                playlistsCount = state.playlists.size,
+                uploadsCount = state.uploads.size,
+                lastSyncMs = state.lastSyncMs,
+                youtubeWriteSyncEnabled = state.youtubeSyncEnabled,
+                youtubeWriteSyncAuthorized = state.youtubeSyncAuthorized,
                 autoplay = state.autoplay,
                 dataSaver = state.dataSaver,
                 notificationsEnabled = state.notificationsEnabled,
@@ -1465,6 +1473,13 @@ private fun ShortcutCard(
 private fun AccountScreen(
     modifier: Modifier,
     profile: GoogleProfile?,
+    subscriptionsCount: Int,
+    likedCount: Int,
+    playlistsCount: Int,
+    uploadsCount: Int,
+    lastSyncMs: Long,
+    youtubeWriteSyncEnabled: Boolean,
+    youtubeWriteSyncAuthorized: Boolean,
     autoplay: Boolean,
     dataSaver: Boolean,
     notificationsEnabled: Boolean,
@@ -1486,7 +1501,39 @@ private fun AccountScreen(
         Text(profile?.channelTitle?.ifBlank { profile.name } ?: "Cuenta", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 14.dp))
         Text(profile?.email.orEmpty(), color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 4.dp))
 
-        Spacer(Modifier.height(24.dp))
+        Spacer(Modifier.height(18.dp))
+        OutlinedCard(modifier = Modifier.fillMaxWidth()) {
+            Column(modifier = Modifier.fillMaxWidth().padding(14.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.Sync, null, tint = MaterialTheme.colorScheme.primary)
+                    Spacer(Modifier.width(9.dp))
+                    Text("Datos de YouTube", fontWeight = FontWeight.Bold)
+                }
+                Text(
+                    if (lastSyncMs > 0L) "Lectura automática conectada a esta cuenta" else "Sincronizando datos de esta cuenta…",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 7.dp)
+                )
+                Text(
+                    "$subscriptionsCount suscripciones · $likedCount Me gusta · $playlistsCount listas · $uploadsCount subidos",
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.padding(top = 7.dp)
+                )
+                Text(
+                    when {
+                        youtubeWriteSyncAuthorized -> "Acciones de YouTube autorizadas y sincronizadas."
+                        youtubeWriteSyncEnabled -> "Las acciones de YouTube se renovarán cuando vuelvas a usarlas."
+                        else -> "Me gusta, suscribirse y listas pedirán permiso solo cuando sea necesario."
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 5.dp)
+                )
+            }
+        }
+
+        Spacer(Modifier.height(18.dp))
         SettingSwitch("Reproducción automática", "Inicia el video y pasa al siguiente al terminar", autoplay, onAutoplayChange)
         SettingSwitch("Ahorro de datos", "Prioriza una calidad menor y reduce el consumo de red", dataSaver, onDataSaverChange)
         SettingSwitch("Avisos en la app", "Sincroniza actividad disponible para la campana", notificationsEnabled, onNotificationsChange)

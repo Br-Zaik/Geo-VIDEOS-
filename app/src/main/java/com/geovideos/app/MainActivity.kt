@@ -329,9 +329,15 @@ class MainActivity : ComponentActivity() {
 
     private fun requestYouTubeSyncAuthorization(allowResolution: Boolean) {
         if (allowResolution) viewModel.beginYouTubeSyncAuthorization()
-        val request = AuthorizationRequest.builder()
+        val requestBuilder = AuthorizationRequest.builder()
             .setRequestedScopes(listOf(Scope(YOUTUBE_FORCE_SSL_SCOPE)))
-            .build()
+        // Las acciones de escritura deben autorizarse sobre la MISMA cuenta ya verificada.
+        // Sin esto Google podía reutilizar otra cuenta elegible del teléfono y la sincronización
+        // de suscripciones/Me gusta/listas quedaba desligada de la cuenta mostrada por Geo Videos.
+        viewModel.connectedAccountEmail()
+            .takeIf { it.isNotBlank() }
+            ?.let { requestBuilder.setAccount(Account(it, "com.google")) }
+        val request = requestBuilder.build()
 
         Identity.getAuthorizationClient(this)
             .authorize(request)

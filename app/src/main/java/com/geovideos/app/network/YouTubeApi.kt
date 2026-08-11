@@ -9,6 +9,9 @@ import com.geovideos.app.data.PlaylistItem
 import com.geovideos.app.data.VideoItem
 import com.geovideos.app.data.VideoDetails
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.io.BufferedReader
@@ -374,49 +377,74 @@ class YouTubeApi {
         }
     }
 
-    suspend fun subscriptions(token: String): List<ChannelItem> = withContext(Dispatchers.IO) {
-        val json = requestJson(
-            "https://www.googleapis.com/youtube/v3/subscriptions?part=snippet&mine=true&maxResults=50&order=relevance",
-            token
-        )
-        val items = json.optJSONArray("items") ?: return@withContext emptyList()
-        buildList {
-            for (index in 0 until items.length()) {
-                val item = items.optJSONObject(index) ?: continue
-                val snippet = item.optJSONObject("snippet") ?: continue
-                val resource = snippet.optJSONObject("resourceId")
-                add(
-                    ChannelItem(
-                        id = resource?.optString("channelId").orEmpty(),
+    suspend fun subscriptions(token: String, maxPages: Int = 4): List<ChannelItem> = withContext(Dispatchers.IO) {
+        // YouTube returns at most 50 subscriptions per page. Reading only the first page made
+        // Principal depend on a tiny and incomplete slice of the real account. Paginate a
+        // reasonable amount so the home feed can rotate through the user's actual channels.
+        val result = ArrayList<ChannelItem>(100)
+        var pageToken = ""
+        var pageCount = 0
+        do {
+            val page = pageToken.takeIf { it.isNotBlank() }
+                ?.let { "&pageToken=${encode(it)}" }
+                .orEmpty()
+            val json = requestJson(
+                "https://www.googleapis.com/youtube/v3/subscriptions?part=snippet&mine=true&maxResults=50&order=relevance$page",
+                token
+            )
+            val items = json.optJSONArray("items")
+            if (items != null) {
+                for (index in 0 until items.length()) {
+                    val item = items.optJSONObject(index) ?: continue
+                    val snippet = item.optJSONObject("snippet") ?: continue
+                    val resource = snippet.optJSONObject("resourceId")
+                    val channelId = resource?.optString("channelId").orEmpty()
+                    if (channelId.isBlank()) continue
+                    result += ChannelItem(
+                        id = channelId,
                         title = snippet.optString("title", "Canal").decodeHtml(),
                         thumbnailUrl = bestThumbnail(snippet),
                         description = snippet.optString("description", "").decodeHtml()
                     )
-                )
+                }
             }
-        }
+            pageToken = json.optString("nextPageToken")
+            pageCount += 1
+        } while (pageToken.isNotBlank() && pageCount < maxPages.coerceIn(1, 4))
+        result.distinctBy { it.id }
     }
 
     suspend fun playlists(token: String): List<PlaylistItem> = withContext(Dispatchers.IO) {
-        val json = requestJson(
-            "https://www.googleapis.com/youtube/v3/playlists?part=snippet,contentDetails&mine=true&maxResults=25",
-            token
-        )
-        val items = json.optJSONArray("items") ?: return@withContext emptyList()
-        buildList {
-            for (index in 0 until items.length()) {
-                val item = items.optJSONObject(index) ?: continue
-                val snippet = item.optJSONObject("snippet") ?: continue
-                add(
-                    PlaylistItem(
-                        id = item.optString("id"),
+        val result = ArrayList<PlaylistItem>(50)
+        var pageToken = ""
+        var pageCount = 0
+        do {
+            val page = pageToken.takeIf { it.isNotBlank() }
+                ?.let { "&pageToken=${encode(it)}" }
+                .orEmpty()
+            val json = requestJson(
+                "https://www.googleapis.com/youtube/v3/playlists?part=snippet,contentDetails&mine=true&maxResults=50$page",
+                token
+            )
+            val items = json.optJSONArray("items")
+            if (items != null) {
+                for (index in 0 until items.length()) {
+                    val item = items.optJSONObject(index) ?: continue
+                    val snippet = item.optJSONObject("snippet") ?: continue
+                    val playlistId = item.optString("id")
+                    if (playlistId.isBlank()) continue
+                    result += PlaylistItem(
+                        id = playlistId,
                         title = snippet.optString("title", "Lista").decodeHtml(),
                         thumbnailUrl = bestThumbnail(snippet),
                         itemCount = item.optJSONObject("contentDetails")?.optInt("itemCount") ?: 0
                     )
-                )
+                }
             }
-        }
+            pageToken = json.optString("nextPageToken")
+            pageCount += 1
+        } while (pageToken.isNotBlank() && pageCount < 4)
+        result.distinctBy { it.id }
     }
 
     suspend fun playlistVideos(
@@ -555,27 +583,44 @@ class YouTubeApi {
 
     suspend fun enrichVideoDurations(token: String, videos: List<VideoItem>): List<VideoItem> = withContext(Dispatchers.IO) {
         if (videos.isEmpty()) return@withContext videos
-        val durations = LinkedHashMap<String, Long>()
-        videos.asSequence()
+        val idChunks = videos.asSequence()
             .filter { it.durationMs <= 0L && it.mediaKind == com.geovideos.app.data.MediaKind.YOUTUBE }
             .map { it.id }
             .filter { it.isNotBlank() }
             .distinct()
             .chunked(50)
-            .forEach { ids ->
-                val json = requestJson(
-                    "https://www.googleapis.com/youtube/v3/videos?part=contentDetails&id=${ids.joinToString(",")}&maxResults=50",
-                    token
-                )
-                val items = json.optJSONArray("items") ?: return@forEach
-                for (index in 0 until items.length()) {
-                    val item = items.optJSONObject(index) ?: continue
-                    val id = item.optString("id")
-                    val iso = item.optJSONObject("contentDetails")?.optString("duration").orEmpty()
-                    val durationMs = runCatching { java.time.Duration.parse(iso).toMillis() }.getOrDefault(0L)
-                    if (id.isNotBlank() && durationMs > 0L) durations[id] = durationMs
+            .toList()
+        if (idChunks.isEmpty()) return@withContext videos
+
+        // Principal necesita la duración para separar Shorts de videos normales. Las versiones
+        // anteriores consultaban cada bloque de 50 de forma secuencial y alargaban mucho la
+        // primera carga. Ejecutar los pocos bloques en paralelo reduce ese tiempo sin cambiar
+        // la información que se solicita a YouTube.
+        val durationMaps = coroutineScope {
+            idChunks.map { ids ->
+                async {
+                    val found = LinkedHashMap<String, Long>()
+                    val json = requestJson(
+                        "https://www.googleapis.com/youtube/v3/videos?part=contentDetails&id=${ids.joinToString(",")}&maxResults=50",
+                        token
+                    )
+                    val items = json.optJSONArray("items")
+                    if (items != null) {
+                        for (index in 0 until items.length()) {
+                            val item = items.optJSONObject(index) ?: continue
+                            val id = item.optString("id")
+                            val iso = item.optJSONObject("contentDetails")?.optString("duration").orEmpty()
+                            val durationMs = runCatching { java.time.Duration.parse(iso).toMillis() }
+                                .getOrDefault(0L)
+                            if (id.isNotBlank() && durationMs > 0L) found[id] = durationMs
+                        }
+                    }
+                    found
                 }
-            }
+            }.awaitAll()
+        }
+        val durations = LinkedHashMap<String, Long>()
+        durationMaps.forEach { durations.putAll(it) }
         videos.map { video ->
             val duration = durations[video.id] ?: video.durationMs
             if (duration == video.durationMs) video else video.copy(durationMs = duration)
@@ -668,8 +713,8 @@ class YouTubeApi {
     private fun requestJson(url: String, token: String): JSONObject {
         val connection = URL(url).openConnection() as HttpURLConnection
         connection.requestMethod = "GET"
-        connection.connectTimeout = 20_000
-        connection.readTimeout = 25_000
+        connection.connectTimeout = 8_000
+        connection.readTimeout = 12_000
         connection.setRequestProperty("Authorization", "Bearer $token")
         connection.setRequestProperty("Accept", "application/json")
         connection.setRequestProperty("Accept-Language", "es-PE,es;q=0.9")
@@ -715,8 +760,8 @@ class YouTubeApi {
     ): String {
         val connection = URL(url).openConnection() as HttpURLConnection
         connection.requestMethod = method
-        connection.connectTimeout = 20_000
-        connection.readTimeout = 25_000
+        connection.connectTimeout = 8_000
+        connection.readTimeout = 12_000
         connection.setRequestProperty("Authorization", "Bearer $token")
         connection.setRequestProperty("Accept", "application/json")
         connection.setRequestProperty("Accept-Language", "es-PE,es;q=0.9")

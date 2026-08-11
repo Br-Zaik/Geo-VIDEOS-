@@ -10,6 +10,22 @@ class GeoVideosRepository(context: Context) {
 
     init {
         migrateLegacyAccountState()
+        migrateAccountFeedSchema()
+    }
+
+    private fun migrateAccountFeedSchema() {
+        val current = preferences.getInt(KEY_FEED_SCHEMA, 0)
+        if (current >= FEED_SCHEMA_VERSION) return
+        // V50.4 podía guardar Tendencias y descubrimiento genérico dentro de "Para ti".
+        // Invalidar solo ese cache remoto una vez; no tocar la cuenta, historial, descargas,
+        // ajustes ni acciones locales.
+        preferences.edit()
+            .remove(KEY_PERSONALIZED)
+            .remove(KEY_POPULAR)
+            .remove(KEY_SHORTS)
+            .remove(KEY_LAST_SYNC)
+            .putInt(KEY_FEED_SCHEMA, FEED_SCHEMA_VERSION)
+            .apply()
     }
 
     fun loadHistory(): List<VideoItem> {
@@ -568,6 +584,8 @@ class GeoVideosRepository(context: Context) {
 
     private companion object {
         const val KEY_HISTORY = "history"
+        const val FEED_SCHEMA_VERSION = 2
+        const val KEY_FEED_SCHEMA = "feed_schema"
         const val KEY_HISTORY_ACCOUNT_PREFIX = "history_account_"
         const val KEY_WATCH_LATER = "watch_later"
         const val KEY_DOWNLOADS = "downloads"

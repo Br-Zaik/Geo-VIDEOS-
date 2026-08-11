@@ -51,7 +51,11 @@ internal fun LiteHomeScreen(
 ) {
     val baseVideos = remember(category, personalized, popular, live, gaming, music) {
         when (category) {
-            HomeCategory.FOR_YOU -> personalized.ifEmpty { popular }
+            // Nunca sustituir "Para ti" por Tendencias. En una cuenta recién conectada eso
+            // mostraba videos ajenos durante la sincronización y daba la impresión de que la
+            // cuenta equivocada estaba activa. Si todavía no hay feed personal, se muestran
+            // skeletons hasta que lleguen señales reales de la cuenta.
+            HomeCategory.FOR_YOU -> personalized
             HomeCategory.LIVE -> live
             HomeCategory.GAMING -> gaming
             HomeCategory.MUSIC -> music
@@ -61,15 +65,9 @@ internal fun LiteHomeScreen(
         if (category != HomeCategory.FOR_YOU) emptyList()
         else (shorts + baseVideos.filter(::looksLikeHomeShort)).distinctBy { it.id }.take(18)
     }
-    val mixVideo = remember(category, music, personalized, popular, loading) {
-        if (category != HomeCategory.FOR_YOU) null
-        else music.firstOrNull()
-            ?: personalized.firstOrNull(::looksLikeMusicForMix)
-            ?: popular.firstOrNull(::looksLikeMusicForMix)
-            // Durante la primera carga no inventar un Mix con cualquier video solo
-            // para llenar el hueco. Esperar a que exista una senal musical real.
-            ?: if (!loading) personalized.firstOrNull() ?: popular.firstOrNull() else null
-    }
+    // Principal debe empezar exactamente con Shorts arriba y videos debajo. El bloque Mix
+    // pertenece al contexto del reproductor y no debe interrumpir el primer feed de la cuenta.
+    val mixVideo: VideoItem? = remember(category) { null }
     val videos = remember(baseVideos, homeShorts, mixVideo) {
         val hiddenIds = buildSet {
             homeShorts.forEach { add(it.id) }
