@@ -1,0 +1,31 @@
+GEO VIDEOS V50.8.0 - PLAYER COMPACTO / MIX / DESCARGAS
+
+Base: V50.7.1 compilacion corregida.
+VersionCode: 510
+VersionName: 50.8.0
+
+Cambios aplicados:
+- Reproductor 16:9 conservado, con controles superpuestos mucho mas compactos.
+- Eliminado el thumb vertical grande del progreso: ahora usa linea fina y circulo pequeno.
+- Controles centrales reducidos y con anterior / play-pausa / siguiente.
+- Calidad, velocidad y menu superior reducidos.
+- Spinner de carga reducido.
+- Controles siguen ocultandose automaticamente mientras reproduce.
+- Mix ya no aparece falsamente en todos los videos: solo cuando el video fue abierto como Mix.
+- En Principal se puede crear un Mix solo a partir de una senal musical real del feed personal, nunca desde Tendencias.
+- Al abrir un Mix, se muestra una cabecera compacta y la lista inmediatamente debajo.
+- Videos de Mix/relacionados cambiados a filas compactas con miniatura, titulo, canal, duracion y boton de descarga a la derecha.
+- El boton de descarga de cada fila abre selector de calidad para ESE video sin cambiar la reproduccion actual.
+- Titulo, canal, acciones y descripcion del reproductor normal reducidos para ocupar menos pantalla.
+- Se mantiene TextureView, mini reproductor en barra, historial, cuenta Google y sincronizacion existentes.
+
+Validaciones locales:
+- Delimitadores Kotlin balanceados en todos los .kt.
+- 28 XML parseados correctamente.
+- Sin anotaciones consecutivas duplicadas.
+- Recurso ic_player_download presente.
+- Se ejecuto kotlinc como comprobacion sintactica parcial; sin errores de parser en los archivos modificados. No puede resolver Android/Compose sin classpath del proyecto.
+
+IMPORTANTE:
+- No se genero APK local porque este entorno no dispone de Gradle/Android completo.
+- La compilacion final debe verificarse en GitHub Actions.

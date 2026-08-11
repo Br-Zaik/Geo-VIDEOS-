@@ -394,8 +394,9 @@ private class MixHolder(
     init { card.setOnClickListener { current?.let(onPlay) } }
 
     fun bind(video: VideoItem, onPlay: (VideoItem) -> Unit) {
-        current = video
-        card.setOnClickListener { onPlay(video) }
+        val mixVideo = video.copy(isMix = true)
+        current = mixVideo
+        card.setOnClickListener { onPlay(mixVideo) }
         card.title.text = "Mix: ${video.title}"
         card.subtitle.text = buildString {
             append(video.channelTitle.ifBlank { "Selección automática" })

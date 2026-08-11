@@ -138,7 +138,8 @@ internal data class PlayerHeaderData(
     val publishedAt: String,
     val qualityLabel: String = "Calidad",
     val audioOnly: Boolean = false,
-    val mixAvailable: Boolean = false
+    val mixAvailable: Boolean = false,
+    val mixCount: Int = 0
 )
 
 @Composable
@@ -160,6 +161,7 @@ internal fun NativePlayerDetailsList(
     onOpenChannel: (ChannelItem) -> Unit,
     onPlayRelated: (VideoItem) -> Unit,
     onSaveRelated: (VideoItem) -> Unit,
+    onDownloadRelated: (VideoItem) -> Unit,
     onLoadMore: () -> Unit
 ) {
     val adapter = remember {
@@ -175,6 +177,7 @@ internal fun NativePlayerDetailsList(
             onOpenChannel = onOpenChannel,
             onPlayRelated = onPlayRelated,
             onSaveRelated = onSaveRelated,
+            onDownloadRelated = onDownloadRelated,
             onLoadMore = onLoadMore
         )
     }
@@ -207,7 +210,7 @@ internal fun NativePlayerDetailsList(
             current.updateCallbacks(
                 onLike, onDislike, onWatchLater, onShare, onQuality, onDownload,
                 onToggleAudioOnly, onPictureInPicture,
-                onOpenChannel, onPlayRelated, onSaveRelated, onLoadMore
+                onOpenChannel, onPlayRelated, onSaveRelated, onDownloadRelated, onLoadMore
             )
             current.canLoadMore = relatedCanLoadMore
             current.loadingMore = relatedLoadingMore
@@ -475,6 +478,106 @@ private class CompactVideoCardView(context: Context) : LinearLayout(context) {
     }
 }
 
+private class PlayerRelatedHolder(context: Context) : RecyclerView.ViewHolder(PlayerRelatedCardView(context)) {
+    private val card = itemView as PlayerRelatedCardView
+
+    fun bind(
+        video: VideoItem,
+        onPlay: (VideoItem) -> Unit,
+        onDownload: (VideoItem) -> Unit
+    ) {
+        card.title.text = video.title.ifBlank { "Video" }
+        card.channel.text = video.channelTitle.ifBlank { "Canal" }
+        card.meta.text = formatRelativeTime(video.publishedAt)
+        card.meta.visibility = if (card.meta.text.isNullOrBlank()) View.GONE else View.VISIBLE
+        card.duration.text = durationText(video.durationMs)
+        card.duration.visibility = if (video.durationMs > 0L && !video.isLive) View.VISIBLE else View.GONE
+        card.live.visibility = if (video.isLive) View.VISIBLE else View.GONE
+        card.setOnClickListener { onPlay(video) }
+        card.download.setOnClickListener { onDownload(video) }
+        loadThumbnail(card.thumbnail, video.thumbnailUrl, 480, 270)
+    }
+
+    fun recycle() {
+        card.title.text = ""
+        card.channel.text = ""
+        card.meta.text = ""
+        Glide.with(card.thumbnail).clear(card.thumbnail)
+        card.setOnClickListener(null)
+        card.download.setOnClickListener(null)
+    }
+}
+
+private class PlayerRelatedCardView(context: Context) : LinearLayout(context) {
+    val thumbnail = ImageView(context)
+    val title = TextView(context)
+    val channel = TextView(context)
+    val meta = TextView(context)
+    val duration = TextView(context)
+    val live = TextView(context)
+    val download = ImageView(context)
+
+    init {
+        orientation = HORIZONTAL
+        gravity = Gravity.CENTER_VERTICAL
+        layoutParams = RecyclerView.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(context, 102))
+        setPadding(dp(context, 12), dp(context, 7), dp(context, 7), dp(context, 7))
+        setBackgroundColor(Color.BLACK)
+        isClickable = true
+        isFocusable = true
+
+        val media = FrameLayout(context).apply { setBackgroundColor(0xFF121216.toInt()) }
+        thumbnail.scaleType = ImageView.ScaleType.CENTER_CROP
+        media.addView(thumbnail, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        duration.setTextColor(Color.WHITE)
+        duration.setTextSize(TypedValue.COMPLEX_UNIT_SP, 10f)
+        duration.background = roundedDrawable(0xCC000000.toInt(), 4f, context)
+        duration.setPadding(dp(context, 5), dp(context, 2), dp(context, 5), dp(context, 2))
+        media.addView(duration, FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM or Gravity.END).apply {
+            setMargins(0, 0, dp(context, 5), dp(context, 5))
+        })
+        live.text = "EN VIVO"
+        live.setTextColor(Color.WHITE)
+        live.setTextSize(TypedValue.COMPLEX_UNIT_SP, 9f)
+        live.setTypeface(live.typeface, android.graphics.Typeface.BOLD)
+        live.background = roundedDrawable(0xFFD32F2F.toInt(), 4f, context)
+        live.setPadding(dp(context, 5), dp(context, 2), dp(context, 5), dp(context, 2))
+        media.addView(live, FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM or Gravity.START).apply {
+            setMargins(dp(context, 5), 0, 0, dp(context, 5))
+        })
+        addView(media, LayoutParams(dp(context, 146), dp(context, 82)))
+
+        val texts = LinearLayout(context).apply {
+            orientation = VERTICAL
+            gravity = Gravity.CENTER_VERTICAL
+            title.setTextColor(Color.WHITE)
+            title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14.5f)
+            title.setTypeface(title.typeface, android.graphics.Typeface.BOLD)
+            title.maxLines = 2
+            title.ellipsize = TextUtils.TruncateAt.END
+            channel.setTextColor(0xFFB9B5C0.toInt())
+            channel.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12.5f)
+            channel.maxLines = 1
+            channel.ellipsize = TextUtils.TruncateAt.END
+            meta.setTextColor(0xFF8E8A97.toInt())
+            meta.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
+            meta.maxLines = 1
+            addView(title, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+            addView(channel, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(context, 3) })
+            addView(meta, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(context, 1) })
+        }
+        addView(texts, LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f).apply { marginStart = dp(context, 11) })
+
+        download.setImageResource(com.geovideos.app.R.drawable.ic_player_download)
+        download.setColorFilter(Color.WHITE)
+        download.contentDescription = "Descargar"
+        download.setPadding(dp(context, 10), dp(context, 10), dp(context, 10), dp(context, 10))
+        download.isClickable = true
+        download.isFocusable = true
+        addView(download, LayoutParams(dp(context, 46), dp(context, 52)))
+    }
+}
+
 private sealed interface ChannelRow {
     val id: Long
     data class Channel(val item: ChannelItem) : ChannelRow { override val id = item.id.hashCode().toLong() }
@@ -578,6 +681,7 @@ private class NativePlayerAdapter(
     private var onOpenChannel: (ChannelItem) -> Unit,
     private var onPlayRelated: (VideoItem) -> Unit,
     private var onSaveRelated: (VideoItem) -> Unit,
+    private var onDownloadRelated: (VideoItem) -> Unit,
     var onLoadMore: () -> Unit
 ) : ListAdapter<PlayerRow, RecyclerView.ViewHolder>(PlayerRowDiff) {
     var canLoadMore = false
@@ -589,12 +693,13 @@ private class NativePlayerAdapter(
         quality: () -> Unit, download: () -> Unit,
         audioOnly: () -> Unit, pictureInPicture: () -> Unit,
         channel: (ChannelItem) -> Unit, play: (VideoItem) -> Unit,
-        save: (VideoItem) -> Unit, load: () -> Unit
+        save: (VideoItem) -> Unit, downloadRelated: (VideoItem) -> Unit, load: () -> Unit
     ) {
         onLike = like; onDislike = dislike; onWatchLater = later; onShare = share
         onQuality = quality; onDownload = download
         onToggleAudioOnly = audioOnly; onPictureInPicture = pictureInPicture
-        onOpenChannel = channel; onPlayRelated = play; onSaveRelated = save; onLoadMore = load
+        onOpenChannel = channel; onPlayRelated = play; onSaveRelated = save
+        onDownloadRelated = downloadRelated; onLoadMore = load
     }
 
     fun submitContent(header: PlayerHeaderData, related: List<VideoItem>, loading: Boolean, loadingMore: Boolean, canLoadMore: Boolean) {
@@ -618,8 +723,8 @@ private class NativePlayerAdapter(
     }
     override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): RecyclerView.ViewHolder = when (viewType) {
         TYPE_HEADER -> PlayerHeaderHolder(parent.context)
-        TYPE_MIX -> FullVideoHolder(parent.context)
-        TYPE_RELATED -> FullVideoHolder(parent.context)
+        TYPE_MIX -> PlayerRelatedHolder(parent.context)
+        TYPE_RELATED -> PlayerRelatedHolder(parent.context)
         TYPE_LOADING -> LoadingRowHolder(parent.context)
         else -> MoreRowHolder(parent.context)
     }
@@ -630,18 +735,22 @@ private class NativePlayerAdapter(
                 onQuality, onDownload, onToggleAudioOnly,
                 onPictureInPicture, onOpenChannel
             )
-            is PlayerRow.Mix -> (holder as FullVideoHolder).bind(
+            is PlayerRow.Mix -> (holder as PlayerRelatedHolder).bind(
                 row.seed.copy(
                     title = "Mix: ${row.current.title}",
                     channelTitle = listOf(row.current.channelTitle, row.seed.channelTitle)
                         .filter { it.isNotBlank() }
                         .distinct()
-                        .joinToString(", ") + " y más · reproducción continua"
+                        .joinToString(", ") + " y más"
                 ),
                 onPlay = { onPlayRelated(row.seed) },
-                onSave = { }
+                onDownload = { onDownloadRelated(row.seed) }
             )
-            is PlayerRow.Related -> (holder as FullVideoHolder).bind(row.item, onPlayRelated, onSaveRelated)
+            is PlayerRow.Related -> (holder as PlayerRelatedHolder).bind(
+                row.item,
+                onPlay = onPlayRelated,
+                onDownload = onDownloadRelated
+            )
             PlayerRow.More -> (holder as MoreRowHolder).bind(onLoadMore)
             PlayerRow.Loading -> Unit
         }
@@ -701,10 +810,12 @@ private class PlayerHeaderHolder(context: Context) : RecyclerView.ViewHolder(Pla
             "Comentarios"
         }
         view.mixBanner.visibility = if (data.mixAvailable) View.VISIBLE else View.GONE
+        view.tabsRow.visibility = if (data.mixAvailable) View.GONE else View.VISIBLE
+        view.normalInfoContent.visibility = if (data.mixAvailable) View.GONE else View.VISIBLE
         view.mixBanner.text = if (data.mixAvailable) {
-            val mixTitle = video.title.take(54).trim()
-            val mixChannels = video.channelTitle.ifBlank { "Videos relacionados" }
-            "◉  Mix: $mixTitle\n$mixChannels y más                                    ↕"
+            val mixTitle = video.title.removePrefix("Mix:").trim().take(42)
+            val total = data.mixCount.coerceAtLeast(1)
+            "☷  Mix: $mixTitle                         1/$total  ⌃"
         } else {
             ""
         }
@@ -748,6 +859,8 @@ private class PlayerHeaderHolder(context: Context) : RecyclerView.ViewHolder(Pla
 private class PlayerHeaderView(context: Context) : LinearLayout(context) {
     val infoTab = TextView(context)
     val commentsTab = TextView(context)
+    val tabsRow = LinearLayout(context)
+    val normalInfoContent = LinearLayout(context)
     private val infoPanel = LinearLayout(context)
     private val commentsPanel = LinearLayout(context)
     private val relatedTitle = TextView(context)
@@ -778,63 +891,62 @@ private class PlayerHeaderView(context: Context) : LinearLayout(context) {
     init {
         orientation = VERTICAL
         layoutParams = RecyclerView.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
-        setPadding(dp(context, 12), dp(context, 0), dp(context, 12), dp(context, 12))
+        setPadding(dp(context, 10), dp(context, 0), dp(context, 10), dp(context, 8))
         setBackgroundColor(Color.BLACK)
 
-        val tabs = LinearLayout(context).apply {
-            orientation = HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(0, 0, 0, dp(context, 4))
-        }
+        tabsRow.orientation = HORIZONTAL
+        tabsRow.gravity = Gravity.CENTER_VERTICAL
+        tabsRow.setPadding(0, 0, 0, dp(context, 2))
         stylePlayerTab(infoTab, "Info")
         stylePlayerTab(commentsTab, "Comentarios")
-        tabs.addView(infoTab, LayoutParams(dp(context, 96), dp(context, 46)))
-        tabs.addView(commentsTab, LayoutParams(dp(context, 178), dp(context, 46)).apply { marginStart = dp(context, 8) })
-        addView(tabs, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        tabsRow.addView(infoTab, LayoutParams(dp(context, 72), dp(context, 36)))
+        tabsRow.addView(commentsTab, LayoutParams(dp(context, 150), dp(context, 36)).apply { marginStart = dp(context, 6) })
+        addView(tabsRow, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
 
         infoPanel.orientation = VERTICAL
+        normalInfoContent.orientation = VERTICAL
 
         mixBanner.setTextColor(Color.WHITE)
-        mixBanner.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
+        mixBanner.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13.5f)
         mixBanner.setTypeface(mixBanner.typeface, android.graphics.Typeface.BOLD)
         mixBanner.setLineSpacing(dp(context, 2).toFloat(), 1f)
-        mixBanner.setPadding(dp(context, 13), dp(context, 10), dp(context, 13), dp(context, 10))
-        mixBanner.background = roundedDrawable(0xFF202024.toInt(), 4f, context)
+        mixBanner.setPadding(dp(context, 10), dp(context, 8), dp(context, 10), dp(context, 8))
+        mixBanner.background = roundedDrawable(0xFF1B1B1F.toInt(), 3f, context)
         mixBanner.visibility = View.GONE
-        infoPanel.addView(mixBanner, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { bottomMargin = dp(context, 14) })
+        infoPanel.addView(mixBanner, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { bottomMargin = dp(context, 6) })
 
         title.setTextColor(Color.WHITE)
-        title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 21f)
+        title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 17.5f)
         title.setTypeface(title.typeface, android.graphics.Typeface.BOLD)
-        title.maxLines = 3
+        title.maxLines = 2
         title.ellipsize = TextUtils.TruncateAt.END
-        infoPanel.addView(title)
+        normalInfoContent.addView(title)
 
         meta.setTextColor(0xFFAAA7B2.toInt())
-        meta.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13.5f)
-        infoPanel.addView(meta, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(context, 4) })
+        meta.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12.5f)
+        normalInfoContent.addView(meta, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(context, 3) })
 
         val channelRow = LinearLayout(context).apply { orientation = HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
         avatar.scaleType = ImageView.ScaleType.CENTER_CROP
-        channelRow.addView(avatar, LayoutParams(dp(context, 48), dp(context, 48)))
+        channelRow.addView(avatar, LayoutParams(dp(context, 42), dp(context, 42)))
         val channelTexts = LinearLayout(context).apply {
             orientation = VERTICAL
             channel.setTextColor(Color.WHITE)
-            channel.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16f)
+            channel.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14.5f)
             channel.setTypeface(channel.typeface, android.graphics.Typeface.BOLD)
             channel.maxLines = 1
             subscribers.setTextColor(0xFFAAA7B2.toInt())
-            subscribers.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12.5f)
+            subscribers.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11.5f)
             addView(channel)
             addView(subscribers)
         }
         channelRow.addView(channelTexts, LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { marginStart = dp(context, 11) })
         styleAction(context, channelButton, "Canal")
-        channelRow.addView(channelButton, LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(context, 42)))
-        infoPanel.addView(channelRow, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(context, 14) })
-        infoPanel.addView(
+        channelRow.addView(channelButton, LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(context, 36)))
+        normalInfoContent.addView(channelRow, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(context, 9) })
+        normalInfoContent.addView(
             View(context).apply { setBackgroundColor(0xFF343238.toInt()) },
-            LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(context, 1)).apply { topMargin = dp(context, 12) }
+            LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(context, 1)).apply { topMargin = dp(context, 8) }
         )
 
         val scroll = HorizontalScrollView(context).apply {
@@ -842,22 +954,22 @@ private class PlayerHeaderView(context: Context) : LinearLayout(context) {
             overScrollMode = View.OVER_SCROLL_NEVER
         }
         val actions = LinearLayout(context).apply { orientation = HORIZONTAL }
-        listOf(like, dislike, music, share, watchLater, window, download).forEach { item ->
-            actions.addView(item, LinearLayout.LayoutParams(dp(context, 76), dp(context, 76)))
+        listOf(like, share, watchLater, download, quality, window).forEach { item ->
+            actions.addView(item, LinearLayout.LayoutParams(dp(context, 68), dp(context, 64)))
         }
         scroll.addView(actions)
-        infoPanel.addView(scroll, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(context, 78)).apply { topMargin = dp(context, 10) })
+        normalInfoContent.addView(scroll, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(context, 66)).apply { topMargin = dp(context, 4) })
 
         descriptionToggle.setTextColor(Color.WHITE)
-        descriptionToggle.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
+        descriptionToggle.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
         descriptionToggle.setTypeface(descriptionToggle.typeface, android.graphics.Typeface.BOLD)
         descriptionToggle.gravity = Gravity.CENTER_VERTICAL
-        descriptionToggle.setPadding(dp(context, 13), dp(context, 11), dp(context, 13), dp(context, 11))
+        descriptionToggle.setPadding(dp(context, 11), dp(context, 8), dp(context, 11), dp(context, 8))
         descriptionToggle.background = roundedDrawable(0xFF1D1B22.toInt(), 12f, context)
-        infoPanel.addView(descriptionToggle, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(context, 8) })
+        normalInfoContent.addView(descriptionToggle, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(context, 5) })
 
         descriptionBox.orientation = VERTICAL
-        descriptionBox.setPadding(dp(context, 13), dp(context, 11), dp(context, 13), dp(context, 11))
+        descriptionBox.setPadding(dp(context, 11), dp(context, 9), dp(context, 11), dp(context, 9))
         descriptionBox.background = roundedDrawable(0xFF17151B.toInt(), 12f, context)
         description.setTextColor(0xFFC8C5CE.toInt())
         description.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13.5f)
@@ -865,7 +977,8 @@ private class PlayerHeaderView(context: Context) : LinearLayout(context) {
         description.ellipsize = null
         descriptionBox.addView(description, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         descriptionBox.visibility = View.GONE
-        infoPanel.addView(descriptionBox, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(context, 6) })
+        normalInfoContent.addView(descriptionBox, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(context, 5) })
+        infoPanel.addView(normalInfoContent, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         addView(infoPanel, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
 
         commentsPanel.orientation = VERTICAL
@@ -918,7 +1031,7 @@ private class PlayerHeaderView(context: Context) : LinearLayout(context) {
     private fun stylePlayerTab(view: TextView, textValue: String) {
         view.text = textValue
         view.gravity = Gravity.CENTER
-        view.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16f)
+        view.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
         view.setTypeface(view.typeface, android.graphics.Typeface.BOLD)
         view.background = null
         view.isClickable = true
@@ -1076,7 +1189,7 @@ private fun loadThumbnail(view: ImageView, url: String, width: Int, height: Int)
 private fun loadAvatar(view: ImageView, url: String, size: Int = 96) {
     if (url.isBlank()) {
         Glide.with(view).clear(view)
-        view.setImageDrawable(ColorDrawable(0xFF4A2A79.toInt()))
+        view.setImageDrawable(ColorDrawable(0xFF303036.toInt()))
         return
     }
     Glide.with(view)
@@ -1084,7 +1197,7 @@ private fun loadAvatar(view: ImageView, url: String, size: Int = 96) {
         .override(size, size)
         .dontAnimate()
         .placeholder(ColorDrawable(0xFF303036.toInt()))
-        .error(ColorDrawable(0xFF4A2A79.toInt()))
+        .error(ColorDrawable(0xFF303036.toInt()))
         .circleCrop()
         .into(view)
 }
@@ -1141,11 +1254,11 @@ private class PlayerActionView(context: Context, iconRes: Int, label: String) : 
         isFocusable = true
         icon.setImageResource(iconRes)
         icon.setColorFilter(Color.WHITE)
-        addView(icon, LayoutParams(dp(context, 27), dp(context, 27)))
+        addView(icon, LayoutParams(dp(context, 23), dp(context, 23)))
         labelView.text = label
         labelView.gravity = Gravity.CENTER
         labelView.setTextColor(Color.WHITE)
-        labelView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 10.5f)
+        labelView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 9.5f)
         labelView.maxLines = 2
         labelView.ellipsize = TextUtils.TruncateAt.END
         addView(labelView, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {

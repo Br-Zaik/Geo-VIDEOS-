@@ -33,7 +33,8 @@ data class VideoItem(
     val resumePositionMs: Long = 0L,
     val durationMs: Long = 0L,
     val downloadId: Long = -1L,
-    val watchedAtMs: Long = 0L
+    val watchedAtMs: Long = 0L,
+    val isMix: Boolean = false
 )
 
 @Immutable

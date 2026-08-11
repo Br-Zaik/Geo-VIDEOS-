@@ -66,9 +66,17 @@ internal fun LiteHomeScreen(
         if (category != HomeCategory.FOR_YOU) emptyList()
         else (shorts + baseVideos.filter(::looksLikeHomeShort)).distinctBy { it.id }.take(18)
     }
-    // Principal debe empezar exactamente con Shorts arriba y videos debajo. El bloque Mix
-    // pertenece al contexto del reproductor y no debe interrumpir el primer feed de la cuenta.
-    val mixVideo: VideoItem? = remember(category) { null }
+    // Si hay una señal musical real dentro del feed personal, mostrar una sola mezcla
+    // compacta como DailyTube. Nunca se crea desde Tendencias ni desde búsquedas genéricas.
+    val mixVideo: VideoItem? = remember(category, baseVideos) {
+        if (category == HomeCategory.FOR_YOU) {
+            baseVideos.firstOrNull { video ->
+                isEligibleHomeVideoCard(video) && looksLikeMusicForMix(video)
+            }?.copy(isMix = true)
+        } else {
+            null
+        }
+    }
     val videos = remember(baseVideos, homeShorts, mixVideo) {
         val hiddenIds = buildSet {
             homeShorts.forEach { add(it.id) }

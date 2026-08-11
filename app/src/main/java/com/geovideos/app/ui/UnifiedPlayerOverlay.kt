@@ -11,9 +11,13 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.animate
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.Orientation
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.drag
 import androidx.compose.foundation.gestures.draggable
 import androidx.compose.foundation.gestures.rememberDraggableState
 import androidx.compose.foundation.layout.Arrangement
@@ -49,6 +53,7 @@ import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.SkipNext
+import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
@@ -58,7 +63,6 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
-import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
@@ -84,6 +88,7 @@ import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.zIndex
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
@@ -173,11 +178,13 @@ internal fun UnifiedPlayerOverlay(
     var selectedSpeed by rememberSaveable(video.id) { mutableStateOf(1f) }
     var showDownloadSheet by rememberSaveable(video.id) { mutableStateOf(false) }
     var streamOptions by remember(video.id) { mutableStateOf<StreamOptions?>(null) }
+    var streamOptionsVideoId by remember(video.id) { mutableStateOf("") }
     var streamOptionsHaveSizes by remember(video.id) { mutableStateOf(false) }
     var streamOptionsLoading by remember(video.id) { mutableStateOf(false) }
     var streamOptionsError by remember(video.id) { mutableStateOf<String?>(null) }
     var selectedDownloadHeight by rememberSaveable(video.id) { mutableStateOf<Int?>(null) }
     var pendingDownload by remember(video.id) { mutableStateOf<DownloadStreamOption?>(null) }
+    var downloadTarget by remember(video.id) { mutableStateOf(video) }
     var transition by remember(video.id) { mutableFloatStateOf(if (expanded) 0f else 1f) }
     var dragging by remember(video.id) { mutableStateOf(false) }
     var settling by remember(video.id) { mutableStateOf(false) }
@@ -268,12 +275,12 @@ internal fun UnifiedPlayerOverlay(
     fun enqueueOption(option: DownloadStreamOption) {
         val downloadId = enqueueResolvedMediaDownload(
             context = context,
-            video = video,
+            video = downloadTarget,
             option = option
         )
         if (downloadId < -1L) {
             onRegisterDownload(
-                "${video.title} (${option.label})",
+                "${downloadTarget.title} (${option.label})",
                 "geo-download://$downloadId",
                 downloadId
             )
@@ -327,27 +334,42 @@ internal fun UnifiedPlayerOverlay(
         }
     }
 
-    LaunchedEffect(showPlayerSettings, playerSettingsPage, showDownloadSheet, video.id) {
+    fun openDownloadFor(target: VideoItem) {
+        downloadTarget = target
+        streamOptions = null
+        streamOptionsVideoId = ""
+        streamOptionsHaveSizes = false
+        streamOptionsLoading = false
+        streamOptionsError = null
+        selectedDownloadHeight = null
+        showDownloadSheet = true
+    }
+
+    LaunchedEffect(showPlayerSettings, playerSettingsPage, showDownloadSheet, video.id, downloadTarget.id) {
         // Velocidad y ajustes generales son locales y deben abrir al instante. Solo resolver
         // streams cuando el usuario entra realmente a Calidad o a Descargas.
         val needsQualityOptions = showPlayerSettings && playerSettingsPage == PlayerSettingsPage.QUALITY
         val dialogOpen = needsQualityOptions || showDownloadSheet
         val needsDownloadSizes = showDownloadSheet
-        val alreadyLoaded = streamOptions != null && (!needsDownloadSizes || streamOptionsHaveSizes)
+        val optionsTarget = if (showDownloadSheet) downloadTarget else video
+        val alreadyLoaded = streamOptions != null &&
+            streamOptionsVideoId == optionsTarget.id &&
+            (!needsDownloadSizes || streamOptionsHaveSizes)
         if (!dialogOpen || alreadyLoaded || streamOptionsLoading) return@LaunchedEffect
 
         streamOptionsLoading = true
         streamOptionsError = null
         runCatching {
             playerConnection.streamOptions(
-                video = video,
+                video = optionsTarget,
                 includeDownloadSizes = needsDownloadSizes
             )
         }
             .onSuccess { options ->
                 streamOptions = options
+                streamOptionsVideoId = optionsTarget.id
                 streamOptionsHaveSizes = needsDownloadSizes
-                if (selectedDownloadHeight == null) {
+                if (showDownloadSheet && selectedDownloadHeight == null) {
                     selectedDownloadHeight = options.downloads
                         .firstOrNull { it.height == preferredQuality }
                         ?.height
@@ -536,7 +558,8 @@ internal fun UnifiedPlayerOverlay(
                         publishedAt = published,
                         qualityLabel = preferredQuality?.let { "${it}p" } ?: "Automático",
                         audioOnly = audioOnly,
-                        mixAvailable = related.isNotEmpty()
+                        mixAvailable = video.isMix && related.isNotEmpty(),
+                        mixCount = if (video.isMix) related.size + 1 else 0
                     ),
                     related = related,
                     relatedLoading = relatedLoading || detailsLoading,
@@ -550,7 +573,7 @@ internal fun UnifiedPlayerOverlay(
                         playerSettingsPage = PlayerSettingsPage.ROOT
                         showPlayerSettings = true
                     },
-                    onDownload = { showDownloadSheet = true },
+                    onDownload = { openDownloadFor(video) },
                     onToggleAudioOnly = {
                         playerConnection.setAudioOnly(
                             video = video,
@@ -575,6 +598,7 @@ internal fun UnifiedPlayerOverlay(
                     onOpenChannel = onOpenChannel,
                     onPlayRelated = onPlayRelated,
                     onSaveRelated = onWatchLaterRelated,
+                    onDownloadRelated = { relatedVideo -> openDownloadFor(relatedVideo) },
                     onLoadMore = onLoadMoreRelated
                 )
             }
@@ -800,6 +824,10 @@ internal fun UnifiedPlayerOverlay(
                             if (playback.isPlaying) playerConnection.pause() else playerConnection.play()
                             playerControlsVisible = true
                         },
+                        onPrevious = {
+                            playerConnection.playPrevious()
+                            playerControlsVisible = true
+                        },
                         onNext = {
                             related.firstOrNull { it.id != video.id }?.let(onPlayRelated)
                                 ?: playerConnection.playNext()
@@ -885,8 +913,8 @@ internal fun UnifiedPlayerOverlay(
 
             if ((playback.connecting || playback.resolving) && playback.error == null) {
                 CircularProgressIndicator(
-                    modifier = Modifier.align(Alignment.Center).size(34.dp),
-                    strokeWidth = 3.dp
+                    modifier = Modifier.align(Alignment.Center).size(24.dp),
+                    strokeWidth = 2.2.dp
                 )
             }
 
@@ -985,7 +1013,7 @@ internal fun UnifiedPlayerOverlay(
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Icon(Icons.Default.Download, contentDescription = null)
                     Text(
-                        "Descargar video",
+                        if (downloadTarget.id == video.id) "Descargar video" else "Descargar: ${downloadTarget.title.take(42)}",
                         style = MaterialTheme.typography.titleLarge,
                         fontWeight = FontWeight.Bold,
                         modifier = Modifier.padding(start = 12.dp)
@@ -1065,6 +1093,7 @@ private fun DayliPlayerControls(
     fullscreen: Boolean,
     onMinimize: () -> Unit,
     onTogglePlayback: () -> Unit,
+    onPrevious: () -> Unit,
     onNext: () -> Unit,
     onQuality: () -> Unit,
     onSpeed: () -> Unit,
@@ -1075,11 +1104,12 @@ private fun DayliPlayerControls(
 ) {
     val safeDuration = durationMs.coerceAtLeast(0L)
     val safePosition = if (safeDuration > 0L) positionMs.coerceIn(0L, safeDuration) else 0L
+    val compactQuality = qualityLabel.replace("Automático", "Auto")
 
     Box(
         modifier = modifier
-            .background(Color.Black.copy(alpha = 0.34f))
-            .padding(horizontal = 8.dp, vertical = 4.dp)
+            .background(Color.Black.copy(alpha = 0.20f))
+            .padding(horizontal = 4.dp, vertical = 2.dp)
     ) {
         Row(
             modifier = Modifier
@@ -1087,47 +1117,57 @@ private fun DayliPlayerControls(
                 .fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            IconButton(onClick = onMinimize, modifier = Modifier.size(44.dp)) {
+            IconButton(onClick = onMinimize, modifier = Modifier.size(36.dp)) {
                 Icon(
                     Icons.Default.KeyboardArrowDown,
                     contentDescription = if (fullscreen) "Salir de pantalla completa" else "Minimizar",
                     tint = Color.White,
-                    modifier = Modifier.size(34.dp)
+                    modifier = Modifier.size(27.dp)
                 )
             }
             if (onLock != null) {
-                IconButton(onClick = onLock, modifier = Modifier.size(40.dp)) {
+                IconButton(onClick = onLock, modifier = Modifier.size(34.dp)) {
                     Icon(
                         Icons.Default.Lock,
                         contentDescription = "Bloquear controles",
                         tint = Color.White,
-                        modifier = Modifier.size(22.dp)
+                        modifier = Modifier.size(19.dp)
                     )
                 }
             }
             Spacer(Modifier.weight(1f))
-            TextButton(onClick = onQuality, modifier = Modifier.height(42.dp)) {
+            TextButton(
+                onClick = onQuality,
+                modifier = Modifier.height(34.dp),
+                contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 7.dp, vertical = 0.dp)
+            ) {
                 Text(
-                    qualityLabel,
+                    compactQuality,
                     color = Color.White,
+                    style = MaterialTheme.typography.labelLarge,
                     fontWeight = FontWeight.SemiBold,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
             }
-            TextButton(onClick = onSpeed, modifier = Modifier.height(42.dp)) {
+            TextButton(
+                onClick = onSpeed,
+                modifier = Modifier.height(34.dp),
+                contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 7.dp, vertical = 0.dp)
+            ) {
                 Text(
                     if (speed == speed.toInt().toFloat()) "${speed.toInt()}x" else "${speed}x",
                     color = Color.White,
+                    style = MaterialTheme.typography.labelLarge,
                     fontWeight = FontWeight.SemiBold
                 )
             }
-            IconButton(onClick = onMore, modifier = Modifier.size(42.dp)) {
+            IconButton(onClick = onMore, modifier = Modifier.size(36.dp)) {
                 Icon(
                     Icons.Default.MoreVert,
                     contentDescription = "Más opciones",
                     tint = Color.White,
-                    modifier = Modifier.size(28.dp)
+                    modifier = Modifier.size(24.dp)
                 )
             }
         }
@@ -1135,22 +1175,30 @@ private fun DayliPlayerControls(
         Row(
             modifier = Modifier.align(Alignment.Center),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(32.dp)
+            horizontalArrangement = Arrangement.spacedBy(18.dp)
         ) {
-            IconButton(onClick = onTogglePlayback, modifier = Modifier.size(76.dp)) {
+            IconButton(onClick = onPrevious, modifier = Modifier.size(46.dp)) {
+                Icon(
+                    Icons.Default.SkipPrevious,
+                    contentDescription = "Anterior",
+                    tint = Color.White,
+                    modifier = Modifier.size(35.dp)
+                )
+            }
+            IconButton(onClick = onTogglePlayback, modifier = Modifier.size(56.dp)) {
                 Icon(
                     if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
                     contentDescription = if (isPlaying) "Pausar" else "Reproducir",
                     tint = Color.White,
-                    modifier = Modifier.size(62.dp)
+                    modifier = Modifier.size(45.dp)
                 )
             }
-            IconButton(onClick = onNext, modifier = Modifier.size(64.dp)) {
+            IconButton(onClick = onNext, modifier = Modifier.size(46.dp)) {
                 Icon(
                     Icons.Default.SkipNext,
                     contentDescription = "Siguiente",
                     tint = Color.White,
-                    modifier = Modifier.size(52.dp)
+                    modifier = Modifier.size(35.dp)
                 )
             }
         }
@@ -1159,38 +1207,97 @@ private fun DayliPlayerControls(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
                 .fillMaxWidth()
-                .padding(horizontal = 8.dp, vertical = 2.dp),
+                .padding(horizontal = 5.dp, vertical = 1.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text(
                 formatPlayerTime(safePosition),
                 color = Color.White,
-                style = MaterialTheme.typography.bodyMedium,
-                modifier = Modifier.width(48.dp)
+                style = MaterialTheme.typography.labelMedium,
+                modifier = Modifier.width(42.dp)
             )
-            Slider(
-                value = safePosition.toFloat(),
-                onValueChange = { value ->
-                    if (safeDuration > 0L) onSeek(value.toLong().coerceIn(0L, safeDuration))
-                },
-                valueRange = if (safeDuration > 0L) 0f..safeDuration.toFloat() else 0f..1f,
+            CompactPlayerSeekBar(
+                positionMs = safePosition,
+                durationMs = safeDuration,
                 enabled = safeDuration > 0L,
+                onSeek = onSeek,
                 modifier = Modifier.weight(1f)
             )
             Text(
                 formatPlayerTime(safeDuration),
                 color = Color.White,
-                style = MaterialTheme.typography.bodyMedium,
-                modifier = Modifier.padding(start = 6.dp)
+                style = MaterialTheme.typography.labelMedium,
+                modifier = Modifier.padding(start = 5.dp)
             )
-            IconButton(onClick = onFullscreen, modifier = Modifier.size(42.dp)) {
+            IconButton(onClick = onFullscreen, modifier = Modifier.size(34.dp)) {
                 Icon(
                     if (fullscreen) Icons.Default.FullscreenExit else Icons.Default.Fullscreen,
                     contentDescription = if (fullscreen) "Salir de pantalla completa" else "Pantalla completa",
                     tint = Color.White,
-                    modifier = Modifier.size(30.dp)
+                    modifier = Modifier.size(24.dp)
                 )
             }
+        }
+    }
+}
+
+@Composable
+private fun CompactPlayerSeekBar(
+    positionMs: Long,
+    durationMs: Long,
+    enabled: Boolean,
+    onSeek: (Long) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val activeColor = MaterialTheme.colorScheme.primary
+    val inactiveColor = Color.White.copy(alpha = 0.42f)
+    val fraction = if (durationMs > 0L) {
+        (positionMs.toFloat() / durationMs.toFloat()).coerceIn(0f, 1f)
+    } else 0f
+
+    Box(
+        modifier = modifier
+            .height(28.dp)
+            .pointerInput(durationMs, enabled) {
+                if (!enabled || durationMs <= 0L) return@pointerInput
+                awaitEachGesture {
+                    val down = awaitFirstDown()
+                    fun seekAt(x: Float) {
+                        val width = size.width.toFloat().coerceAtLeast(1f)
+                        val target = ((x / width).coerceIn(0f, 1f) * durationMs.toDouble()).toLong()
+                        onSeek(target)
+                    }
+                    seekAt(down.position.x)
+                    drag(down.id) { change ->
+                        seekAt(change.position.x)
+                        change.consume()
+                    }
+                }
+            },
+        contentAlignment = Alignment.Center
+    ) {
+        Canvas(modifier = Modifier.fillMaxWidth().height(16.dp)) {
+            val centerY = size.height / 2f
+            val inactiveStroke = 2.2.dp.toPx()
+            val activeStroke = 2.8.dp.toPx()
+            drawLine(
+                color = inactiveColor,
+                start = Offset(0f, centerY),
+                end = Offset(size.width, centerY),
+                strokeWidth = inactiveStroke
+            )
+            val activeX = size.width * fraction
+            drawLine(
+                color = activeColor,
+                start = Offset(0f, centerY),
+                end = Offset(activeX, centerY),
+                strokeWidth = activeStroke
+            )
+            drawCircle(
+                color = activeColor,
+                radius = 5.dp.toPx(),
+                center = Offset(activeX, centerY)
+            )
         }
     }
 }
