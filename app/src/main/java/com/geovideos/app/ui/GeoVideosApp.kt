@@ -354,6 +354,8 @@ fun GeoVideosApp(
                         onLoadMoreSearch = viewModel::loadMoreSearch,
                         onOpenChannel = viewModel::openChannel,
                         onCloseChannel = viewModel::closeChannel,
+                        onOpenPlaylist = viewModel::openPlaylist,
+                        onClosePlaylist = viewModel::closePlaylist,
                         onToggleSubscription = { channel ->
                             if (!state.youtubeSyncAuthorized) {
                                 viewModel.queueSubscriptionToggle(channel)
@@ -568,6 +570,8 @@ private fun MainShell(
     onLoadMoreSearch: () -> Unit,
     onOpenChannel: (ChannelItem) -> Unit,
     onCloseChannel: () -> Unit,
+    onOpenPlaylist: (PlaylistItem) -> Unit,
+    onClosePlaylist: () -> Unit,
     onToggleSubscription: (ChannelItem) -> Unit,
     onDisconnect: () -> Unit,
     onClearData: () -> Unit,
@@ -639,6 +643,18 @@ private fun MainShell(
         return
     }
 
+    state.selectedPlaylist?.let { playlist ->
+        SearchPlaylistScreen(
+            playlist = playlist,
+            videos = state.selectedPlaylistVideos,
+            loading = state.playlistLoading,
+            onBack = onClosePlaylist,
+            onPlay = onPlay,
+            onWatchLater = onWatchLater
+        )
+        return
+    }
+
     Scaffold(
         topBar = {
             if (state.section != MainSection.SHORTS && libraryDestination == LibraryDestination.ROOT) {
@@ -690,7 +706,7 @@ private fun MainShell(
     ) { padding ->
         val contentModifier = Modifier
             .padding(padding)
-            .padding(bottom = if (miniPlayerVisible) 8.dp else 0.dp)
+            .padding(bottom = if (miniPlayerVisible) 64.dp else 0.dp)
         when (state.section) {
             MainSection.HOME -> LiteHomeScreen(
                 modifier = contentModifier,
@@ -739,13 +755,17 @@ private fun MainShell(
             MainSection.SEARCH -> SearchScreen(
                 modifier = contentModifier,
                 results = state.searchResults,
+                channels = state.searchChannels,
+                playlists = state.searchPlaylists,
                 history = state.searchHistory,
                 loading = state.loading,
                 loadingMore = state.searchLoadingMore,
                 onSearch = onSearch,
                 onLoadMore = onLoadMoreSearch,
                 onPlay = onPlay,
-                onWatchLater = onWatchLater
+                onWatchLater = onWatchLater,
+                onOpenChannel = onOpenChannel,
+                onOpenPlaylist = onOpenPlaylist
             )
             MainSection.LIBRARY -> {
                 if (libraryDestination == LibraryDestination.ROOT) {
@@ -895,13 +915,17 @@ private fun RowScope.BottomItem(
 private fun SearchScreen(
     modifier: Modifier,
     results: List<VideoItem>,
+    channels: List<ChannelItem>,
+    playlists: List<PlaylistItem>,
     history: List<String>,
     loading: Boolean,
     loadingMore: Boolean,
     onSearch: (String) -> Unit,
     onLoadMore: () -> Unit,
     onPlay: (VideoItem) -> Unit,
-    onWatchLater: (VideoItem) -> Unit
+    onWatchLater: (VideoItem) -> Unit,
+    onOpenChannel: (ChannelItem) -> Unit,
+    onOpenPlaylist: (PlaylistItem) -> Unit
 ) {
     var query by rememberSaveable { mutableStateOf("") }
     Column(modifier = modifier.fillMaxSize().background(Color.Black)) {
@@ -916,11 +940,11 @@ private fun SearchScreen(
                     Icon(Icons.Default.Search, "Buscar")
                 }
             },
-            label = { Text("Buscar videos, música, juegos…") },
+            label = { Text("Buscar en YouTube") },
             keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(imeAction = ImeAction.Search),
             keyboardActions = androidx.compose.foundation.text.KeyboardActions(onSearch = { onSearch(query) })
         )
-        if (query.isBlank() && results.isEmpty() && history.isNotEmpty()) {
+        if (query.isBlank() && results.isEmpty() && channels.isEmpty() && playlists.isEmpty() && history.isNotEmpty()) {
             LazyRow(
                 contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -934,15 +958,142 @@ private fun SearchScreen(
                 }
             }
         }
+
+        if (channels.isNotEmpty()) {
+            Text(
+                "Canales",
+                fontWeight = FontWeight.Bold,
+                style = MaterialTheme.typography.titleMedium,
+                modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp)
+            )
+            LazyRow(
+                contentPadding = PaddingValues(horizontal = 12.dp),
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                items(channels.take(12), key = { "yt-channel-${it.id}" }) { channel ->
+                    Column(
+                        modifier = Modifier.width(92.dp).clickable { onOpenChannel(channel) },
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Thumbnail(
+                            url = channel.thumbnailUrl,
+                            modifier = Modifier.size(58.dp).clip(CircleShape),
+                            contentScale = ContentScale.Crop
+                        )
+                        Text(
+                            channel.title,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                            textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                            style = MaterialTheme.typography.labelMedium,
+                            modifier = Modifier.padding(top = 5.dp)
+                        )
+                    }
+                }
+            }
+        }
+
+        if (playlists.isNotEmpty()) {
+            Text(
+                "Listas de reproducción",
+                fontWeight = FontWeight.Bold,
+                style = MaterialTheme.typography.titleMedium,
+                modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp)
+            )
+            LazyRow(
+                contentPadding = PaddingValues(horizontal = 12.dp),
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                items(playlists.take(12), key = { "yt-playlist-${it.id}" }) { playlist ->
+                    Column(modifier = Modifier.width(150.dp).clickable { onOpenPlaylist(playlist) }) {
+                        Box(
+                            modifier = Modifier.fillMaxWidth().aspectRatio(16f / 9f)
+                                .clip(RoundedCornerShape(8.dp)).background(Color(0xFF1D1D22))
+                        ) {
+                            Thumbnail(playlist.thumbnailUrl, Modifier.fillMaxSize(), ContentScale.Crop)
+                            Surface(
+                                modifier = Modifier.align(Alignment.BottomEnd).padding(5.dp),
+                                color = Color.Black.copy(alpha = 0.72f),
+                                shape = RoundedCornerShape(4.dp)
+                            ) {
+                                Row(Modifier.padding(horizontal = 6.dp, vertical = 3.dp), verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(Icons.Default.PlaylistPlay, null, tint = Color.White, modifier = Modifier.size(16.dp))
+                                    Spacer(Modifier.width(3.dp))
+                                    Text("Lista", color = Color.White, style = MaterialTheme.typography.labelSmall)
+                                }
+                            }
+                        }
+                        Text(
+                            playlist.title,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                            style = MaterialTheme.typography.bodySmall,
+                            fontWeight = FontWeight.Medium,
+                            modifier = Modifier.padding(top = 5.dp)
+                        )
+                    }
+                }
+            }
+        }
+
+        if (results.isNotEmpty() || loading || (query.isNotBlank() && channels.isEmpty() && playlists.isEmpty())) {
+            if (results.isNotEmpty()) {
+                Text(
+                    "Videos",
+                    fontWeight = FontWeight.Bold,
+                    style = MaterialTheme.typography.titleMedium,
+                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp)
+                )
+            }
+            NativeVideoList(
+                modifier = Modifier.weight(1f).fillMaxWidth(),
+                videos = results,
+                loading = loading,
+                loadingMore = loadingMore,
+                canLoadMore = results.isNotEmpty(),
+                mode = NativeVideoListMode.COMPACT,
+                emptyMessage = if (query.isBlank()) "Busca contenido de YouTube." else "No se encontraron resultados.",
+                onLoadMore = onLoadMore,
+                onPlay = onPlay,
+                onSave = onWatchLater
+            )
+        } else {
+            Spacer(Modifier.weight(1f))
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun SearchPlaylistScreen(
+    playlist: PlaylistItem,
+    videos: List<VideoItem>,
+    loading: Boolean,
+    onBack: () -> Unit,
+    onPlay: (VideoItem) -> Unit,
+    onWatchLater: (VideoItem) -> Unit
+) {
+    Column(Modifier.fillMaxSize().background(Color.Black)) {
+        TopAppBar(
+            title = {
+                Column {
+                    Text(playlist.title, maxLines = 1, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.Bold)
+                    Text("Lista de YouTube", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            },
+            navigationIcon = {
+                IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, contentDescription = "Volver") }
+            }
+        )
         NativeVideoList(
-            modifier = Modifier.weight(1f).fillMaxWidth(),
-            videos = results,
+            modifier = Modifier.fillMaxSize(),
+            videos = videos,
             loading = loading,
-            loadingMore = loadingMore,
-            canLoadMore = results.isNotEmpty(),
+            loadingMore = false,
+            canLoadMore = false,
             mode = NativeVideoListMode.COMPACT,
-            emptyMessage = if (query.isBlank()) "Escribe algo para buscar." else "No se encontraron resultados.",
-            onLoadMore = onLoadMore,
+            emptyMessage = "Esta lista no tiene videos disponibles.",
+            onLoadMore = {},
             onPlay = onPlay,
             onSave = onWatchLater
         )
@@ -2242,12 +2393,10 @@ private fun Thumbnail(
     var imageFailed by remember(url) { mutableStateOf(false) }
     if (url.isBlank() || imageFailed) {
         Box(
-            modifier = modifier.background(
-                Brush.linearGradient(listOf(Color(0xFF301A56), Color(0xFF7C4DFF), Color(0xFF111118)))
-            ),
+            modifier = modifier.background(Color(0xFF202024)),
             contentAlignment = Alignment.Center
         ) {
-            Icon(Icons.Default.PlayArrow, null, modifier = Modifier.size(52.dp), tint = Color.White.copy(0.8f))
+            Icon(Icons.Default.PlayArrow, null, modifier = Modifier.size(42.dp), tint = Color.White.copy(alpha = 0.34f))
         }
     } else {
         val context = LocalContext.current

@@ -16,7 +16,7 @@ class GeoVideosRepository(context: Context) {
     private fun migrateAccountFeedSchema() {
         val current = preferences.getInt(KEY_FEED_SCHEMA, 0)
         if (current >= FEED_SCHEMA_VERSION) return
-        // V50.5 todavía podía mezclar Me gusta/historial dentro de Principal y conservar
+        // V50.6 todavía podía conservar Me gusta/historial dentro de Principal y conservar
         // Shorts mal clasificados en el feed normal. Invalidar solo el cache remoto una vez;
         // no tocar cuenta, historial, descargas, ajustes ni acciones locales.
         preferences.edit()
@@ -584,7 +584,7 @@ class GeoVideosRepository(context: Context) {
 
     private companion object {
         const val KEY_HISTORY = "history"
-        const val FEED_SCHEMA_VERSION = 3
+        const val FEED_SCHEMA_VERSION = 4
         const val KEY_FEED_SCHEMA = "feed_schema"
         const val KEY_HISTORY_ACCOUNT_PREFIX = "history_account_"
         const val KEY_WATCH_LATER = "watch_later"

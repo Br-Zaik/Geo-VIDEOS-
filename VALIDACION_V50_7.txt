@@ -1,0 +1,56 @@
+GEO VIDEOS V50.7.0 / VERSION CODE 508
+
+OBJETIVO DE ESTA REVISION
+Integrar los cambios pedidos sobre V50.6 sin volver a modificar el flujo base de inicio de sesion Google.
+
+CAMBIOS APLICADOS
+1. PRINCIPAL / FEED
+- Mantiene Shorts reservados en la parte superior y videos normales debajo.
+- Principal no usa Tendencias como sustituto de Para ti.
+- El cache remoto de V50.6 se invalida una sola vez mediante FEED_SCHEMA_VERSION=4.
+- Los videos normales de Principal exigen duracion comprobada superior al limite de Shorts, titulo y miniatura validos.
+- Las señales de Me gusta/historial se usan para ordenar suscripciones, no para inyectar esos videos directamente en Principal.
+- Se amplio el lote inicial de canales suscritos y la paginacion de suscripciones en segundo plano.
+
+2. ACTUALIZACION
+- Se conserva un solo indicador pequeno de pull-to-refresh.
+- Videos recientes de suscripciones y nueva pagina de Shorts se solicitan en paralelo.
+- El cursor de Shorts avanza; al llegar al final vuelve a iniciar priorizando IDs no visibles.
+- La fase visible tiene timeouts controlados; el enriquecimiento pesado sigue en segundo plano.
+- El mensaje de nuevos elementos cuenta solo la categoria visible, no suma En vivo/Juegos/Musica ocultos.
+
+3. BUSQUEDA YOUTUBE
+- Buscar usa search.list general y ya no fuerza type=video.
+- Presenta resultados de videos, canales y listas de reproduccion.
+- Los canales se pueden abrir desde Buscar.
+- Las listas de reproduccion se pueden abrir y reproducir desde Buscar.
+- Se mantiene paginacion con nextPageToken.
+
+4. HISTORIAL
+- Cada video o Short se registra localmente desde el primer toque, antes de esperar checkpoints posteriores.
+- Historial conserva posicion y duracion mediante updatePlayback.
+- Interfaz compacta: buscador oculto tras icono, filas mas pequenas, sin barra permanente de filtros.
+- El historial corresponde a reproducciones hechas en Geo Videos; no se falsea como historial privado oficial de YouTube.
+
+5. MINI REPRODUCTOR
+- Eliminado el mini reproductor flotante rectangular de V50.6.
+- Nuevo mini reproductor tipo barra compacta sobre la navegacion inferior: video a la izquierda, titulo/canal, play-pausa y X.
+- Al tocar la barra vuelve al reproductor grande conservando posicion.
+- La transicion deja de escalar SurfaceView/TextureView por toda la pantalla; el reproductor grande se desvanece y la barra entra al final para evitar superposiciones.
+- Se mantiene TextureView para el video embebido.
+
+6. PLACEHOLDERS
+- Eliminados los bloques morados de miniaturas y avatares fallidos.
+- Se usan placeholders gris oscuro discretos mientras llega la imagen.
+
+7. SINCRONIZACION DE CUENTA
+- Lectura mantiene la misma cuenta Google conectada.
+- Suscripciones pueden paginar hasta 10 paginas; la sincronizacion de fondo solicita hasta 8 paginas.
+- Me gusta, playlists y videos subidos se conservan en la sincronizacion existente.
+- No se modificaron package, OAuth base, firma, selector de cuenta ni persistencia de inicio de sesion.
+
+VALIDACIONES REALIZADAS
+- 21 archivos Kotlin analizados con el parser PSI del compilador Kotlin: sintaxis OK.
+- 28 XML analizados con parser XML: sintaxis OK.
+- Integridad del ZIP se valida despues de empaquetar.
+- Se intento :app:compileDebugKotlin, pero el entorno no puede resolver services.gradle.org para descargar Gradle 8.13. La compilacion Android completa debe verificarse en GitHub Actions.

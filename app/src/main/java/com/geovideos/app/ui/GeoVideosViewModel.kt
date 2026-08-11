@@ -80,6 +80,8 @@ data class GeoVideosUiState(
     val music: List<VideoItem> = emptyList(),
     val shorts: List<VideoItem> = emptyList(),
     val searchResults: List<VideoItem> = emptyList(),
+    val searchChannels: List<ChannelItem> = emptyList(),
+    val searchPlaylists: List<PlaylistItem> = emptyList(),
     val subscriptions: List<ChannelItem> = emptyList(),
     val playlists: List<PlaylistItem> = emptyList(),
     val liked: List<VideoItem> = emptyList(),
@@ -104,6 +106,9 @@ data class GeoVideosUiState(
     val selectedChannel: ChannelItem? = null,
     val channelVideos: List<VideoItem> = emptyList(),
     val channelPlaylists: List<PlaylistItem> = emptyList(),
+    val selectedPlaylist: PlaylistItem? = null,
+    val selectedPlaylistVideos: List<VideoItem> = emptyList(),
+    val playlistLoading: Boolean = false,
     val autoplay: Boolean = true,
     val dataSaver: Boolean = false,
     val notificationsEnabled: Boolean = true,
@@ -776,24 +781,81 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
                     if (subscriptions.isNotEmpty()) {
                         subscriptionRefreshCursor = (start + window.size) % subscriptions.size
                     }
-                    val rawRecent = withTimeoutOrNull(5_500L) {
-                        supervisorScope {
-                            window.map { channel ->
-                                async {
-                                    runCatching { api.channelActivities(token, channel.id, 6) }
-                                        .getOrDefault(emptyList())
+                    // Renovar videos y Shorts en paralelo. Así el único círculo no espera una
+                    // segunda fase después de actualizar los canales suscritos. La consulta de
+                    // Shorts usa el cursor siguiente y excluye visualmente la tanda ya mostrada.
+                    val computedShortsQuery = buildShortsQuery(
+                        history = snapshot.history,
+                        liked = mergeUniqueVideos(snapshot.liked, snapshot.localLikedVideos),
+                        subscriptions = subscriptions,
+                        searchHistory = snapshot.searchHistory
+                    )
+                    val refreshShortsQuery = computedShortsQuery.ifBlank { shortsQuery }
+                    // Si los intereses de la cuenta cambiaron, iniciar esa búsqueda desde su
+                    // primera página. Si la consulta es la misma, avanzar con nextPageToken.
+                    val requestedShortsToken = if (
+                        shortsQuery.isNotBlank() && refreshShortsQuery == shortsQuery
+                    ) shortsNextToken else ""
+                    val (rawRecent, searchedShortsPage) = supervisorScope {
+                        val recentDeferred = async {
+                            withTimeoutOrNull(4_800L) {
+                                supervisorScope {
+                                    window.map { channel ->
+                                        async {
+                                            runCatching { api.channelActivities(token, channel.id, 7) }
+                                                .getOrDefault(emptyList())
+                                        }
+                                    }.awaitAll().flatten()
                                 }
-                            }.awaitAll().flatten()
+                            }.orEmpty()
                         }
-                    }.orEmpty().sortedByDescending { it.publishedAt }
+                        val shortsDeferred = async {
+                            if (refreshShortsQuery.isBlank()) {
+                                VideoPage(emptyList())
+                            } else {
+                                withTimeoutOrNull(4_800L) {
+                                    loadShortsSearchPage(
+                                        token = token,
+                                        preferredQuery = refreshShortsQuery,
+                                        maxResults = 24,
+                                        pageToken = requestedShortsToken
+                                    ).first
+                                } ?: VideoPage(emptyList())
+                            }
+                        }
+                        recentDeferred.await().sortedByDescending { it.publishedAt } to shortsDeferred.await()
+                    }
+                    shortsQuery = refreshShortsQuery
+                    if (searchedShortsPage.nextPageToken.isNotBlank()) {
+                        shortsNextToken = searchedShortsPage.nextPageToken
+                    } else if (requestedShortsToken.isNotBlank()) {
+                        // El cursor llegó al final. El siguiente gesto vuelve a la primera página,
+                        // pero rotateShortsForRefresh seguirá priorizando IDs no visibles.
+                        shortsNextToken = ""
+                    }
 
                     // Una sola consulta de duraciones permite separar antes de publicar: ningún
                     // Short debe colarse debajo de la fila superior. Si YouTube no devuelve la
                     // duración, ese elemento se conserva fuera del feed normal hasta la pasada
                     // completa, en vez de mostrarlo erróneamente como video horizontal.
-                    val classifiedRecent = runCatching { api.enrichVideoDurations(token, rawRecent) }
-                        .getOrDefault(rawRecent)
-                    val freshShorts = classifiedRecent.filter(::looksLikeShort)
+                    val durationCandidates = mergeUniqueVideos(rawRecent, searchedShortsPage.items)
+                    val classifiedCandidates = withTimeoutOrNull(3_000L) {
+                        runCatching { api.enrichVideoDurations(token, durationCandidates) }
+                            .getOrDefault(durationCandidates)
+                    } ?: durationCandidates
+                    val classifiedById = classifiedCandidates.associateBy { it.id }
+                    val classifiedRecent = rawRecent.map { classifiedById[it.id] ?: it }
+                    // Los resultados de esta consulta vienen específicamente del endpoint
+                    // de búsqueda corta; no hacemos una segunda ronda de avatares/extractor
+                    // mientras el usuario está esperando el refresh. La pasada completa los
+                    // enriquece después sin mantener el círculo visible.
+                    val searchedShorts = searchedShortsPage.items
+                        .map { classifiedById[it.id] ?: it }
+                        .filter(::isAcceptableShort)
+                    val freshShorts = mergeUniqueVideos(
+                        classifiedRecent.filter(::looksLikeShort),
+                        searchedShorts
+                    )
                     val freshVideos = classifiedRecent.filter(::isNormalHomeVideo)
                     val personalized = mergeUniqueVideos(
                         freshVideos,
@@ -895,13 +957,11 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
 
                 supervisorScope {
                     val userDeferred = async { api.getUserInfo(token) }
+                    // "Todos" ya no usa Tendencias como sustituto del feed personal.
+                    // Conservar el cache anterior evita una llamada de red que no aporta al
+                    // Principal y deja ancho de banda para cuenta, Shorts y reproducción.
                     val popularDeferred = async(start = CoroutineStart.LAZY) {
-                        if (fastRefreshedCategory == HomeCategory.FOR_YOU) {
-                            VideoPage(previous.popular, popularNextToken)
-                        } else {
-                            runCatching { api.mostPopularPage(token) }
-                                .getOrDefault(VideoPage(previous.popular))
-                        }
+                        VideoPage(previous.popular, popularNextToken)
                     }
                     val liveDeferred = async(start = CoroutineStart.LAZY) {
                         if (fastRefreshedCategory == HomeCategory.LIVE) {
@@ -1101,7 +1161,7 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
                     // ampliar la lista de suscripciones completa, sin retrasar ninguna pantalla.
                     if (subscriptions.size >= 50) {
                         val expandedSubscriptions = runCatching {
-                            api.subscriptions(token, maxPages = 4)
+                            api.subscriptions(token, maxPages = 8)
                         }.getOrDefault(subscriptions)
                         if (expandedSubscriptions.size > subscriptions.size) {
                             subscriptions = expandedSubscriptions
@@ -1221,20 +1281,21 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
                     uploadsNextToken = uploadsPage.nextPageToken
                     likedNextToken = likedPage.nextPageToken
 
-                    val previousRemoteIds = mergeUniqueVideos(
-                        previous.personalized,
-                        previous.live,
-                        previous.gaming,
-                        previous.music,
-                        previous.shorts
-                    ).asSequence().map { it.id }.filter { it.isNotBlank() }.toHashSet()
-                    val newContentCount = mergeUniqueVideos(
-                        personalized,
-                        live,
-                        gaming,
-                        music,
-                        shorts
-                    ).count { it.id !in previousRemoteIds }
+                    // El mensaje de refresh cuenta solamente la categoría que el usuario ve.
+                    // Antes sumaba En vivo/Juegos/Música/Shorts aunque Principal no cambiara.
+                    val visibleBefore = when (previous.homeCategory) {
+                        HomeCategory.FOR_YOU -> mergeUniqueVideos(previous.shorts, previous.personalized)
+                        HomeCategory.LIVE -> previous.live
+                        HomeCategory.GAMING -> previous.gaming
+                        HomeCategory.MUSIC -> previous.music
+                    }.asSequence().map { it.id }.filter { it.isNotBlank() }.toHashSet()
+                    val visibleAfter = when (previous.homeCategory) {
+                        HomeCategory.FOR_YOU -> mergeUniqueVideos(shorts, personalized)
+                        HomeCategory.LIVE -> live
+                        HomeCategory.GAMING -> gaming
+                        HomeCategory.MUSIC -> music
+                    }
+                    val newContentCount = visibleAfter.count { it.id !in visibleBefore }
 
                     val profile = accountProfile
                     val playlists = accountPlaylists
@@ -1765,7 +1826,10 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
                 selectedChannelTitle = "",
                 selectedChannel = null,
                 channelVideos = emptyList(),
-                channelPlaylists = emptyList()
+                channelPlaylists = emptyList(),
+                selectedPlaylist = null,
+                selectedPlaylistVideos = emptyList(),
+                playlistLoading = false
             )
         }
     }
@@ -1810,6 +1874,9 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
                 relatedCanLoadMore = true
             )
         }
+        // Guardar la entrada de historial desde el primer toque. Así Colección no depende
+        // de que el reproductor alcance un checkpoint posterior para mostrar la reproducción.
+        viewModelScope.launch(Dispatchers.IO) { repository.addToHistory(watched) }
         loadPlayerContext(playable)
     }
 
@@ -1835,6 +1902,7 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
                 relatedCanLoadMore = false
             )
         }
+        viewModelScope.launch(Dispatchers.IO) { repository.addToHistory(watched) }
     }
 
     fun openShortDetails(video: VideoItem) {
@@ -2246,22 +2314,33 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
         if (clean.isBlank()) return
         val token = accessToken
         if (token.isNullOrBlank()) {
-            _uiState.update { it.copy(message = "Renueva el acceso de Google para buscar contenido nuevo.") }
+            _uiState.update { it.copy(message = "Renueva el acceso de Google para buscar en YouTube.") }
             return
         }
         val history = repository.addSearch(clean)
         lastSearchQuery = clean
         searchNextToken = ""
-        _uiState.update { it.copy(loading = true, searchHistory = history, searchResults = emptyList()) }
+        _uiState.update {
+            it.copy(
+                loading = true,
+                searchHistory = history,
+                searchResults = emptyList(),
+                searchChannels = emptyList(),
+                searchPlaylists = emptyList(),
+                searchLoadingMore = false
+            )
+        }
         viewModelScope.launch {
             try {
-                val page = api.searchVideosPage(token, clean)
+                val page = api.searchAllPage(token, clean, maxResults = 30)
                 searchNextToken = page.nextPageToken
-                val results = enrichVideosWithCache(token, page.items)
+                val results = enrichVideosWithCache(token, page.videos)
                 _uiState.update {
                     it.copy(
                         loading = false,
                         searchResults = results,
+                        searchChannels = page.channels,
+                        searchPlaylists = page.playlists,
                         searchLoadingMore = false,
                         section = MainSection.SEARCH
                     )
@@ -2269,7 +2348,7 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
             } catch (error: YouTubeApiException) {
                 handleApiError(error)
             } catch (error: Exception) {
-                _uiState.update { it.copy(loading = false, message = error.message ?: "Error al buscar.") }
+                _uiState.update { it.copy(loading = false, message = error.message ?: "Error al buscar en YouTube.") }
             }
         }
     }
@@ -2281,18 +2360,72 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
         _uiState.update { it.copy(searchLoadingMore = true) }
         viewModelScope.launch {
             try {
-                val page = api.searchVideosPage(token, lastSearchQuery, pageToken = searchNextToken)
+                val page = api.searchAllPage(
+                    token = token,
+                    query = lastSearchQuery,
+                    pageToken = searchNextToken,
+                    maxResults = 30
+                )
                 searchNextToken = page.nextPageToken
-                val enriched = enrichVideosWithCache(token, page.items)
+                val enriched = enrichVideosWithCache(token, page.videos)
                 _uiState.update {
                     it.copy(
                         searchResults = mergeUniqueVideos(it.searchResults, enriched),
+                        searchChannels = (it.searchChannels + page.channels).distinctBy { channel -> channel.id },
+                        searchPlaylists = (it.searchPlaylists + page.playlists).distinctBy { playlist -> playlist.id },
                         searchLoadingMore = false
                     )
                 }
             } catch (error: Exception) {
-                _uiState.update { it.copy(searchLoadingMore = false, message = "No se cargaron más resultados.") }
+                _uiState.update { it.copy(searchLoadingMore = false, message = "No se cargaron más resultados de YouTube.") }
             }
+        }
+    }
+
+    fun openPlaylist(playlist: PlaylistItem) {
+        val token = accessToken
+        if (token.isNullOrBlank()) {
+            _uiState.update { it.copy(message = "Renueva el acceso de Google para abrir esta lista de YouTube.") }
+            return
+        }
+        _uiState.update {
+            it.copy(
+                selectedPlaylist = playlist,
+                selectedPlaylistVideos = emptyList(),
+                playlistLoading = true
+            )
+        }
+        viewModelScope.launch {
+            try {
+                val page = api.playlistVideosPage(token, playlist.id, maxResults = 50)
+                val videos = enrichVideosWithCache(token, page.items)
+                _uiState.update {
+                    it.copy(
+                        selectedPlaylist = playlist,
+                        selectedPlaylistVideos = videos,
+                        playlistLoading = false
+                    )
+                }
+            } catch (error: Exception) {
+                _uiState.update {
+                    it.copy(
+                        selectedPlaylist = null,
+                        selectedPlaylistVideos = emptyList(),
+                        playlistLoading = false,
+                        message = "No se pudo abrir la lista de YouTube."
+                    )
+                }
+            }
+        }
+    }
+
+    fun closePlaylist() {
+        _uiState.update {
+            it.copy(
+                selectedPlaylist = null,
+                selectedPlaylistVideos = emptyList(),
+                playlistLoading = false
+            )
         }
     }
 
@@ -2555,6 +2688,7 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     private fun isNormalHomeVideo(video: VideoItem): Boolean {
+        if (video.title.isBlank() || video.thumbnailUrl.isBlank()) return false
         if (video.isLive) return true
         if (video.mediaKind != MediaKind.YOUTUBE) return !looksLikeShort(video)
         // La API de actividades no incluye duración. Principal solo publica un video de YouTube
@@ -2730,6 +2864,7 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     private fun isAcceptableShort(video: VideoItem): Boolean {
+        if (video.title.isBlank() || video.thumbnailUrl.isBlank()) return false
         val text = (video.title + " " + video.description + " " + video.channelTitle).lowercase()
         val blocked = listOf(
             "onlyfans", "porn", "xxx", "nsfw", "18+", "desnuda", "desnudo",
@@ -2805,9 +2940,9 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
         const val AUTO_REFRESH_INTERVAL_MS = 10L * 60L * 1000L
         const val MAX_HISTORY_ITEMS_IN_MEMORY = 300
         const val FIRST_RELATED_PAGE = "__first__"
-        const val FAST_REFRESH_SUBSCRIPTION_BATCH = 6
-        const val INITIAL_SUBSCRIPTION_BATCH = 8
-        const val SUBSCRIPTION_PAGE_SIZE = 8
+        const val FAST_REFRESH_SUBSCRIPTION_BATCH = 8
+        const val INITIAL_SUBSCRIPTION_BATCH = 12
+        const val SUBSCRIPTION_PAGE_SIZE = 12
         const val GEO_WATCH_LATER_TITLE = "Geo Videos - Ver después"
         const val MAX_HOME_ITEMS = 60
         const val SHORT_MAX_DURATION_MS = 180_000L

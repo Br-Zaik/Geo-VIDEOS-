@@ -230,16 +230,14 @@ internal fun LiteThumbnail(
 @Composable
 private fun LiteThumbnailFallback(modifier: Modifier) {
     Box(
-        modifier = modifier.background(
-            Brush.linearGradient(listOf(Color(0xFF24163D), Color(0xFF4A2A79), Color.Black))
-        ),
+        modifier = modifier.background(Color(0xFF202024)),
         contentAlignment = Alignment.Center
     ) {
         Icon(
             Icons.Default.PlayArrow,
             contentDescription = null,
-            tint = Color.White.copy(alpha = 0.82f),
-            modifier = Modifier.size(42.dp)
+            tint = Color.White.copy(alpha = 0.30f),
+            modifier = Modifier.size(36.dp)
         )
     }
 }

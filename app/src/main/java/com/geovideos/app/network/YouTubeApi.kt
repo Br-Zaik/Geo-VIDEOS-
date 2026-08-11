@@ -25,6 +25,13 @@ data class VideoPage(
     val nextPageToken: String = ""
 )
 
+data class YouTubeSearchPage(
+    val videos: List<VideoItem> = emptyList(),
+    val channels: List<ChannelItem> = emptyList(),
+    val playlists: List<PlaylistItem> = emptyList(),
+    val nextPageToken: String = ""
+)
+
 class YouTubeApi {
     suspend fun getUserInfo(token: String): GoogleProfile = withContext(Dispatchers.IO) {
         val json = requestJson("https://www.googleapis.com/oauth2/v3/userinfo", token)
@@ -324,6 +331,70 @@ class YouTubeApi {
         VideoPage(parseSearchItems(json), json.optString("nextPageToken"))
     }
 
+    suspend fun searchAllPage(
+        token: String,
+        query: String,
+        pageToken: String = "",
+        maxResults: Int = 25
+    ): YouTubeSearchPage = withContext(Dispatchers.IO) {
+        val clean = query.trim()
+        if (clean.isBlank()) return@withContext YouTubeSearchPage()
+        val page = pageToken.takeIf { it.isNotBlank() }
+            ?.let { "&pageToken=${encode(it)}" }
+            .orEmpty()
+        // No se fuerza type=video: la búsqueda general de YouTube puede devolver
+        // videos, canales y playlists en una sola consulta. Tampoco se fuerza idioma,
+        // para no ocultar resultados válidos de la cuenta.
+        val json = requestJson(
+            "https://www.googleapis.com/youtube/v3/search?part=snippet&maxResults=${maxResults.coerceIn(1, 50)}&regionCode=PE&safeSearch=moderate&q=${encode(clean)}$page",
+            token
+        )
+        val items = json.optJSONArray("items")
+        val videos = ArrayList<VideoItem>()
+        val channels = ArrayList<ChannelItem>()
+        val playlists = ArrayList<PlaylistItem>()
+        if (items != null) {
+            for (index in 0 until items.length()) {
+                val item = items.optJSONObject(index) ?: continue
+                val idObject = item.optJSONObject("id") ?: continue
+                val snippet = item.optJSONObject("snippet") ?: continue
+                when (idObject.optString("kind")) {
+                    "youtube#video" -> {
+                        val id = idObject.optString("videoId")
+                        if (id.isNotBlank()) videos += videoFromSnippet(id, snippet)
+                    }
+                    "youtube#channel" -> {
+                        val id = idObject.optString("channelId")
+                        if (id.isNotBlank()) {
+                            channels += ChannelItem(
+                                id = id,
+                                title = snippet.optString("title", "Canal").decodeHtml(),
+                                thumbnailUrl = bestThumbnail(snippet),
+                                description = snippet.optString("description", "").decodeHtml()
+                            )
+                        }
+                    }
+                    "youtube#playlist" -> {
+                        val id = idObject.optString("playlistId")
+                        if (id.isNotBlank()) {
+                            playlists += PlaylistItem(
+                                id = id,
+                                title = snippet.optString("title", "Lista").decodeHtml(),
+                                thumbnailUrl = bestThumbnail(snippet)
+                            )
+                        }
+                    }
+                }
+            }
+        }
+        YouTubeSearchPage(
+            videos = videos.distinctBy { it.id },
+            channels = channels.distinctBy { it.id },
+            playlists = playlists.distinctBy { it.id },
+            nextPageToken = json.optString("nextPageToken")
+        )
+    }
+
     suspend fun liveVideos(token: String): List<VideoItem> = liveVideosPage(token).items
 
     suspend fun liveVideosPage(
@@ -410,7 +481,7 @@ class YouTubeApi {
             }
             pageToken = json.optString("nextPageToken")
             pageCount += 1
-        } while (pageToken.isNotBlank() && pageCount < maxPages.coerceIn(1, 4))
+        } while (pageToken.isNotBlank() && pageCount < maxPages.coerceIn(1, 10))
         result.distinctBy { it.id }
     }
 

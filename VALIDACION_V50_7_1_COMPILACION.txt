@@ -1,0 +1,15 @@
+Geo Videos V50.7.1 - correccion de compilacion
+
+Correccion aplicada:
+- Se elimino una anotacion @OptIn(ExperimentalMaterial3Api::class) duplicada inmediatamente antes de HistoryCollectionScreen en LibraryCollections.kt.
+- Ese duplicado provocaba el error de Kotlin: "This annotation is not repeatable" en LibraryCollections.kt:179:1.
+- No se modifico la logica de feed, Shorts, busqueda, historial, reproductor, mini reproductor, OAuth ni sincronizacion de YouTube.
+- versionCode: 509
+- versionName: 50.7.1
+
+Validaciones locales realizadas:
+- Busqueda de anotaciones consecutivas duplicadas en todos los .kt.
+- Parseo de todos los XML del proyecto.
+- Integridad del ZIP final.
+
+Nota: el entorno local no contiene la distribucion Gradle/Android completa necesaria para ejecutar la compilacion Android final; GitHub Actions sigue siendo la validacion definitiva del APK.

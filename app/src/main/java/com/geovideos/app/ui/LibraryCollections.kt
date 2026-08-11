@@ -184,71 +184,55 @@ private fun HistoryCollectionScreen(
     onPlay: (VideoItem) -> Unit,
     onRemove: (String) -> Unit
 ) {
-    var filter by rememberSaveable { mutableStateOf(HistoryMediaFilter.ALL) }
+    var showSearch by rememberSaveable { mutableStateOf(false) }
     var query by rememberSaveable { mutableStateOf("") }
-    val filtered = remember(videos, filter, query) {
+    val filtered = remember(videos, query) {
         videos.asSequence()
             .sortedByDescending { it.watchedAtMs }
             .distinctBy { it.id }
-            .filter { video ->
-                when (filter) {
-                    HistoryMediaFilter.ALL -> true
-                    HistoryMediaFilter.VIDEOS -> !video.looksLikeShortForLibrary()
-                    HistoryMediaFilter.SHORTS -> video.looksLikeShortForLibrary()
-                    HistoryMediaFilter.PODCASTS -> video.looksLikePodcastForLibrary()
-                    HistoryMediaFilter.MUSIC -> video.looksLikeMusicForLibrary()
-                }
-            }
             .filter { video ->
                 query.isBlank() || video.title.contains(query, true) || video.channelTitle.contains(query, true)
             }
             .toList()
     }
-    val grouped = remember(filtered) {
-        filtered.groupBy(::historyDayLabel).entries.toList()
-    }
+    val grouped = remember(filtered) { filtered.groupBy(::historyDayLabel).entries.toList() }
 
     Column(modifier = modifier.fillMaxSize().background(Color.Black)) {
         TopAppBar(
             title = { Text("Historial", fontWeight = FontWeight.Bold) },
             navigationIcon = {
                 IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, contentDescription = "Volver") }
-            }
-        )
-        OutlinedTextField(
-            value = query,
-            onValueChange = { query = it },
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 6.dp),
-            singleLine = true,
-            placeholder = { Text("Buscar en el historial") },
-            leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
-            trailingIcon = {
-                if (query.isNotBlank()) {
-                    IconButton(onClick = { query = "" }) {
-                        Icon(Icons.Default.Close, contentDescription = "Limpiar búsqueda")
-                    }
+            },
+            actions = {
+                IconButton(onClick = {
+                    showSearch = !showSearch
+                    if (!showSearch) query = ""
+                }) {
+                    Icon(
+                        if (showSearch) Icons.Default.Close else Icons.Default.Search,
+                        contentDescription = if (showSearch) "Cerrar búsqueda" else "Buscar en historial"
+                    )
                 }
             }
         )
-        LazyRow(
-            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            items(HistoryMediaFilter.entries, key = { it.name }) { option ->
-                FilterChip(
-                    selected = filter == option,
-                    onClick = { filter = option },
-                    label = { Text(option.label) }
-                )
-            }
+        if (showSearch) {
+            OutlinedTextField(
+                value = query,
+                onValueChange = { query = it },
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
+                singleLine = true,
+                placeholder = { Text("Buscar en el historial de Geo Videos") },
+                leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) }
+            )
         }
         HorizontalDivider()
         if (filtered.isEmpty()) {
             Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 Text(
-                    if (query.isBlank()) "Todavía no hay videos en esta categoría." else "No se encontraron coincidencias.",
+                    if (query.isBlank()) "Todavía no hay reproducciones en Geo Videos." else "No se encontraron coincidencias.",
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(24.dp)
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.padding(28.dp)
                 )
             }
         } else {
@@ -260,9 +244,9 @@ private fun HistoryCollectionScreen(
                     item(key = "history-label-$label") {
                         Text(
                             label,
-                            style = MaterialTheme.typography.titleMedium,
+                            style = MaterialTheme.typography.titleSmall,
                             fontWeight = FontWeight.Bold,
-                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)
+                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 9.dp)
                         )
                     }
                     items(group, key = { "history-row-${it.id}" }) { video ->
@@ -282,11 +266,11 @@ private fun HistoryVideoRow(
 ) {
     var menu by remember { mutableStateOf(false) }
     Row(
-        modifier = Modifier.fillMaxWidth().clickable(onClick = onPlay).padding(horizontal = 12.dp, vertical = 7.dp),
+        modifier = Modifier.fillMaxWidth().clickable(onClick = onPlay).padding(horizontal = 10.dp, vertical = 5.dp),
         verticalAlignment = Alignment.Top
     ) {
         Box(
-            modifier = Modifier.width(150.dp).aspectRatio(16f / 9f).clip(RoundedCornerShape(8.dp)).background(Color(0xFF202024))
+            modifier = Modifier.width(126.dp).aspectRatio(16f / 9f).clip(RoundedCornerShape(8.dp)).background(Color(0xFF202024))
         ) {
             LiteThumbnail(
                 url = video.thumbnailUrl,
@@ -312,7 +296,7 @@ private fun HistoryVideoRow(
             }
         }
         Column(modifier = Modifier.weight(1f).padding(start = 12.dp)) {
-            Text(video.title, maxLines = 3, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.SemiBold)
+            Text(video.title, maxLines = 2, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.bodyMedium)
             Text(
                 video.channelTitle,
                 maxLines = 1,
