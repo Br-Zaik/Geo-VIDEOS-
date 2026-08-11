@@ -8,6 +8,8 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import org.schabi.newpipe.extractor.NewPipe
 import org.schabi.newpipe.extractor.localization.ContentCountry
 import org.schabi.newpipe.extractor.localization.Localization
@@ -73,6 +75,7 @@ internal object StreamResolver {
 
     private val resolvedCache = ConcurrentHashMap<String, CachedStream>()
     private val infoCache = ConcurrentHashMap<String, CachedInfo>()
+    private val infoLocks = ConcurrentHashMap<String, Mutex>()
     private val contentLengthCache = ConcurrentHashMap<String, Pair<Long, Long>>()
 
     suspend fun resolve(
@@ -122,8 +125,10 @@ internal object StreamResolver {
                 error("La calidad ${exactHeight}p ya no está disponible para este video.")
             }
 
-            // Shorts start faster and more reliably with a progressive stream in automatic mode.
-            if (preferProgressive) {
+            // In automatic mode prefer a direct progressive stream first. This removes an
+            // extra DASH-manifest request from the critical path and starts normal videos as
+            // quickly as Shorts. DASH remains a fallback when no progressive stream exists.
+            if (preferProgressive || preferredHeight == null) {
                 val fastStart = selectProgressive(
                     streams = info.videoStreams,
                     dataSaver = dataSaver,
@@ -137,7 +142,6 @@ internal object StreamResolver {
                 }
             }
 
-            // Automatic mode can adapt through the service-provided DASH manifest.
             if (!dataSaver && info.dashMpdUrl.isNotBlank()) {
                 return@withContext ResolvedMedia(info.dashMpdUrl, MimeTypes.APPLICATION_MPD)
             }
@@ -310,24 +314,51 @@ internal object StreamResolver {
         }
     }
 
-    suspend fun preload(videos: List<VideoItem>, dataSaver: Boolean) {
+    suspend fun preload(
+        videos: List<VideoItem>,
+        dataSaver: Boolean,
+        preferredHeight: Int? = null
+    ) {
+        // Resolve likely next videos before they are tapped. Use exactly the same quality key
+        // as normal playback so the result is consumed directly from resolvedCache.
         videos.asSequence()
             .filter { it.mediaKind == MediaKind.YOUTUBE && it.id.isNotBlank() }
             .distinctBy { it.id }
             .take(PRELOAD_COUNT)
-            .forEach { video -> runCatching { resolve(video, dataSaver) } }
+            .forEach { video ->
+                runCatching {
+                    resolve(
+                        video = video,
+                        dataSaver = dataSaver,
+                        preferredHeight = preferredHeight,
+                        preferProgressive = false
+                    )
+                }
+            }
     }
 
     private suspend fun streamInfo(videoId: String): StreamInfo {
         val now = System.currentTimeMillis()
         infoCache[videoId]?.takeIf { it.expiresAtMs > now }?.let { return it.info }
-        return withContext(Dispatchers.IO) {
-            ensureInitialized()
-            val watchUrl = "https://www.youtube.com/watch?v=$videoId"
-            StreamInfo.getInfo(watchUrl).also { info ->
-                infoCache[videoId] = CachedInfo(info, now + INFO_CACHE_TTL_MS)
-                trimCache(now)
+
+        // If a home-feed preload and a tap request the same video at the same time, only run
+        // the expensive NewPipe extraction once. Other videos are not blocked by this lock.
+        val mutex = infoLocks.getOrPut(videoId) { Mutex() }
+        return try {
+            mutex.withLock {
+                val lockedNow = System.currentTimeMillis()
+                infoCache[videoId]?.takeIf { it.expiresAtMs > lockedNow }?.let { return@withLock it.info }
+                withContext(Dispatchers.IO) {
+                    ensureInitialized()
+                    val watchUrl = "https://www.youtube.com/watch?v=$videoId"
+                    StreamInfo.getInfo(watchUrl).also { info ->
+                        infoCache[videoId] = CachedInfo(info, System.currentTimeMillis() + INFO_CACHE_TTL_MS)
+                        trimCache(System.currentTimeMillis())
+                    }
+                }
             }
+        } finally {
+            if (infoLocks[videoId] === mutex) infoLocks.remove(videoId)
         }
     }
 

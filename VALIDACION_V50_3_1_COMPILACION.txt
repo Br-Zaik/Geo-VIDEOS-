@@ -1,0 +1,14 @@
+Geo Videos V50.3.1 / versionCode 504
+
+Correccion puntual de compilacion detectada por GitHub Actions:
+- GeoVideosApp.kt usaba ::looksLikeHomeShort desde otro archivo.
+- LiteHomeScreen.kt declaraba looksLikeHomeShort como private a nivel de archivo, por lo que Kotlin impedia acceder a ella desde GeoVideosApp.kt.
+- Se cambio solo la visibilidad de esa funcion a internal para compartirla dentro del mismo modulo.
+- No se cambio su logica, ni OAuth, ni selector de cuentas, ni reproductor, ni notificacion, ni historial.
+
+Error corregido:
+Cannot access 'fun looksLikeHomeShort(video: VideoItem): Boolean': it is private in file.
+
+Validacion local disponible:
+- Estructura del proyecto y referencias verificadas.
+- El entorno local no puede descargar Gradle 8.13 desde services.gradle.org, por lo que la compilacion Android completa debe ejecutarse en GitHub Actions.

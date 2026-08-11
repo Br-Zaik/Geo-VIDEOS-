@@ -272,6 +272,37 @@ fun GeoVideosApp(
         }
     }
 
+    // Warm only the first few videos the user is most likely to tap. Stream extraction is
+    // normally the slowest part of opening a YouTube item; doing it while the home feed is
+    // idle makes the player reuse the resolved URL immediately instead of starting from zero.
+    LaunchedEffect(
+        state.section,
+        state.homeCategory,
+        state.dataSaver,
+        state.personalized,
+        state.popular,
+        state.live,
+        state.gaming,
+        state.music,
+        selectedVideo?.id
+    ) {
+        if (state.section != MainSection.HOME || selectedVideo != null) return@LaunchedEffect
+        // Do not compete with cold-start hydration or silent account verification.
+        delay(700L)
+        if (state.section != MainSection.HOME || selectedVideo != null) return@LaunchedEffect
+        val candidates = when (state.homeCategory) {
+            HomeCategory.FOR_YOU -> state.personalized.ifEmpty { state.popular }
+            HomeCategory.LIVE -> state.live
+            HomeCategory.GAMING -> state.gaming
+            HomeCategory.MUSIC -> state.music
+        }.asSequence()
+            .filterNot(::looksLikeHomeShort)
+            .distinctBy { it.id }
+            .take(3)
+            .toList()
+        playerConnection.preload(candidates, state.dataSaver)
+    }
+
     PlaybackProgressSaver(
         video = selectedVideo,
         playerConnection = playerConnection,

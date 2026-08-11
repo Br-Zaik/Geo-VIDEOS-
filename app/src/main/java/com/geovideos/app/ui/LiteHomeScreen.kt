@@ -142,7 +142,7 @@ private fun LiteCategoryChip(
     )
 }
 
-private fun looksLikeHomeShort(video: VideoItem): Boolean {
+internal fun looksLikeHomeShort(video: VideoItem): Boolean {
     val text = (video.title + " " + video.description).lowercase()
     val taggedAsShort = listOf(
         "#shorts", " shorts", "short ", "tiktok", "reel", "vertical", "status video"

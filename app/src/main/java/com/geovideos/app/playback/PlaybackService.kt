@@ -257,8 +257,9 @@ class PlaybackService : MediaSessionService() {
             builder: NotificationCompat.Builder,
             actionFactory: MediaNotification.ActionFactory
         ): IntArray {
-            // Four explicit controls keep the notification predictable on older Android skins:
-            // anterior, pausa/reproducir, siguiente and cerrar. The first three stay compact.
+            // Preserve the three transport controls in the compact MediaStyle row. Cerrar is
+            // an explicit fourth action when the notification is expanded, and the delete
+            // intent uses the same full-stop path when the card is dismissed.
             builder.addAction(notificationAction(android.R.drawable.ic_media_previous, "Anterior", ACTION_NOTIFICATION_PREVIOUS, 31))
             builder.addAction(
                 notificationAction(
@@ -269,19 +270,20 @@ class PlaybackService : MediaSessionService() {
                 )
             )
             builder.addAction(notificationAction(android.R.drawable.ic_media_next, "Siguiente", ACTION_NOTIFICATION_NEXT, 33))
-            builder.addAction(notificationAction(android.R.drawable.ic_menu_close_clear_cancel, "Cerrar", ACTION_NOTIFICATION_CLOSE, 34))
+            builder.addAction(notificationAction(R.drawable.ic_notification_close, "Cerrar", ACTION_NOTIFICATION_CLOSE, 34))
+            builder.setDeleteIntent(notificationPendingIntent(ACTION_NOTIFICATION_CLOSE, 35))
             return intArrayOf(0, 1, 2)
         }
 
-        private fun notificationAction(icon: Int, title: String, action: String, requestCode: Int): NotificationCompat.Action {
-            val pendingIntent = PendingIntent.getService(
-                appContext,
-                requestCode,
-                Intent(appContext, PlaybackService::class.java).setAction(action),
-                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
-            )
-            return NotificationCompat.Action.Builder(icon, title, pendingIntent).build()
-        }
+        private fun notificationAction(icon: Int, title: String, action: String, requestCode: Int): NotificationCompat.Action =
+            NotificationCompat.Action.Builder(icon, title, notificationPendingIntent(action, requestCode)).build()
+
+        private fun notificationPendingIntent(action: String, requestCode: Int): PendingIntent = PendingIntent.getService(
+            appContext,
+            requestCode,
+            Intent(appContext, PlaybackService::class.java).setAction(action),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
     }
 
     companion object {

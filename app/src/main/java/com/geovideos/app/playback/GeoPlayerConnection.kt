@@ -133,6 +133,7 @@ class GeoPlayerConnection private constructor(context: Context) {
     private var currentVideo: VideoItem? = null
     private var resolveJob: Job? = null
     private var queueJob: Job? = null
+    private var preloadJob: Job? = null
     private var pendingQueue: List<VideoItem> = emptyList()
     private var pendingQueueDataSaver: Boolean = false
     private var requestSerial: Long = 0L
@@ -218,7 +219,9 @@ class GeoPlayerConnection private constructor(context: Context) {
         scope.launch {
             while (isActive) {
                 _controller.value?.let(::updateFrom)
-                delay(2_500L)
+                // Keep the custom progress bar responsive while playing without waking the
+                // UI every few milliseconds when playback is paused.
+                delay(if (_controller.value?.isPlaying == true) 500L else 1_500L)
             }
         }
     }
@@ -369,7 +372,10 @@ class GeoPlayerConnection private constructor(context: Context) {
             .filterNot { it.id == current.id }
             .filter { it.id.isNotBlank() }
             .distinctBy { it.id }
-            .take(20)
+            // Resolving twenty YouTube streams up front wastes extractor/network time and can
+            // compete with the video that is currently buffering. Four items are enough for
+            // seamless Next/autoplay and the queue is rebuilt as playback advances.
+            .take(4)
             .toList()
         pendingQueueDataSaver = dataSaver
         if (_controller.value?.currentMediaItem?.mediaId == current.id) {
@@ -382,6 +388,8 @@ class GeoPlayerConnection private constructor(context: Context) {
         val upcoming = pendingQueue
         if (upcoming.isEmpty()) return
         queueJob = scope.launch {
+            // Let the current item reach its first playable buffer before preparing the queue.
+            delay(900L)
             for (video in upcoming) {
                 val controllerNow = _controller.value ?: break
                 val queuedIds = (0 until controllerNow.mediaItemCount)
@@ -519,7 +527,15 @@ class GeoPlayerConnection private constructor(context: Context) {
     }
     fun preload(videos: List<VideoItem>, dataSaver: Boolean) {
         if (videos.isEmpty()) return
-        scope.launch { StreamResolver.preload(videos, dataSaver) }
+        // NewPipe extraction is blocking work internally, so cancelling and immediately
+        // launching another speculative batch can still leave both requests competing. Keep
+        // at most one small preload batch active at any moment.
+        if (preloadJob?.isActive == true) return
+        val preferredHeight = _preferredQualityHeight.value
+        preloadJob = scope.launch {
+            delay(120L)
+            StreamResolver.preload(videos, dataSaver, preferredHeight)
+        }
     }
     fun setRepeat(enabled: Boolean) = withController {
         it.repeatMode = if (enabled) Player.REPEAT_MODE_ONE else Player.REPEAT_MODE_OFF
@@ -533,6 +549,7 @@ class GeoPlayerConnection private constructor(context: Context) {
         requestSerial += 1L
         resolveJob?.cancel()
         queueJob?.cancel()
+        preloadJob?.cancel()
         pendingQueue = emptyList()
         currentVideo = null
         activeAudioOnly = false
@@ -594,6 +611,7 @@ class GeoPlayerConnection private constructor(context: Context) {
     private fun release() {
         resolveJob?.cancel()
         queueJob?.cancel()
+        preloadJob?.cancel()
         _controller.value?.removeListener(listener)
         MediaController.releaseFuture(controllerFuture)
         scope.cancel()

@@ -1,0 +1,67 @@
+GEO VIDEOS V50.3.0 - CORRECCION DE ARRANQUE, REPRODUCTOR Y NOTIFICACION
+======================================================================
+
+Base de trabajo:
+- Geo-VIDEOS-v50.2-cuenta-google-verificada.zip
+- Se conserva la correccion de identidad/cuenta Google de V50.2.
+
+CORRECCIONES APLICADAS
+----------------------
+1. Arranque y sesion
+- La hidratacion pesada de feeds, historial, listas y descargas ya no se ejecuta en el hilo principal.
+- Principal publica primero Para ti/Popular en paralelo, luego hidrata las otras categorias y la biblioteca fuera del hilo principal.
+- La renovacion silenciosa de Google mantiene AuthStatus.CONNECTED; no debe mostrar "Abriendo Google..." ni saltar Principal -> Google -> Principal.
+- La renovacion silenciosa solo refresca el feed si el cache supera 10 minutos o no existe; se difiere para no competir con el primer frame.
+- La renovacion de escritura de YouTube se retrasa y no se lanza si el usuario ya abrio un video.
+- Se protege la hidratacion frente a un cambio de cuenta en medio del proceso para no mezclar cache remoto de cuentas distintas.
+
+2. Apertura del video
+- openPlayer/previewShort ya no decodifican ni escriben todo el historial antes de mostrar el reproductor.
+- El historial se actualiza primero en memoria y su persistencia se hace fuera del hilo principal.
+- La carga de detalles/relacionados espera 450 ms para dar prioridad al primer frame del video.
+- En automatico se intenta primero un stream progresivo directo; DASH queda como fallback.
+- Se precargan los primeros videos probables del Home y se reutiliza el resultado del resolver.
+- Se evita ejecutar dos extracciones NewPipe simultaneas para el mismo video.
+- La cola de autoplay se limita a 4 videos y empieza despues de 900 ms para no competir con el buffer inicial.
+- El estado de progreso del player se actualiza cada 500 ms mientras reproduce.
+
+3. Interfaz del reproductor
+- Se desactivo el controlador visual antiguo de Media3 para el reproductor principal.
+- Nuevo overlay propio inspirado funcionalmente en la referencia DailyTube:
+  * flecha para minimizar/salir de pantalla completa;
+  * calidad visible como Automatico (Xp) o calidad elegida;
+  * velocidad 1x visible;
+  * menu de opciones;
+  * pausa/play grande y siguiente en el centro;
+  * tiempo actual, barra de progreso, duracion y pantalla completa abajo;
+  * controles que se ocultan automaticamente durante reproduccion y reaparecen al tocar.
+- Los gestos de doble toque +/-10 s y zoom se mantienen.
+- Info/Comentarios dejan el estilo de chips antiguos y pasan a pestañas planas con acento morado.
+- Mix queda integrado como franja compacta y se elimina la tarjeta Mix duplicada.
+- Titulo, canal y acciones inferiores se agrandaron/reordenaron para aproximarse a la referencia.
+- El panel de ajustes/calidad queda anclado bajo la zona superior del reproductor.
+
+4. Notificacion multimedia
+- Se mantienen 4 acciones: Anterior, Play/Pausa, Siguiente y Cerrar.
+- En la vista compacta se mantienen Anterior, Play/Pausa y Siguiente.
+- X/Cerrar se agrega como cuarta accion con icono vectorial propio y usa el mismo cierre total al descartar la notificacion.
+- La X detiene el player, limpia la cola, retira foreground y elimina la notificacion.
+- Al descartar la notificacion se usa tambien el cierre de reproduccion cuando el sistema lo permite.
+
+NO MODIFICADO
+-------------
+- applicationId/package.
+- keystore y firma del proyecto.
+- cliente/base OAuth.
+- selector oficial de cuentas Google.
+- historial local como concepto, descargas, Shorts, busqueda y biblioteca fuera de las optimizaciones indicadas.
+
+VERSION
+-------
+versionCode: 503
+versionName: 50.3.0
+
+VALIDACION LOCAL DEL PAQUETE
+----------------------------
+- Se realizo comprobacion estatica de sintaxis Kotlin sobre los archivos modificados: no se detectaron errores de parseo/sintaxis.
+- Este entorno no incluye Android SDK/Gradle instalados y el proyecto original no trae gradle-wrapper.jar; por eso la compilacion Android completa corresponde al workflow incluido en .github/workflows/zip-to-apk.yml, que instala Gradle 8.13 cuando falta el wrapper JAR.

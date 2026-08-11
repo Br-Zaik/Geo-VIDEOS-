@@ -58,6 +58,7 @@ internal fun LitePlayerView(
     onZoomScaleChange: ((Float) -> Unit)? = null,
     onSeekBy: ((Long) -> Unit)? = null,
     onZoomFeedback: ((Int) -> Unit)? = null,
+    onSingleTap: (() -> Unit)? = null,
     onSettingsClick: (() -> Unit)? = null,
     onControllerVisibilityChanged: ((Boolean) -> Unit)? = null,
     gesturesEnabled: Boolean = true
@@ -67,6 +68,7 @@ internal fun LitePlayerView(
     val currentOnZoomScaleChange by rememberUpdatedState(onZoomScaleChange)
     val currentOnSeekBy by rememberUpdatedState(onSeekBy)
     val currentOnZoomFeedback by rememberUpdatedState(onZoomFeedback)
+    val currentOnSingleTap by rememberUpdatedState(onSingleTap)
     val currentGesturesEnabled by rememberUpdatedState(gesturesEnabled)
     DisposableEffect(controller) {
         onDispose {
@@ -128,6 +130,11 @@ internal fun LitePlayerView(
                     context,
                     object : GestureDetector.SimpleOnGestureListener() {
                         override fun onDown(e: MotionEvent): Boolean = true
+
+                        override fun onSingleTapConfirmed(e: MotionEvent): Boolean {
+                            currentOnSingleTap?.invoke()
+                            return true
+                        }
 
                         override fun onDoubleTap(e: MotionEvent): Boolean {
                             val delta = if (e.x >= width / 2f) 10_000L else -10_000L

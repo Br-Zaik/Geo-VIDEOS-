@@ -602,7 +602,6 @@ private class NativePlayerAdapter(
         this.canLoadMore = canLoadMore
         submitList(buildList {
             add(PlayerRow.Header(header))
-            if (header.mixAvailable) related.firstOrNull()?.let { add(PlayerRow.Mix(header.video, it)) }
             related.forEach { add(PlayerRow.Related(it)) }
             if (loading || loadingMore) add(PlayerRow.Loading)
             else if (canLoadMore) add(PlayerRow.More)
@@ -703,7 +702,9 @@ private class PlayerHeaderHolder(context: Context) : RecyclerView.ViewHolder(Pla
         }
         view.mixBanner.visibility = if (data.mixAvailable) View.VISIBLE else View.GONE
         view.mixBanner.text = if (data.mixAvailable) {
-            "◉  Mix: ${video.channelTitle.ifBlank { "videos relacionados" }} y más"
+            val mixTitle = video.title.take(54).trim()
+            val mixChannels = video.channelTitle.ifBlank { "Videos relacionados" }
+            "◉  Mix: $mixTitle\n$mixChannels y más                                    ↕"
         } else {
             ""
         }
@@ -730,7 +731,7 @@ private class PlayerHeaderHolder(context: Context) : RecyclerView.ViewHolder(Pla
         view.music.setOnClickListener { onToggleAudioOnly() }
         view.window.setOnClickListener { onPictureInPicture() }
         view.channelButton.visibility = if (video.channelId.isBlank()) View.GONE else View.VISIBLE
-        view.channelButton.text = "Ver canal"
+        view.channelButton.text = "VER CANAL"
         val openChannel = View.OnClickListener {
             if (video.channelId.isNotBlank()) {
                 onOpenChannel(ChannelItem(video.channelId, video.channelTitle, data.channelAvatar))
@@ -777,59 +778,64 @@ private class PlayerHeaderView(context: Context) : LinearLayout(context) {
     init {
         orientation = VERTICAL
         layoutParams = RecyclerView.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
-        setPadding(dp(context, 14), dp(context, 8), dp(context, 14), dp(context, 12))
+        setPadding(dp(context, 12), dp(context, 0), dp(context, 12), dp(context, 12))
         setBackgroundColor(Color.BLACK)
 
         val tabs = LinearLayout(context).apply {
             orientation = HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(0, 0, 0, dp(context, 8))
+            setPadding(0, 0, 0, dp(context, 4))
         }
         stylePlayerTab(infoTab, "Info")
         stylePlayerTab(commentsTab, "Comentarios")
-        tabs.addView(infoTab, LayoutParams(dp(context, 92), dp(context, 34)))
-        tabs.addView(commentsTab, LayoutParams(dp(context, 126), dp(context, 34)).apply { marginStart = dp(context, 7) })
+        tabs.addView(infoTab, LayoutParams(dp(context, 96), dp(context, 46)))
+        tabs.addView(commentsTab, LayoutParams(dp(context, 178), dp(context, 46)).apply { marginStart = dp(context, 8) })
         addView(tabs, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
 
         infoPanel.orientation = VERTICAL
 
         mixBanner.setTextColor(Color.WHITE)
-        mixBanner.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+        mixBanner.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
         mixBanner.setTypeface(mixBanner.typeface, android.graphics.Typeface.BOLD)
-        mixBanner.setPadding(dp(context, 11), dp(context, 8), dp(context, 11), dp(context, 8))
-        mixBanner.background = roundedDrawable(0xFF202024.toInt(), 8f, context)
+        mixBanner.setLineSpacing(dp(context, 2).toFloat(), 1f)
+        mixBanner.setPadding(dp(context, 13), dp(context, 10), dp(context, 13), dp(context, 10))
+        mixBanner.background = roundedDrawable(0xFF202024.toInt(), 4f, context)
         mixBanner.visibility = View.GONE
-        infoPanel.addView(mixBanner, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { bottomMargin = dp(context, 9) })
+        infoPanel.addView(mixBanner, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { bottomMargin = dp(context, 14) })
 
         title.setTextColor(Color.WHITE)
-        title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 19f)
+        title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 21f)
         title.setTypeface(title.typeface, android.graphics.Typeface.BOLD)
         title.maxLines = 3
         title.ellipsize = TextUtils.TruncateAt.END
         infoPanel.addView(title)
 
         meta.setTextColor(0xFFAAA7B2.toInt())
-        meta.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12.5f)
+        meta.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13.5f)
         infoPanel.addView(meta, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(context, 4) })
 
         val channelRow = LinearLayout(context).apply { orientation = HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
         avatar.scaleType = ImageView.ScaleType.CENTER_CROP
-        channelRow.addView(avatar, LayoutParams(dp(context, 44), dp(context, 44)))
+        channelRow.addView(avatar, LayoutParams(dp(context, 48), dp(context, 48)))
         val channelTexts = LinearLayout(context).apply {
             orientation = VERTICAL
             channel.setTextColor(Color.WHITE)
-            channel.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15.5f)
+            channel.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16f)
             channel.setTypeface(channel.typeface, android.graphics.Typeface.BOLD)
             channel.maxLines = 1
             subscribers.setTextColor(0xFFAAA7B2.toInt())
-            subscribers.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+            subscribers.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12.5f)
             addView(channel)
             addView(subscribers)
         }
         channelRow.addView(channelTexts, LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { marginStart = dp(context, 11) })
         styleAction(context, channelButton, "Canal")
-        channelRow.addView(channelButton, LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(context, 38)))
-        infoPanel.addView(channelRow, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(context, 12) })
+        channelRow.addView(channelButton, LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(context, 42)))
+        infoPanel.addView(channelRow, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(context, 14) })
+        infoPanel.addView(
+            View(context).apply { setBackgroundColor(0xFF343238.toInt()) },
+            LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(context, 1)).apply { topMargin = dp(context, 12) }
+        )
 
         val scroll = HorizontalScrollView(context).apply {
             isHorizontalScrollBarEnabled = false
@@ -837,10 +843,10 @@ private class PlayerHeaderView(context: Context) : LinearLayout(context) {
         }
         val actions = LinearLayout(context).apply { orientation = HORIZONTAL }
         listOf(like, dislike, music, share, watchLater, window, download).forEach { item ->
-            actions.addView(item, LinearLayout.LayoutParams(dp(context, 56), dp(context, 48)))
+            actions.addView(item, LinearLayout.LayoutParams(dp(context, 76), dp(context, 76)))
         }
         scroll.addView(actions)
-        infoPanel.addView(scroll, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(context, 50)).apply { topMargin = dp(context, 3) })
+        infoPanel.addView(scroll, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(context, 78)).apply { topMargin = dp(context, 10) })
 
         descriptionToggle.setTextColor(Color.WHITE)
         descriptionToggle.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
@@ -896,7 +902,7 @@ private class PlayerHeaderView(context: Context) : LinearLayout(context) {
     fun showInfo() {
         infoPanel.visibility = View.VISIBLE
         commentsPanel.visibility = View.GONE
-        relatedTitle.visibility = View.VISIBLE
+        relatedTitle.visibility = View.GONE
         setTabSelected(infoTab, true)
         setTabSelected(commentsTab, false)
     }
@@ -912,20 +918,21 @@ private class PlayerHeaderView(context: Context) : LinearLayout(context) {
     private fun stylePlayerTab(view: TextView, textValue: String) {
         view.text = textValue
         view.gravity = Gravity.CENTER
-        view.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+        view.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16f)
         view.setTypeface(view.typeface, android.graphics.Typeface.BOLD)
-        view.background = roundedDrawable(0xFF1D1B22.toInt(), 18f, context)
+        view.background = null
         view.isClickable = true
         view.isFocusable = true
     }
 
     private fun setTabSelected(view: TextView, selected: Boolean) {
-        view.setTextColor(if (selected) Color.WHITE else 0xFFA8A4AF.toInt())
-        view.background = roundedDrawable(
-            if (selected) 0xFF5A3C88.toInt() else 0xFF1D1B22.toInt(),
-            18f,
-            context
-        )
+        view.setTextColor(if (selected) 0xFF9D6CFF.toInt() else 0xFFA8A4AF.toInt())
+        view.background = null
+        view.paintFlags = if (selected) {
+            view.paintFlags or android.graphics.Paint.UNDERLINE_TEXT_FLAG
+        } else {
+            view.paintFlags and android.graphics.Paint.UNDERLINE_TEXT_FLAG.inv()
+        }
     }
 }
 
@@ -1134,15 +1141,15 @@ private class PlayerActionView(context: Context, iconRes: Int, label: String) : 
         isFocusable = true
         icon.setImageResource(iconRes)
         icon.setColorFilter(Color.WHITE)
-        addView(icon, LayoutParams(dp(context, 20), dp(context, 20)))
+        addView(icon, LayoutParams(dp(context, 27), dp(context, 27)))
         labelView.text = label
         labelView.gravity = Gravity.CENTER
         labelView.setTextColor(Color.WHITE)
-        labelView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 8.8f)
+        labelView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 10.5f)
         labelView.maxLines = 2
         labelView.ellipsize = TextUtils.TruncateAt.END
         addView(labelView, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
-            topMargin = dp(context, 3)
+            topMargin = dp(context, 6)
         })
     }
 
@@ -1165,10 +1172,11 @@ private fun setActionSelected(view: PlayerActionView, selected: Boolean) {
 private fun styleAction(context: Context, view: TextView, text: String) {
     view.text = text
     view.gravity = Gravity.CENTER
-    view.setTextColor(Color.WHITE)
+    view.setTextColor(0xFFB8B5BF.toInt())
     view.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
-    view.setPadding(dp(context, 14), 0, dp(context, 14), 0)
-    view.background = roundedDrawable(0xFF242128.toInt(), 18f, context, 0xFF5B5663.toInt())
+    view.setTypeface(view.typeface, android.graphics.Typeface.BOLD)
+    view.setPadding(dp(context, 12), 0, dp(context, 12), 0)
+    view.background = null
     view.isClickable = true
     view.isFocusable = true
 }

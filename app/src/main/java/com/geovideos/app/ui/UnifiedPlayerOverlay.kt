@@ -38,14 +38,17 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Fullscreen
 import androidx.compose.material.icons.filled.FullscreenExit
+import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.LockOpen
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.ErrorOutline
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
@@ -55,6 +58,7 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
@@ -220,6 +224,19 @@ internal fun UnifiedPlayerOverlay(
         val serial = zoomFeedbackSerial
         delay(950L)
         if (serial == zoomFeedbackSerial) zoomFeedback = null
+    }
+
+    LaunchedEffect(playerControlsVisible, playback.isPlaying, showPlayerSettings, screenLocked, video.id) {
+        if (playerControlsVisible && playback.isPlaying && !showPlayerSettings && !screenLocked) {
+            delay(3_200L)
+            if (playback.isPlaying && !showPlayerSettings && !screenLocked) {
+                playerControlsVisible = false
+            }
+        }
+    }
+
+    LaunchedEffect(playback.isPlaying, video.id) {
+        if (!playback.isPlaying && !screenLocked) playerControlsVisible = true
     }
 
     if (isInPictureInPictureMode) {
@@ -503,7 +520,7 @@ internal fun UnifiedPlayerOverlay(
                         description = description,
                         channelAvatar = channelAvatar,
                         publishedAt = published,
-                        qualityLabel = preferredQuality?.let { "${it}p" } ?: "Calidad",
+                        qualityLabel = preferredQuality?.let { "${it}p" } ?: "Automático",
                         audioOnly = audioOnly,
                         mixAvailable = related.isNotEmpty()
                     ),
@@ -681,7 +698,10 @@ internal fun UnifiedPlayerOverlay(
                     LitePlayerView(
                         controller = controller!!,
                         modifier = Modifier.fillMaxSize(),
-                        useController = !screenLocked && (fullscreen || (p <= 0.01f && !dragging && !settling)),
+                        // Media3's stock controller was the reason the player still looked like
+                        // the old version. Keep only the video surface and draw Geo Videos'
+                        // DayliTube-style controls in Compose on top of it.
+                        useController = false,
                         resizeMode = if (fullscreen) {
                             AspectRatioFrameLayout.RESIZE_MODE_ZOOM
                         } else {
@@ -713,12 +733,10 @@ internal fun UnifiedPlayerOverlay(
                             zoomFeedback = "Zoom $percent%"
                             zoomFeedbackSerial += 1
                         },
-                        onSettingsClick = {
-                            playerSettingsPage = PlayerSettingsPage.ROOT
-                            showPlayerSettings = true
-                        },
-                        onControllerVisibilityChanged = { visible ->
-                            playerControlsVisible = visible
+                        onSingleTap = {
+                            if (!screenLocked && (fullscreen || (p <= 0.01f && !dragging && !settling))) {
+                                playerControlsVisible = !playerControlsVisible
+                            }
                         },
                         gesturesEnabled = !screenLocked
                     )
@@ -729,30 +747,53 @@ internal fun UnifiedPlayerOverlay(
                     !screenLocked &&
                     (fullscreen || (p <= 0.01f && !dragging && !settling))
                 ) {
-                    PlayerControlIconButton(
-                        onClick = { fullscreen = !fullscreen },
-                        contentDescription = if (fullscreen) "Salir de pantalla completa" else "Pantalla completa",
-                        modifier = Modifier
-                            .align(Alignment.BottomEnd)
-                            .padding(end = 8.dp, bottom = 42.dp)
-                    ) {
-                        Icon(
-                            if (fullscreen) Icons.Default.FullscreenExit else Icons.Default.Fullscreen,
-                            contentDescription = null,
-                            tint = Color.White
-                        )
-                    }
-                    if (fullscreen) {
-                        PlayerControlIconButton(
-                            onClick = { screenLocked = true },
-                            contentDescription = "Bloquear controles",
-                            modifier = Modifier
-                                .align(Alignment.BottomStart)
-                                .padding(start = 8.dp, bottom = 42.dp)
-                        ) {
-                            Icon(Icons.Default.Lock, contentDescription = null, tint = Color.White)
-                        }
-                    }
+                    DayliPlayerControls(
+                        modifier = Modifier.fillMaxSize(),
+                        isPlaying = playback.isPlaying,
+                        positionMs = progressState.positionMs,
+                        durationMs = progressState.durationMs,
+                        qualityLabel = preferredQuality?.let { "${it}p" }
+                            ?: playback.videoHeight.takeIf { it > 0 }?.let { "Automático (${it}p)" }
+                            ?: "Automático",
+                        speed = selectedSpeed,
+                        fullscreen = fullscreen,
+                        onMinimize = {
+                            if (fullscreen) fullscreen = false else settle(1f, fast = true)
+                        },
+                        onTogglePlayback = {
+                            if (playback.isPlaying) playerConnection.pause() else playerConnection.play()
+                            playerControlsVisible = true
+                        },
+                        onNext = {
+                            related.firstOrNull { it.id != video.id }?.let(onPlayRelated)
+                                ?: playerConnection.playNext()
+                            playerControlsVisible = true
+                        },
+                        onQuality = {
+                            playerSettingsPage = PlayerSettingsPage.QUALITY
+                            showPlayerSettings = true
+                            playerControlsVisible = true
+                        },
+                        onSpeed = {
+                            playerSettingsPage = PlayerSettingsPage.SPEED
+                            showPlayerSettings = true
+                            playerControlsVisible = true
+                        },
+                        onMore = {
+                            playerSettingsPage = PlayerSettingsPage.ROOT
+                            showPlayerSettings = true
+                            playerControlsVisible = true
+                        },
+                        onSeek = { position ->
+                            playerConnection.seekTo(position)
+                            playerControlsVisible = true
+                        },
+                        onFullscreen = {
+                            fullscreen = !fullscreen
+                            playerControlsVisible = true
+                        },
+                        onLock = if (fullscreen) ({ screenLocked = true }) else null
+                    )
                 }
 
                 if (fullscreen && screenLocked) {
@@ -851,13 +892,13 @@ internal fun UnifiedPlayerOverlay(
                 PlayerSettingsOverlay(
                     modifier = Modifier
                         .align(Alignment.TopEnd)
-                        .padding(8.dp)
+                        .padding(top = 48.dp, end = 8.dp)
                         .width(286.dp)
                         .heightIn(
                             max = if (fullscreen) {
-                                availableMaxHeight - 16.dp
+                                availableMaxHeight - 56.dp
                             } else {
-                                with(density) { fullPlayerHeightPx.toDp() } - 16.dp
+                                with(density) { fullPlayerHeightPx.toDp() } - 56.dp
                             }
                         ),
                     page = playerSettingsPage,
@@ -973,6 +1014,159 @@ internal fun UnifiedPlayerOverlay(
         }
     }
 
+}
+
+@Composable
+private fun DayliPlayerControls(
+    modifier: Modifier,
+    isPlaying: Boolean,
+    positionMs: Long,
+    durationMs: Long,
+    qualityLabel: String,
+    speed: Float,
+    fullscreen: Boolean,
+    onMinimize: () -> Unit,
+    onTogglePlayback: () -> Unit,
+    onNext: () -> Unit,
+    onQuality: () -> Unit,
+    onSpeed: () -> Unit,
+    onMore: () -> Unit,
+    onSeek: (Long) -> Unit,
+    onFullscreen: () -> Unit,
+    onLock: (() -> Unit)?
+) {
+    val safeDuration = durationMs.coerceAtLeast(0L)
+    val safePosition = if (safeDuration > 0L) positionMs.coerceIn(0L, safeDuration) else 0L
+
+    Box(
+        modifier = modifier
+            .background(Color.Black.copy(alpha = 0.34f))
+            .padding(horizontal = 8.dp, vertical = 4.dp)
+    ) {
+        Row(
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            IconButton(onClick = onMinimize, modifier = Modifier.size(44.dp)) {
+                Icon(
+                    Icons.Default.KeyboardArrowDown,
+                    contentDescription = if (fullscreen) "Salir de pantalla completa" else "Minimizar",
+                    tint = Color.White,
+                    modifier = Modifier.size(34.dp)
+                )
+            }
+            if (onLock != null) {
+                IconButton(onClick = onLock, modifier = Modifier.size(40.dp)) {
+                    Icon(
+                        Icons.Default.Lock,
+                        contentDescription = "Bloquear controles",
+                        tint = Color.White,
+                        modifier = Modifier.size(22.dp)
+                    )
+                }
+            }
+            Spacer(Modifier.weight(1f))
+            TextButton(onClick = onQuality, modifier = Modifier.height(42.dp)) {
+                Text(
+                    qualityLabel,
+                    color = Color.White,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            TextButton(onClick = onSpeed, modifier = Modifier.height(42.dp)) {
+                Text(
+                    if (speed == speed.toInt().toFloat()) "${speed.toInt()}x" else "${speed}x",
+                    color = Color.White,
+                    fontWeight = FontWeight.SemiBold
+                )
+            }
+            IconButton(onClick = onMore, modifier = Modifier.size(42.dp)) {
+                Icon(
+                    Icons.Default.MoreVert,
+                    contentDescription = "Más opciones",
+                    tint = Color.White,
+                    modifier = Modifier.size(28.dp)
+                )
+            }
+        }
+
+        Row(
+            modifier = Modifier.align(Alignment.Center),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(32.dp)
+        ) {
+            IconButton(onClick = onTogglePlayback, modifier = Modifier.size(76.dp)) {
+                Icon(
+                    if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
+                    contentDescription = if (isPlaying) "Pausar" else "Reproducir",
+                    tint = Color.White,
+                    modifier = Modifier.size(62.dp)
+                )
+            }
+            IconButton(onClick = onNext, modifier = Modifier.size(64.dp)) {
+                Icon(
+                    Icons.Default.SkipNext,
+                    contentDescription = "Siguiente",
+                    tint = Color.White,
+                    modifier = Modifier.size(52.dp)
+                )
+            }
+        }
+
+        Row(
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .fillMaxWidth()
+                .padding(horizontal = 8.dp, vertical = 2.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                formatPlayerTime(safePosition),
+                color = Color.White,
+                style = MaterialTheme.typography.bodyMedium,
+                modifier = Modifier.width(48.dp)
+            )
+            Slider(
+                value = safePosition.toFloat(),
+                onValueChange = { value ->
+                    if (safeDuration > 0L) onSeek(value.toLong().coerceIn(0L, safeDuration))
+                },
+                valueRange = if (safeDuration > 0L) 0f..safeDuration.toFloat() else 0f..1f,
+                enabled = safeDuration > 0L,
+                modifier = Modifier.weight(1f)
+            )
+            Text(
+                formatPlayerTime(safeDuration),
+                color = Color.White,
+                style = MaterialTheme.typography.bodyMedium,
+                modifier = Modifier.padding(start = 6.dp)
+            )
+            IconButton(onClick = onFullscreen, modifier = Modifier.size(42.dp)) {
+                Icon(
+                    if (fullscreen) Icons.Default.FullscreenExit else Icons.Default.Fullscreen,
+                    contentDescription = if (fullscreen) "Salir de pantalla completa" else "Pantalla completa",
+                    tint = Color.White,
+                    modifier = Modifier.size(30.dp)
+                )
+            }
+        }
+    }
+}
+
+private fun formatPlayerTime(milliseconds: Long): String {
+    val totalSeconds = (milliseconds.coerceAtLeast(0L) / 1_000L)
+    val seconds = totalSeconds % 60L
+    val minutes = (totalSeconds / 60L) % 60L
+    val hours = totalSeconds / 3_600L
+    return if (hours > 0L) {
+        "%d:%02d:%02d".format(hours, minutes, seconds)
+    } else {
+        "%d:%02d".format(minutes, seconds)
+    }
 }
 
 @Composable

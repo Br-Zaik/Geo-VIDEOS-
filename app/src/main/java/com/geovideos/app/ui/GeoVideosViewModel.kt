@@ -17,6 +17,7 @@ import com.geovideos.app.playback.StreamResolver
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -145,32 +146,15 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
     private var authorizationAttemptId: Long = 0L
 
     private val cachedProfile = repository.loadProfile()
+    private val cachedAccountConnected = repository.hasConnectedAccount() && cachedProfile != null
     private val _uiState = MutableStateFlow(
         GeoVideosUiState(
-            authStatus = if (repository.hasConnectedAccount() && cachedProfile != null) {
-                AuthStatus.CONNECTED
-            } else {
-                AuthStatus.DISCONNECTED
-            },
+            authStatus = if (cachedAccountConnected) AuthStatus.CONNECTED else AuthStatus.DISCONNECTED,
             profile = cachedProfile,
-            personalized = repository.loadPersonalized(),
-            popular = repository.loadPopular(),
-            live = repository.loadLive(),
-            gaming = repository.loadGaming(),
-            music = repository.loadMusic(),
-            shorts = repository.loadShorts().filter(::looksLikeShort),
-            subscriptions = repository.loadSubscriptions(),
-            playlists = repository.loadPlaylists(),
-            liked = repository.loadLiked(),
-            uploads = repository.loadUploads(),
-            notifications = repository.loadNotifications(),
-            history = repository.loadHistory(),
-            watchLater = repository.loadWatchLater(),
-            localLikedIds = repository.loadLocalLikedIds(),
-            localDislikedIds = repository.loadLocalDislikedIds(),
-            localLikedVideos = repository.loadLocalLikedVideos(),
-            downloads = repository.loadDownloads(),
-            searchHistory = repository.loadSearchHistory(),
+            // Heavy JSON lists are hydrated off the main thread. This lets Android draw the
+            // first frame immediately instead of keeping the splash screen visible while
+            // history, feeds, playlists and Shorts are decoded from SharedPreferences.
+            loading = cachedAccountConnected,
             autoplay = repository.loadAutoplay(),
             dataSaver = repository.loadDataSaver(),
             notificationsEnabled = repository.loadNotificationsEnabled(),
@@ -182,12 +166,118 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
     val uiState: StateFlow<GeoVideosUiState> = _uiState.asStateFlow()
 
     init {
-        val cachedShorts = _uiState.value.shorts
-        if (cachedShorts.isNotEmpty()) {
-            viewModelScope.launch {
-                val verified = verifyRealShorts(cachedShorts)
-                _uiState.update { state ->
-                    state.copy(shorts = verified.ifEmpty { state.shorts })
+        hydrateCachedState()
+    }
+
+    private fun hydrateCachedState() {
+        // Capture the account that owns the remote cache before moving the heavy JSON work
+        // to IO. If the user changes account while hydration is still running, never inject
+        // the previous account's YouTube feed into the new session.
+        val hydratedAccountEmail = cachedProfile?.email.orEmpty().trim()
+        viewModelScope.launch(Dispatchers.IO) {
+            // Principal starts on "Para ti". Decode only the two lists needed for that first
+            // useful screen, in parallel, instead of blocking on every cached category.
+            val personalizedDeferred = async { repository.loadPersonalized() }
+            val popularDeferred = async { repository.loadPopular() }
+            val lastSyncDeferred = async { repository.loadLastSyncMs() }
+            val personalized = personalizedDeferred.await()
+            val popular = popularDeferred.await()
+            val lastSyncMs = lastSyncDeferred.await()
+
+            _uiState.update { state ->
+                val currentAccountEmail = state.profile?.email.orEmpty().trim()
+                if (currentAccountEmail.equals(hydratedAccountEmail, ignoreCase = true)) {
+                    state.copy(
+                        personalized = personalized,
+                        popular = popular,
+                        lastSyncMs = lastSyncMs,
+                        loading = false
+                    )
+                } else {
+                    // An account switch completed while disk hydration was running. Do not
+                    // disturb that new account's loading/refresh state.
+                    state
+                }
+            }
+
+            // Hydrate the remaining Home categories only after Principal is already usable.
+            val liveDeferred = async { repository.loadLive() }
+            val gamingDeferred = async { repository.loadGaming() }
+            val musicDeferred = async { repository.loadMusic() }
+            val shortsDeferred = async { repository.loadShorts().filter(::looksLikeShort) }
+            val live = liveDeferred.await()
+            val gaming = gamingDeferred.await()
+            val music = musicDeferred.await()
+            val shorts = shortsDeferred.await()
+
+            _uiState.update { state ->
+                val currentAccountEmail = state.profile?.email.orEmpty().trim()
+                if (currentAccountEmail.equals(hydratedAccountEmail, ignoreCase = true)) {
+                    state.copy(live = live, gaming = gaming, music = music, shorts = shorts)
+                } else {
+                    state
+                }
+            }
+
+            // Library/account caches are independent JSON blobs; parse them concurrently on
+            // IO so they cannot extend the splash/Principal critical path.
+            val subscriptionsDeferred = async { repository.loadSubscriptions() }
+            val playlistsDeferred = async { repository.loadPlaylists() }
+            val likedDeferred = async { repository.loadLiked() }
+            val uploadsDeferred = async { repository.loadUploads() }
+            val notificationsDeferred = async { repository.loadNotifications() }
+            val historyDeferred = async { repository.loadHistory() }
+            val watchLaterDeferred = async { repository.loadWatchLater() }
+            val localLikedIdsDeferred = async { repository.loadLocalLikedIds() }
+            val localDislikedIdsDeferred = async { repository.loadLocalDislikedIds() }
+            val localLikedVideosDeferred = async { repository.loadLocalLikedVideos() }
+            val downloadsDeferred = async { repository.loadDownloads() }
+            val searchHistoryDeferred = async { repository.loadSearchHistory() }
+
+            val subscriptions = subscriptionsDeferred.await()
+            val playlists = playlistsDeferred.await()
+            val liked = likedDeferred.await()
+            val uploads = uploadsDeferred.await()
+            val notifications = notificationsDeferred.await()
+            val history = historyDeferred.await()
+            val watchLater = watchLaterDeferred.await()
+            val localLikedIds = localLikedIdsDeferred.await()
+            val localDislikedIds = localDislikedIdsDeferred.await()
+            val localLikedVideos = localLikedVideosDeferred.await()
+            val downloads = downloadsDeferred.await()
+            val searchHistory = searchHistoryDeferred.await()
+
+            _uiState.update { state ->
+                val currentAccountEmail = state.profile?.email.orEmpty().trim()
+                val sameAccount = currentAccountEmail.equals(hydratedAccountEmail, ignoreCase = true)
+                if (sameAccount) {
+                    state.copy(
+                        subscriptions = subscriptions,
+                        playlists = playlists,
+                        liked = liked,
+                        uploads = uploads,
+                        notifications = notifications,
+                        history = history,
+                        watchLater = watchLater,
+                        localLikedIds = localLikedIds,
+                        localDislikedIds = localDislikedIds,
+                        localLikedVideos = localLikedVideos,
+                        downloads = downloads,
+                        searchHistory = searchHistory,
+                        loading = false
+                    )
+                } else {
+                    // Local-only data is account-independent in Geo Videos and is safe to
+                    // restore even if a Google account switch completed during hydration.
+                    state.copy(
+                        history = history,
+                        watchLater = watchLater,
+                        localLikedIds = localLikedIds,
+                        localDislikedIds = localDislikedIds,
+                        localLikedVideos = localLikedVideos,
+                        downloads = downloads,
+                        searchHistory = searchHistory
+                    )
                 }
             }
         }
@@ -375,14 +465,14 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
         val previousProfile = _uiState.value.profile
         val selected = selectedEmail.orEmpty().trim()
 
-        // No se abre la aplicación solo por recibir un token. El token se valida
-        // contra userinfo y, cuando Google informa la cuenta elegida, ambos correos
-        // deben coincidir antes de guardar la sesión.
-        _uiState.update {
-            it.copy(
-                authStatus = AuthStatus.CONNECTING,
+        // La autorización interactiva muestra la pantalla de conexión. La renovación
+        // silenciosa de una cuenta ya verificada NO cambia de pantalla: Principal se
+        // mantiene visible mientras el token se comprueba en segundo plano.
+        _uiState.update { state ->
+            state.copy(
+                authStatus = if (interactive || previousProfile == null) AuthStatus.CONNECTING else AuthStatus.CONNECTED,
                 authError = "",
-                loading = false,
+                loading = if (interactive && previousProfile == null) state.loading else false,
                 message = null
             )
         }
@@ -469,13 +559,21 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
                     base.copy(
                         authStatus = AuthStatus.CONNECTED,
                         profile = verifiedProfile,
-                        loading = newAccountSession || base.personalized.isEmpty(),
+                        // Cache-first: una renovación silenciosa no vuelve a poner toda la
+                        // pantalla en carga. Solo una cuenta nueva sin contenido muestra skeleton.
+                        loading = newAccountSession && base.personalized.isEmpty(),
                         authError = "",
                         message = null
                     )
                 }
 
-                loadAll(initialLoad = newAccountSession || _uiState.value.lastSyncMs == 0L)
+                val lastSync = _uiState.value.lastSyncMs
+                val shouldRefresh = newAccountSession ||
+                    lastSync <= 0L ||
+                    System.currentTimeMillis() - lastSync >= AUTO_REFRESH_INTERVAL_MS
+                if (shouldRefresh) {
+                    loadAll(initialLoad = newAccountSession || lastSync <= 0L)
+                }
             } catch (error: Exception) {
                 if (attemptId != authorizationAttemptId) return@launch
                 accessToken = null
@@ -1173,7 +1271,11 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
             }
         }
 
-        val popularMorePage = if (subscriptionMore.size < 8 && popularNextToken.isNotBlank()) {
+        // The pagination token is intentionally not persisted. After a cache-first app start
+        // it can therefore be blank even though the cached feed already has content. Fetching
+        // the first popular page on the first explicit load-more restores a valid next token;
+        // mergeUniqueVideos below prevents the cached first page from being duplicated.
+        val popularMorePage = if (subscriptionMore.size < 8) {
             runCatching { api.mostPopularPage(token, pageToken = popularNextToken) }
                 .getOrDefault(VideoPage(emptyList(), popularNextToken))
         } else {
@@ -1362,19 +1464,25 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     fun openPlayer(video: VideoItem) {
-        val saved = repository.loadHistory().firstOrNull { it.id == video.id }
+        // Never decode/write the full history on the UI thread when the user taps a video.
+        // Use the already-hydrated state immediately so the player overlay opens in the same
+        // frame; PlaybackProgressSaver persists it asynchronously after selection.
+        val stateNow = _uiState.value
+        val saved = stateNow.history.firstOrNull { it.id == video.id }
         val playable = video.copy(
             resumePositionMs = saved?.resumePositionMs ?: video.resumePositionMs,
             durationMs = saved?.durationMs ?: video.durationMs
         )
-        val history = repository.addToHistory(playable)
+        val watched = playable.copy(watchedAtMs = System.currentTimeMillis())
+        val optimisticHistory = (listOf(watched) + stateNow.history.filterNot { it.id == playable.id })
+            .take(MAX_HISTORY_ITEMS_IN_MEMORY)
         relatedNextToken = ""
         relatedVideoId = playable.id
         _uiState.update {
             it.copy(
                 selectedVideo = playable,
                 playerExpanded = true,
-                history = history,
+                history = optimisticHistory,
                 playerDetails = null,
                 playerDetailsLoading = true,
                 relatedVideos = emptyList(),
@@ -1388,7 +1496,10 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
 
     fun previewShort(video: VideoItem) {
         val playable = video.copy(resumePositionMs = 0L)
-        val history = repository.addToHistory(playable)
+        val stateNow = _uiState.value
+        val watched = playable.copy(watchedAtMs = System.currentTimeMillis())
+        val optimisticHistory = (listOf(watched) + stateNow.history.filterNot { it.id == playable.id })
+            .take(MAX_HISTORY_ITEMS_IN_MEMORY)
         relatedNextToken = ""
         relatedVideoId = ""
         _uiState.update {
@@ -1396,7 +1507,7 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
                 selectedVideo = playable,
                 playerExpanded = false,
                 section = MainSection.SHORTS,
-                history = history,
+                history = optimisticHistory,
                 playerDetails = null,
                 playerDetailsLoading = false,
                 relatedVideos = emptyList(),
@@ -1438,15 +1549,33 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
 
     fun savePlayback(video: VideoItem, positionMs: Long, durationMs: Long) {
         if (positionMs < 0L) return
-        val history = repository.updatePlayback(video, positionMs, durationMs)
+        val safePosition = positionMs.coerceAtLeast(0L)
         _uiState.update { state ->
+            val previous = state.history.firstOrNull { it.id == video.id }
+            val safeDuration = when {
+                durationMs > 0L -> durationMs
+                video.durationMs > 0L -> video.durationMs
+                else -> previous?.durationMs ?: 0L
+            }
+            val normalizedPosition = if (safeDuration > 0L && safePosition >= safeDuration - 8_000L) 0L else safePosition
+            val updated = video.copy(
+                resumePositionMs = normalizedPosition,
+                durationMs = safeDuration,
+                watchedAtMs = System.currentTimeMillis()
+            )
             state.copy(
-                history = history,
+                history = (listOf(updated) + state.history.filterNot { it.id == video.id })
+                    .take(MAX_HISTORY_ITEMS_IN_MEMORY),
                 selectedVideo = state.selectedVideo?.takeIf { it.id == video.id }?.copy(
-                    resumePositionMs = positionMs,
-                    durationMs = durationMs
+                    resumePositionMs = normalizedPosition,
+                    durationMs = safeDuration
                 ) ?: state.selectedVideo
             )
+        }
+        // JSON serialization and SharedPreferences I/O stay off the main thread so progress
+        // checkpoints cannot stall playback or scrolling.
+        viewModelScope.launch(Dispatchers.IO) {
+            repository.updatePlayback(video, safePosition, durationMs)
         }
     }
 
@@ -1497,6 +1626,10 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
             )
         }
         viewModelScope.launch {
+            // Give stream extraction a short head start. Details/comments/related content are
+            // useful below the player but must never compete with the first playable frame.
+            delay(450L)
+            if (_uiState.value.selectedVideo?.id != video.id || relatedVideoId != video.id) return@launch
             supervisorScope {
                 val detailsDeferred = async { runCatching { api.videoDetails(token, video) }.getOrNull() }
                 val relatedDeferred = async {
@@ -2298,6 +2431,8 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     private companion object {
+        const val AUTO_REFRESH_INTERVAL_MS = 10L * 60L * 1000L
+        const val MAX_HISTORY_ITEMS_IN_MEMORY = 300
         const val FIRST_RELATED_PAGE = "__first__"
         const val INITIAL_SUBSCRIPTION_BATCH = 4
         const val SUBSCRIPTION_PAGE_SIZE = 4

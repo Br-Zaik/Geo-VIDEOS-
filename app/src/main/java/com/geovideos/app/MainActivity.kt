@@ -99,7 +99,7 @@ class MainActivity : ComponentActivity() {
                         requestGoogleAuthorization(allowResolution = false)
                     }
                 },
-                350
+                900
             )
         }
 
@@ -109,11 +109,13 @@ class MainActivity : ComponentActivity() {
             window.decorView.postDelayed(
                 {
                     val state = viewModel.uiState.value
-                    if (state.youtubeSyncEnabled && state.profile != null) {
+                    // YouTube write-sync is non-critical at startup. Do not compete with the
+                    // first Home frame or with a video the user already opened.
+                    if (state.youtubeSyncEnabled && state.profile != null && state.selectedVideo == null) {
                         requestYouTubeSyncAuthorization(allowResolution = false)
                     }
                 },
-                1_250
+                2_500
             )
         }
     }
