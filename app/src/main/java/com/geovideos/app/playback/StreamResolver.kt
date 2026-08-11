@@ -73,8 +73,15 @@ internal object StreamResolver {
         val expiresAtMs: Long
     )
 
+    private data class CachedQualities(
+        val qualities: List<StreamQualityOption>,
+        val isLive: Boolean,
+        val expiresAtMs: Long
+    )
+
     private val resolvedCache = ConcurrentHashMap<String, CachedStream>()
     private val infoCache = ConcurrentHashMap<String, CachedInfo>()
+    private val qualityCache = ConcurrentHashMap<String, CachedQualities>()
     private val infoLocks = ConcurrentHashMap<String, Mutex>()
     private val contentLengthCache = ConcurrentHashMap<String, Pair<Long, Long>>()
 
@@ -82,80 +89,109 @@ internal object StreamResolver {
         video: VideoItem,
         dataSaver: Boolean,
         preferredHeight: Int? = null,
-        preferProgressive: Boolean = false
+        preferProgressive: Boolean = false,
+        fallbackAttempt: Int = 0
     ): ResolvedMedia {
         if (video.mediaKind != MediaKind.YOUTUBE) return ResolvedMedia(video.source)
-        val key = cacheKey(video.id, dataSaver, preferredHeight, preferProgressive)
+        val safeAttempt = fallbackAttempt.coerceIn(0, MAX_PLAYBACK_FALLBACK_ATTEMPT)
+        val key = cacheKey(video.id, dataSaver, preferredHeight, preferProgressive, safeAttempt)
         val now = System.currentTimeMillis()
         resolvedCache[key]?.takeIf { it.expiresAtMs > now }?.let { return it.media }
 
         val media = withContext(Dispatchers.IO) {
             val info = streamInfo(video.id)
+            cacheQualities(video.id, info)
 
             if (video.isLive && info.hlsUrl.isNotBlank()) {
                 return@withContext ResolvedMedia(info.hlsUrl, MimeTypes.APPLICATION_M3U8)
             }
 
-            preferredHeight?.takeIf { it > 0 }?.let { exactHeight ->
-                val exactProgressive = selectExactProgressive(info.videoStreams, exactHeight)
-                if (exactProgressive != null) {
-                    return@withContext ResolvedMedia(
-                        uri = exactProgressive.content,
-                        mimeType = exactProgressive.format?.mimeType
-                    )
-                }
-
-                val adaptiveVideo = selectExactAdaptive(info, exactHeight)
-                if (adaptiveVideo != null) {
-                    val family = containerFamily(adaptiveVideo.format?.mimeType)
-                    val audio = chooseAudio(
-                        streams = info.audioStreams.filter { it.isUrl && it.content.isNotBlank() },
-                        family = family
-                    )
-                    if (audio != null) {
+            // La primera pasada respeta una calidad elegida explicitamente. Los reintentos
+            // posteriores priorizan que el video arranque con otro formato compatible.
+            if (safeAttempt == 0) {
+                preferredHeight?.takeIf { it > 0 }?.let { exactHeight ->
+                    val exactProgressive = selectExactProgressive(info.videoStreams, exactHeight)
+                    if (exactProgressive != null) {
                         return@withContext ResolvedMedia(
-                            uri = adaptiveVideo.content,
-                            mimeType = adaptiveVideo.format?.mimeType,
-                            audioUri = audio.content,
-                            audioMimeType = audio.format?.mimeType
+                            uri = exactProgressive.content,
+                            mimeType = exactProgressive.format?.mimeType
                         )
+                    }
+
+                    val adaptiveVideo = selectExactAdaptive(info, exactHeight)
+                    if (adaptiveVideo != null) {
+                        val family = containerFamily(adaptiveVideo.format?.mimeType)
+                        val audioStreams = info.audioStreams.filter { it.isUrl && it.content.isNotBlank() }
+                        val audio = chooseAudio(audioStreams, family) ?: chooseBestAudio(audioStreams)
+                        if (audio != null) {
+                            return@withContext ResolvedMedia(
+                                uri = adaptiveVideo.content,
+                                mimeType = adaptiveVideo.format?.mimeType,
+                                audioUri = audio.content,
+                                audioMimeType = audio.format?.mimeType
+                            )
+                        }
+                    }
+                }
+            }
+
+            val targetHeight = preferredHeight?.takeIf { safeAttempt == 0 && it > 0 }
+                ?: if (dataSaver) 360 else 720
+            val primaryProgressive = selectProgressive(
+                streams = info.videoStreams,
+                dataSaver = dataSaver,
+                preferredHeight = targetHeight
+            )
+            val alternateProgressive = selectAlternateProgressive(
+                streams = info.videoStreams,
+                primary = primaryProgressive,
+                targetHeight = targetHeight
+            )
+            val adaptive = selectAdaptivePlayback(info, targetHeight)
+
+            when (safeAttempt) {
+                0 -> {
+                    // Inicio rapido: un stream progresivo directo evita solicitudes extra de
+                    // manifiestos y suele empezar antes en redes moviles.
+                    primaryProgressive?.let { stream ->
+                        return@withContext ResolvedMedia(stream.content, stream.format?.mimeType)
+                    }
+                    adaptive?.let { return@withContext it }
+                    if (!dataSaver && info.dashMpdUrl.isNotBlank()) {
+                        return@withContext ResolvedMedia(info.dashMpdUrl, MimeTypes.APPLICATION_MPD)
                     }
                 }
 
-                error("La calidad ${exactHeight}p ya no está disponible para este video.")
-            }
-
-            // In automatic mode prefer a direct progressive stream first. This removes an
-            // extra DASH-manifest request from the critical path and starts normal videos as
-            // quickly as Shorts. DASH remains a fallback when no progressive stream exists.
-            if (preferProgressive || preferredHeight == null) {
-                val fastStart = selectProgressive(
-                    streams = info.videoStreams,
-                    dataSaver = dataSaver,
-                    preferredHeight = if (dataSaver) 360 else 720
-                )
-                if (fastStart != null) {
-                    return@withContext ResolvedMedia(
-                        fastStart.content,
-                        fastStart.format?.mimeType
-                    )
+                1 -> {
+                    // Segundo intento: no repetir exactamente la URL que ya fallo.
+                    alternateProgressive?.let { stream ->
+                        return@withContext ResolvedMedia(stream.content, stream.format?.mimeType)
+                    }
+                    adaptive?.let { return@withContext it }
                 }
-            }
 
-            if (!dataSaver && info.dashMpdUrl.isNotBlank()) {
-                return@withContext ResolvedMedia(info.dashMpdUrl, MimeTypes.APPLICATION_MPD)
-            }
+                2 -> {
+                    // Tercer intento: usar video/audio adaptativos separados. PlaybackService
+                    // los combina en Media3 sin depender del progresivo que fallo.
+                    adaptive?.let { return@withContext it }
+                    if (info.dashMpdUrl.isNotBlank()) {
+                        return@withContext ResolvedMedia(info.dashMpdUrl, MimeTypes.APPLICATION_MPD)
+                    }
+                }
 
-            val progressive = selectProgressive(
-                streams = info.videoStreams,
-                dataSaver = dataSaver,
-                preferredHeight = preferredHeight
-            )
-            if (progressive != null) {
-                return@withContext ResolvedMedia(
-                    progressive.content,
-                    progressive.format?.mimeType
-                )
+                else -> {
+                    // Ultima salida controlada: manifiesto DASH/HLS y, si no existe, cualquier
+                    // progresivo alternativo disponible.
+                    if (info.dashMpdUrl.isNotBlank()) {
+                        return@withContext ResolvedMedia(info.dashMpdUrl, MimeTypes.APPLICATION_MPD)
+                    }
+                    if (info.hlsUrl.isNotBlank()) {
+                        return@withContext ResolvedMedia(info.hlsUrl, MimeTypes.APPLICATION_M3U8)
+                    }
+                    alternateProgressive?.let { stream ->
+                        return@withContext ResolvedMedia(stream.content, stream.format?.mimeType)
+                    }
+                }
             }
 
             if (info.hlsUrl.isNotBlank()) {
@@ -164,8 +200,12 @@ internal object StreamResolver {
             if (info.dashMpdUrl.isNotBlank()) {
                 return@withContext ResolvedMedia(info.dashMpdUrl, MimeTypes.APPLICATION_MPD)
             }
+            primaryProgressive?.let { stream ->
+                return@withContext ResolvedMedia(stream.content, stream.format?.mimeType)
+            }
+            adaptive?.let { return@withContext it }
 
-            error("No se encontró una transmisión compatible para este video.")
+            error("No se encontro una transmision compatible para este video.")
         }
         resolvedCache[key] = CachedStream(media, now + CACHE_TTL_MS)
         trimCache(now)
@@ -182,6 +222,7 @@ internal object StreamResolver {
 
         val media = withContext(Dispatchers.IO) {
             val info = streamInfo(video.id)
+            cacheQualities(video.id, info)
             val audio = chooseBestAudio(
                 info.audioStreams.filter { it.isUrl && it.content.isNotBlank() }
             ) ?: error("No se encontró una pista de audio compatible para este video.")
@@ -216,8 +257,25 @@ internal object StreamResolver {
             )
         }
 
+        if (!includeDownloadSizes) {
+            val now = System.currentTimeMillis()
+            qualityCache[video.id]?.takeIf { it.expiresAtMs > now }?.let { cached ->
+                return StreamOptions(qualities = cached.qualities, isLive = cached.isLive)
+            }
+        }
+
         return withContext(Dispatchers.IO) {
             val info = streamInfo(video.id)
+            val qualities = qualitiesFromInfo(info)
+            qualityCache[video.id] = CachedQualities(
+                qualities = qualities,
+                isLive = video.isLive || info.hlsUrl.isNotBlank(),
+                expiresAtMs = System.currentTimeMillis() + INFO_CACHE_TTL_MS
+            )
+            if (!includeDownloadSizes) {
+                return@withContext StreamOptions(qualities = qualities, isLive = video.isLive)
+            }
+
             val progressive = info.videoStreams
                 .filter { it.isUrl && !it.isVideoOnly && it.content.isNotBlank() && it.height > 0 }
             val adaptiveVideo = buildList {
@@ -277,17 +335,7 @@ internal object StreamResolver {
                 )
             }
 
-            val downloads = if (includeDownloadSizes) {
-                attachSizes(downloadsWithoutSizes)
-            } else {
-                downloadsWithoutSizes
-            }
-            val qualities = downloads
-                .map { it.height }
-                .filter { it > 0 }
-                .distinct()
-                .sortedDescending()
-                .map { height -> StreamQualityOption(height, "${height}p") }
+            val downloads = attachSizes(downloadsWithoutSizes)
 
             StreamOptions(
                 qualities = qualities,
@@ -396,6 +444,73 @@ internal object StreamResolver {
             else -> 0
         }
         codecBonus + bitrate
+    }
+
+    private fun qualitiesFromInfo(info: StreamInfo): List<StreamQualityOption> {
+        val heights = (info.videoStreams.asSequence() + info.videoOnlyStreams.asSequence())
+            .filter { it.isUrl && it.content.isNotBlank() && it.height > 0 }
+            .map { it.height }
+            .distinct()
+            .sortedDescending()
+            .toList()
+        return heights.map { height -> StreamQualityOption(height, "${height}p") }
+    }
+
+    private fun cacheQualities(videoId: String, info: StreamInfo) {
+        if (videoId.isBlank()) return
+        val qualities = qualitiesFromInfo(info)
+        qualityCache[videoId] = CachedQualities(
+            qualities = qualities,
+            isLive = info.hlsUrl.isNotBlank(),
+            expiresAtMs = System.currentTimeMillis() + INFO_CACHE_TTL_MS
+        )
+    }
+
+    private fun selectAlternateProgressive(
+        streams: List<VideoStream>,
+        primary: VideoStream?,
+        targetHeight: Int
+    ): VideoStream? {
+        return streams.asSequence()
+            .filter {
+                it.isUrl &&
+                    !it.isVideoOnly &&
+                    it.content.isNotBlank() &&
+                    it.content != primary?.content
+            }
+            .sortedWith(
+                compareByDescending<VideoStream> { if (isMp4(it.format?.mimeType)) 1 else 0 }
+                    .thenByDescending { videoCodecCompatibility(it.codec) }
+                    .thenBy { abs(it.height - targetHeight) }
+                    .thenByDescending { it.bitrate }
+            )
+            .firstOrNull()
+    }
+
+    private fun selectAdaptivePlayback(info: StreamInfo, targetHeight: Int): ResolvedMedia? {
+        val videos = buildList {
+            addAll(info.videoOnlyStreams)
+            addAll(info.videoStreams.filter { it.isVideoOnly })
+        }.filter { it.isUrl && it.content.isNotBlank() && it.height > 0 }
+        if (videos.isEmpty()) return null
+
+        val bestHeight = videos
+            .map { it.height }
+            .distinct()
+            .filter { it <= targetHeight }
+            .maxOrNull()
+            ?: videos.minByOrNull { abs(it.height - targetHeight) }?.height
+            ?: return null
+        val video = chooseAdaptiveVideo(videos.filter { it.height == bestHeight }) ?: return null
+        val audioStreams = info.audioStreams.filter { it.isUrl && it.content.isNotBlank() }
+        val family = containerFamily(video.format?.mimeType)
+        val audio = chooseAudio(audioStreams, family) ?: chooseBestAudio(audioStreams) ?: return null
+        return ResolvedMedia(
+            uri = video.content,
+            mimeType = video.format?.mimeType,
+            audioUri = audio.content,
+            audioMimeType = audio.format?.mimeType
+        )
     }
 
     private fun selectExactProgressive(
@@ -566,6 +681,9 @@ internal object StreamResolver {
         infoCache.entries
             .filter { it.value.expiresAtMs <= now }
             .forEach { infoCache.remove(it.key, it.value) }
+        qualityCache.entries
+            .filter { it.value.expiresAtMs <= now }
+            .forEach { qualityCache.remove(it.key, it.value) }
         contentLengthCache.entries
             .filter { it.value.second <= now }
             .forEach { contentLengthCache.remove(it.key, it.value) }
@@ -588,9 +706,10 @@ internal object StreamResolver {
         videoId: String,
         dataSaver: Boolean,
         preferredHeight: Int?,
-        preferProgressive: Boolean
+        preferProgressive: Boolean,
+        fallbackAttempt: Int
     ): String =
-        "$videoId:${if (dataSaver) "save" else "auto"}:${preferredHeight ?: 0}:${if (preferProgressive) "fast" else "adaptive"}"
+        "$videoId:${if (dataSaver) "save" else "auto"}:${preferredHeight ?: 0}:${if (preferProgressive) "fast" else "adaptive"}:try$fallbackAttempt"
 
     @Synchronized
     private fun ensureInitialized() {
@@ -608,6 +727,7 @@ internal object StreamResolver {
     private const val MAX_CACHE_ENTRIES = 30
     private const val MAX_INFO_CACHE_ENTRIES = 12
     private const val PRELOAD_COUNT = 2
+    private const val MAX_PLAYBACK_FALLBACK_ATTEMPT = 3
     private const val MAX_SHORT_DURATION_MS = 180_000L
     private const val USER_AGENT =
         "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 " +

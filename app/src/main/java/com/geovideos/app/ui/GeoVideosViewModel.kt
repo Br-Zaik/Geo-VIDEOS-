@@ -14,7 +14,9 @@ import com.geovideos.app.network.VideoPage
 import com.geovideos.app.network.YouTubeApi
 import com.geovideos.app.network.YouTubeApiException
 import com.geovideos.app.playback.StreamResolver
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.delay
@@ -144,6 +146,7 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
     private var subscriptionRefreshCursor: Int = 0
     private var pendingSubscriptionToggle: ChannelItem? = null
     private var authorizationAttemptId: Long = 0L
+    private var fullSyncJob: Job? = null
 
     private val cachedProfile = repository.loadProfile()
     private val cachedAccountConnected = repository.hasConnectedAccount() && cachedProfile != null
@@ -528,6 +531,11 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
 
                 accessToken = token
                 repository.saveConnectedProfile(verifiedProfile)
+                val accountHistory = if (newAccountSession) {
+                    withContext(Dispatchers.IO) { repository.loadHistory() }
+                } else {
+                    null
+                }
                 resetPagination()
 
                 _uiState.update { state ->
@@ -544,6 +552,7 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
                             liked = emptyList(),
                             uploads = emptyList(),
                             notifications = emptyList(),
+                            history = accountHistory.orEmpty(),
                             searchResults = emptyList(),
                             selectedChannel = null,
                             channelVideos = emptyList(),
@@ -627,6 +636,8 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
         likesPlaylistId = ""
         uploadsPlaylistId = ""
         resetPagination()
+        fullSyncJob?.cancel()
+        fullSyncJob = null
         repository.clearAccountCache()
         _uiState.update {
             GeoVideosUiState(
@@ -690,28 +701,143 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
         loadAll(initialLoad = false)
     }
 
+    private suspend fun refreshVisibleCategoryFast(
+        token: String,
+        snapshot: GeoVideosUiState
+    ): Boolean {
+        return try {
+            when (snapshot.homeCategory) {
+                HomeCategory.FOR_YOU -> {
+                    // El gesto manual espera una sola solicitud visible. Actividad, suscripciones,
+                    // Shorts y enriquecimiento quedan para la sincronizacion silenciosa posterior.
+                    val popularPage = api.mostPopularPage(token)
+                    val popular = popularPage.items.filterNot(::looksLikeShort)
+                    val personalized = mergeUniqueVideos(
+                        popular.take(18),
+                        snapshot.personalized,
+                        snapshot.localLikedVideos.take(8),
+                        snapshot.history.take(8)
+                    ).take(MAX_HOME_ITEMS)
+                    popularNextToken = popularPage.nextPageToken
+                    _uiState.update { current ->
+                        current.copy(
+                            refreshing = false,
+                            popular = if (popular.isNotEmpty()) popular else current.popular,
+                            personalized = if (personalized.isNotEmpty()) personalized else current.personalized,
+                            canLoadMoreForYou = popularPage.nextPageToken.isNotBlank() || current.canLoadMoreForYou,
+                            message = null
+                        )
+                    }
+                }
+
+                HomeCategory.LIVE -> {
+                    val page = api.liveVideosPage(token)
+                    liveNextToken = page.nextPageToken
+                    _uiState.update { current ->
+                        current.copy(
+                            refreshing = false,
+                            live = page.items.ifEmpty { current.live },
+                            canLoadMoreLive = page.nextPageToken.isNotBlank(),
+                            message = null
+                        )
+                    }
+                }
+
+                HomeCategory.GAMING -> {
+                    val page = api.mostPopularPage(token, "20")
+                    val videos = page.items.filterNot(::looksLikeShort)
+                    gamingNextToken = page.nextPageToken
+                    _uiState.update { current ->
+                        current.copy(
+                            refreshing = false,
+                            gaming = videos.ifEmpty { current.gaming },
+                            canLoadMoreGaming = page.nextPageToken.isNotBlank(),
+                            message = null
+                        )
+                    }
+                }
+
+                HomeCategory.MUSIC -> {
+                    val page = api.musicVideosPage(token)
+                    val videos = page.items.filterNot(::looksLikeShort)
+                    musicNextToken = page.nextPageToken
+                    _uiState.update { current ->
+                        current.copy(
+                            refreshing = false,
+                            music = videos.ifEmpty { current.music },
+                            canLoadMoreMusic = page.nextPageToken.isNotBlank(),
+                            message = null
+                        )
+                    }
+                }
+            }
+            true
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            // El gesto de actualizar nunca debe dejar el circulo girando mientras se ejecuta
+            // la sincronizacion completa. Si falla esta pasada rapida, conservar el cache.
+            _uiState.update { current ->
+                current.copy(
+                    refreshing = false,
+                    message = "No se pudo actualizar rapido. Se conservaron los datos guardados."
+                )
+            }
+            false
+        }
+    }
+
     private fun loadAll(initialLoad: Boolean) {
         val token = accessToken ?: return
-        viewModelScope.launch {
-            val previous = _uiState.value
+        fullSyncJob?.cancel()
+        fullSyncJob = viewModelScope.launch {
+            var previous = _uiState.value
             try {
+                // Un refresh manual debe sentirse inmediato: primero actualiza solo la categoria
+                // visible y apaga el unico indicador. La sincronizacion pesada continua despues
+                // sin bloquear Principal ni mantener el circulo durante decenas de segundos.
+                val fastRefreshedCategory = if (!initialLoad) {
+                    val visibleCategory = previous.homeCategory
+                    val refreshed = refreshVisibleCategoryFast(token, previous)
+                    previous = _uiState.value
+                    visibleCategory.takeIf { refreshed }
+                } else {
+                    null
+                }
+
                 supervisorScope {
                     val userDeferred = async { api.getUserInfo(token) }
                     val popularDeferred = async {
-                        runCatching { api.mostPopularPage(token) }
-                            .getOrDefault(VideoPage(previous.popular))
+                        if (fastRefreshedCategory == HomeCategory.FOR_YOU) {
+                            VideoPage(previous.popular, popularNextToken)
+                        } else {
+                            runCatching { api.mostPopularPage(token) }
+                                .getOrDefault(VideoPage(previous.popular))
+                        }
                     }
                     val liveDeferred = async {
-                        runCatching { api.liveVideosPage(token) }
-                            .getOrDefault(VideoPage(previous.live))
+                        if (fastRefreshedCategory == HomeCategory.LIVE) {
+                            VideoPage(previous.live, liveNextToken)
+                        } else {
+                            runCatching { api.liveVideosPage(token) }
+                                .getOrDefault(VideoPage(previous.live))
+                        }
                     }
                     val gamingDeferred = async {
-                        runCatching { api.mostPopularPage(token, "20") }
-                            .getOrDefault(VideoPage(previous.gaming))
+                        if (fastRefreshedCategory == HomeCategory.GAMING) {
+                            VideoPage(previous.gaming, gamingNextToken)
+                        } else {
+                            runCatching { api.mostPopularPage(token, "20") }
+                                .getOrDefault(VideoPage(previous.gaming))
+                        }
                     }
                     val musicDeferred = async {
-                        runCatching { api.musicVideosPage(token) }
-                            .getOrDefault(VideoPage(previous.music))
+                        if (fastRefreshedCategory == HomeCategory.MUSIC) {
+                            VideoPage(previous.music, musicNextToken)
+                        } else {
+                            runCatching { api.musicVideosPage(token) }
+                                .getOrDefault(VideoPage(previous.music))
+                        }
                     }
                     val shortsDeferred = async { VideoPage(previous.shorts) }
                     val subscriptionsDeferred = async {
@@ -984,6 +1110,8 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
                         )
                     }
                 }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
             } catch (error: GoogleAccountMismatchException) {
                 disconnect()
                 _uiState.update {

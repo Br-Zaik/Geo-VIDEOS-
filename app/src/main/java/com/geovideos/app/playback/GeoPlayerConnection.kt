@@ -139,7 +139,7 @@ class GeoPlayerConnection private constructor(context: Context) {
     private var requestSerial: Long = 0L
     private var activeRepeatPlayback = false
     private var activeDataSaver = false
-    private var shortFallbackVideoId: String? = null
+    private var playbackFallbackAttempt: Int = 0
     private val pendingControllerActions = ArrayList<(MediaController) -> Unit>()
 
     private val listener = object : Player.Listener {
@@ -161,22 +161,30 @@ class GeoPlayerConnection private constructor(context: Context) {
 
         override fun onPlayerError(error: PlaybackException) {
             val video = currentVideo
+            val player = _controller.value
             if (
                 video != null &&
-                activeRepeatPlayback &&
-                shortFallbackVideoId != video.id
+                !activeAudioOnly &&
+                playbackFallbackAttempt < MAX_PLAYBACK_FALLBACK_ATTEMPT
             ) {
-                shortFallbackVideoId = video.id
+                val nextAttempt = playbackFallbackAttempt + 1
+                val resume = player?.currentPosition
+                    ?.takeIf { it >= 0L }
+                    ?: video.resumePositionMs
+                val shouldPlay = player?.playWhenReady ?: true
+                playbackFallbackAttempt = nextAttempt
+                _state.update { it.copy(resolving = true, error = null) }
                 openInternal(
-                    video = video.copy(resumePositionMs = 0L),
-                    autoplay = true,
+                    video = video.copy(resumePositionMs = resume),
+                    autoplay = shouldPlay,
                     dataSaver = activeDataSaver,
-                    repeat = true,
+                    repeat = activeRepeatPlayback,
                     preferredHeight = null,
                     forceReload = true,
                     audioOnly = false,
-                    forceProgressive = true,
-                    updateQualityPreference = false
+                    forceProgressive = nextAttempt == 1,
+                    updateQualityPreference = false,
+                    fallbackAttempt = nextAttempt
                 )
                 return
             }
@@ -252,8 +260,12 @@ class GeoPlayerConnection private constructor(context: Context) {
         forceReload: Boolean,
         audioOnly: Boolean,
         forceProgressive: Boolean = false,
-        updateQualityPreference: Boolean = true
+        updateQualityPreference: Boolean = true,
+        fallbackAttempt: Int = 0
     ) {
+        // Si el usuario acaba de tocar un video, la reproduccion real tiene prioridad sobre
+        // cualquier precarga especulativa que estuviera resolviendo otro elemento del feed.
+        preloadJob?.cancel()
         val controllerNow = _controller.value
         if (
             !forceReload &&
@@ -276,7 +288,7 @@ class GeoPlayerConnection private constructor(context: Context) {
         activeAudioOnly = audioOnly
         activeRepeatPlayback = repeat
         activeDataSaver = dataSaver
-        if (!forceProgressive) shortFallbackVideoId = null
+        playbackFallbackAttempt = fallbackAttempt.coerceIn(0, MAX_PLAYBACK_FALLBACK_ATTEMPT)
         _audioOnlyMode.value = audioOnly
         if (updateQualityPreference) {
             _preferredQualityHeight.value = preferredHeight
@@ -298,12 +310,28 @@ class GeoPlayerConnection private constructor(context: Context) {
                 val resolved = if (audioOnly) {
                     StreamResolver.resolveAudio(video)
                 } else {
-                    StreamResolver.resolve(
-                        video = video,
-                        dataSaver = dataSaver,
-                        preferredHeight = if (forceProgressive) null else preferredHeight,
-                        preferProgressive = forceProgressive || repeat
-                    )
+                    var attempt = fallbackAttempt.coerceIn(0, MAX_PLAYBACK_FALLBACK_ATTEMPT)
+                    var resolvedMedia: ResolvedMedia? = null
+                    var lastFailure: Throwable? = null
+                    while (resolvedMedia == null && attempt <= MAX_PLAYBACK_FALLBACK_ATTEMPT) {
+                        try {
+                            resolvedMedia = StreamResolver.resolve(
+                                video = video,
+                                dataSaver = dataSaver,
+                                preferredHeight = if (attempt == 0 && !forceProgressive) preferredHeight else null,
+                                preferProgressive = forceProgressive || repeat || attempt == 1,
+                                fallbackAttempt = attempt
+                            )
+                            playbackFallbackAttempt = attempt
+                        } catch (failure: CancellationException) {
+                            throw failure
+                        } catch (failure: Exception) {
+                            lastFailure = failure
+                            attempt += 1
+                            playbackFallbackAttempt = attempt.coerceAtMost(MAX_PLAYBACK_FALLBACK_ATTEMPT)
+                        }
+                    }
+                    resolvedMedia ?: throw (lastFailure ?: IllegalStateException("No se pudo resolver el video."))
                 }
                 if (requestId != requestSerial || currentVideo?.id != video.id) return@launch
                 withController { controller ->
@@ -317,7 +345,9 @@ class GeoPlayerConnection private constructor(context: Context) {
                         .buildUpon()
                         .clearVideoSizeConstraints()
                     if (!audioOnly && !resolved.hasSeparateAudio) {
-                        preferredHeight?.takeIf { it > 0 }?.let { exactHeight ->
+                        preferredHeight
+                            ?.takeIf { playbackFallbackAttempt == 0 && it > 0 }
+                            ?.let { exactHeight ->
                             trackBuilder
                                 .setMinVideoSize(0, exactHeight)
                                 .setMaxVideoSize(Int.MAX_VALUE, exactHeight)
@@ -388,8 +418,21 @@ class GeoPlayerConnection private constructor(context: Context) {
         val upcoming = pendingQueue
         if (upcoming.isEmpty()) return
         queueJob = scope.launch {
-            // Let the current item reach its first playable buffer before preparing the queue.
-            delay(900L)
+            // No resolver el siguiente video mientras el actual todavia intenta arrancar.
+            // En redes moviles esa competencia hacia que el primer frame tardara mas.
+            var waitedMs = 0L
+            while (waitedMs < 5_000L) {
+                val controllerNow = _controller.value ?: return@launch
+                if (controllerNow.currentMediaItem?.mediaId != currentId) return@launch
+                if (controllerNow.playbackState == Player.STATE_READY) break
+                delay(250L)
+                waitedMs += 250L
+            }
+            val readyController = _controller.value ?: return@launch
+            if (readyController.currentMediaItem?.mediaId != currentId ||
+                readyController.playbackState != Player.STATE_READY
+            ) return@launch
+
             for (video in upcoming) {
                 val controllerNow = _controller.value ?: break
                 val queuedIds = (0 until controllerNow.mediaItemCount)
@@ -555,7 +598,7 @@ class GeoPlayerConnection private constructor(context: Context) {
         activeAudioOnly = false
         activeRepeatPlayback = false
         activeDataSaver = false
-        shortFallbackVideoId = null
+        playbackFallbackAttempt = 0
         _audioOnlyMode.value = false
         // Keep the user's quality preference when closing or leaving Shorts.
         // The next video reuses it, matching DayliTube/YouTube behavior.
@@ -619,6 +662,7 @@ class GeoPlayerConnection private constructor(context: Context) {
 
     companion object {
         private const val KEY_PREFERRED_QUALITY = "preferred_quality_height"
+        private const val MAX_PLAYBACK_FALLBACK_ATTEMPT = 3
 
         @Volatile
         private var instance: GeoPlayerConnection? = null

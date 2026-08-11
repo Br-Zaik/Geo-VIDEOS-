@@ -327,8 +327,11 @@ internal fun UnifiedPlayerOverlay(
         }
     }
 
-    LaunchedEffect(showPlayerSettings, showDownloadSheet, video.id) {
-        val dialogOpen = showPlayerSettings || showDownloadSheet
+    LaunchedEffect(showPlayerSettings, playerSettingsPage, showDownloadSheet, video.id) {
+        // Velocidad y ajustes generales son locales y deben abrir al instante. Solo resolver
+        // streams cuando el usuario entra realmente a Calidad o a Descargas.
+        val needsQualityOptions = showPlayerSettings && playerSettingsPage == PlayerSettingsPage.QUALITY
+        val dialogOpen = needsQualityOptions || showDownloadSheet
         val needsDownloadSizes = showDownloadSheet
         val alreadyLoaded = streamOptions != null && (!needsDownloadSizes || streamOptionsHaveSizes)
         if (!dialogOpen || alreadyLoaded || streamOptionsLoading) return@LaunchedEffect
@@ -473,6 +476,14 @@ internal fun UnifiedPlayerOverlay(
         val miniScale = (miniWidthPx / screenWidthPx).coerceIn(0.18f, 1f)
         val velocityThresholdPx = with(density) { 920.dp.toPx() }
         val p = transition.coerceIn(0f, 1f)
+        // Mantener un fondo opaco durante casi toda la minimizacion evita ver Principal,
+        // Info, Mix y relacionados mezclados entre si. El detalle desaparece solo al final,
+        // cuando el mini reproductor ya esta practicamente colocado.
+        val detailsAlpha = when {
+            p <= 0.86f -> 1f
+            p >= 0.985f -> 0f
+            else -> 1f - ((p - 0.86f) / 0.125f)
+        }.coerceIn(0f, 1f)
 
         val dragState = rememberDraggableState { delta: Float ->
             val canMove = (delta > 0f && transition < 1f) || (delta < 0f && transition > 0f)
@@ -502,8 +513,8 @@ internal fun UnifiedPlayerOverlay(
                 modifier = Modifier
                     .fillMaxSize()
                     .graphicsLayer {
-                        alpha = (1f - p * 1.08f).coerceIn(0f, 1f)
-                        translationY = with(density) { 22.dp.toPx() } * p
+                        alpha = detailsAlpha
+                        translationY = with(density) { 10.dp.toPx() } * p
                     },
                 color = MaterialTheme.colorScheme.background
             ) {
@@ -745,10 +756,11 @@ internal fun UnifiedPlayerOverlay(
                 if (
                     playerControlsVisible &&
                     !screenLocked &&
+                    !showPlayerSettings &&
                     (fullscreen || (p <= 0.01f && !dragging && !settling))
                 ) {
                     DayliPlayerControls(
-                        modifier = Modifier.fillMaxSize(),
+                        modifier = Modifier.fillMaxSize().zIndex(20f),
                         isPlaying = playback.isPlaying,
                         positionMs = progressState.positionMs,
                         durationMs = progressState.durationMs,
@@ -886,12 +898,14 @@ internal fun UnifiedPlayerOverlay(
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
+                        .zIndex(29f)
                         .background(Color.Black.copy(alpha = 0.22f))
                         .clickable { showPlayerSettings = false }
                 )
                 PlayerSettingsOverlay(
                     modifier = Modifier
                         .align(Alignment.TopEnd)
+                        .zIndex(30f)
                         .padding(top = 48.dp, end = 8.dp)
                         .width(286.dp)
                         .heightIn(

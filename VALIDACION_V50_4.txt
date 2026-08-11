@@ -1,0 +1,62 @@
+GEO VIDEOS V50.4.0 - CORRECCIONES DE REFRESCO, REPRODUCTOR E HISTORIAL
+VersionCode: 505
+Fecha: 2026-08-10
+
+BASE
+- Partida desde V50.3.1, que contiene la correccion de compilacion de looksLikeHomeShort.
+- No se cambia applicationId, keystore, firma, flujo OAuth base ni selector de cuenta Google.
+
+CAMBIOS APLICADOS
+1. Actualizacion de Principal
+- Un solo indicador circular de refresco.
+- El gesto de arrastrar ya no desplaza fisicamente todo el RecyclerView.
+- Se elimina la segunda fila de carga que aparecia dentro del feed durante refresh.
+- El indicador desaparece al terminar la pasada rapida de la categoria visible.
+- La sincronizacion pesada de perfil, suscripciones, listas, Shorts y enriquecimiento continua en segundo plano sin mantener el circulo visible.
+
+2. Velocidad del refresh
+- Principal actualiza primero la categoria visible (Para ti / En vivo / Juegos / Musica).
+- En Para ti, el circulo espera solo una solicitud de videos populares; actividad, suscripciones y metadatos pasan a la sincronizacion silenciosa posterior.
+- Se evita repetir inmediatamente la misma solicitud de esa categoria durante la sincronizacion completa.
+- La precarga del feed se suspende durante refresh, espera a que Principal este estable y se limita a dos candidatos.
+- Se conserva el contenido cacheado si la pasada rapida falla.
+
+3. Reproduccion y fallbacks
+- Se agregan hasta 3 estrategias de respaldo despues del intento principal.
+- Si una URL progresiva falla, prueba una progresiva alternativa, video/audio adaptativos y manifiestos DASH/HLS segun disponibilidad.
+- Ante error de Media3 intenta recuperar desde la posicion actual antes de mostrar el error final.
+- Al abrir un video real se cancela cualquier precarga especulativa en curso para priorizar el primer frame.
+- La cola siguiente solo empieza a resolverse cuando el video actual ya alcanzo STATE_READY.
+- La seleccion de una calidad exacta se respeta en el primer intento y los fallbacks priorizan compatibilidad.
+
+4. Calidad y velocidad
+- Abrir Velocidad ya no dispara resolucion de streams ni consultas de red.
+- Calidad reutiliza las calidades obtenidas al resolver el video cuando estan en cache.
+- Las opciones de calidad no calculan tamanos de descarga; ese trabajo queda reservado para la pantalla Descargar.
+- El menu de ajustes queda por encima del reproductor y oculta temporalmente los controles inferiores para que los toques de Calidad/Velocidad no sean interceptados por otras capas.
+
+5. Transicion reproductor grande -> mini
+- La superficie de detalles permanece opaca durante casi toda la transicion.
+- El contenido de Principal ya no debe transparentarse y mezclarse con Info, Mix y relacionados mientras se minimiza.
+- El fade ocurre solo al final, cuando el mini reproductor ya esta casi en su posicion.
+
+6. Historial de Geo Videos
+- El historial propio queda separado por cuenta Google conectada para no mezclar reproducciones entre cuentas.
+- Se migra una sola vez el historial local antiguo a la cuenta conectada.
+- Se mantiene el registro de progreso, fecha y reanudacion existente.
+- No se afirma ni se implementa escritura/lectura del historial oficial de YouTube mediante APIs no disponibles.
+
+7. Notificacion
+- Se conserva la implementacion existente de V50.3.1 con anterior, play/pausa, siguiente y X/Cerrar en la vista expandida.
+- Cerrar detiene la reproduccion y elimina la notificacion sin cerrar la cuenta.
+
+VALIDACION ESTATICA REALIZADA
+- Revision de diferencias contra V50.3.1 limitada a los archivos relacionados con estos fallos.
+- Revision de llaves y estructura basica de Kotlin.
+- Revision XML del proyecto.
+- Revision de referencias al error anterior looksLikeHomeShort.
+- Integridad del ZIP mediante unzip -t.
+
+LIMITACION
+- Este entorno no dispone del Android SDK/Gradle completo para ejecutar :app:compileDebugKotlin o generar el APK localmente.
+- La compilacion Android definitiva debe ejecutarse con el workflow de GitHub Actions incluido en el proyecto.

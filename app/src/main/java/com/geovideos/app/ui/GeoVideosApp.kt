@@ -284,12 +284,14 @@ fun GeoVideosApp(
         state.live,
         state.gaming,
         state.music,
+        state.refreshing,
         selectedVideo?.id
     ) {
-        if (state.section != MainSection.HOME || selectedVideo != null) return@LaunchedEffect
-        // Do not compete with cold-start hydration or silent account verification.
-        delay(700L)
-        if (state.section != MainSection.HOME || selectedVideo != null) return@LaunchedEffect
+        if (state.section != MainSection.HOME || selectedVideo != null || state.refreshing) return@LaunchedEffect
+        // No competir con cold start, refresh ni la comprobacion silenciosa de cuenta.
+        // La precarga empieza solo cuando Principal ya lleva un momento estable.
+        delay(1_100L)
+        if (state.section != MainSection.HOME || selectedVideo != null || state.refreshing) return@LaunchedEffect
         val candidates = when (state.homeCategory) {
             HomeCategory.FOR_YOU -> state.personalized.ifEmpty { state.popular }
             HomeCategory.LIVE -> state.live
@@ -298,7 +300,7 @@ fun GeoVideosApp(
         }.asSequence()
             .filterNot(::looksLikeHomeShort)
             .distinctBy { it.id }
-            .take(3)
+            .take(2)
             .toList()
         playerConnection.preload(candidates, state.dataSaver)
     }

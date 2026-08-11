@@ -121,37 +121,38 @@ internal fun RecyclerHomeFeed(
                         if (!recycler.canScrollVertically(-1) && event.y >= runtime.startY) {
                             runtime.pullEligible = true
                             val raw = (event.y - runtime.startY).coerceAtLeast(0f)
-                            runtime.pullDistance = (raw * 0.36f).coerceAtMost(58f * density)
-                            recycler.translationY = runtime.pullDistance
+                            runtime.pullDistance = (raw * 0.28f).coerceAtMost(48f * density)
+                            // Mantener el feed fijo. Solo el indicador acompana levemente el gesto,
+                            // evitando que toda la lista se desplace y se vea como una capa suelta.
                             indicator.visibility = View.VISIBLE
-                            indicator.alpha = (runtime.pullDistance / (44f * density)).coerceIn(0.15f, 1f)
-                            indicator.translationY = (runtime.pullDistance - 34f * density).coerceAtLeast(0f)
+                            val pullProgress = (runtime.pullDistance / (38f * density)).coerceIn(0f, 1f)
+                            indicator.alpha = pullProgress.coerceAtLeast(0.18f)
+                            indicator.translationY = (18f * density * pullProgress)
                         }
                     }
                     MotionEvent.ACTION_UP -> {
                         val shouldRefresh = runtime.pullEligible &&
                             !runtime.refreshing &&
                             runtime.pullDistance >= 42f * density
-                        recycler.animate().translationY(0f).setDuration(180L).start()
                         runtime.pullDistance = 0f
                         runtime.pullEligible = false
                         if (shouldRefresh) {
                             indicator.visibility = View.VISIBLE
-                            indicator.alpha = 1f
+                            indicator.animate().translationY(0f).alpha(1f).setDuration(120L).start()
                             runtime.onRefresh()
                         } else if (!runtime.refreshing) {
-                            indicator.animate().alpha(0f).setDuration(140L).withEndAction {
+                            indicator.animate().translationY(0f).alpha(0f).setDuration(120L).withEndAction {
                                 if (!runtime.refreshing) indicator.visibility = View.GONE
                             }.start()
                         }
                     }
                     MotionEvent.ACTION_CANCEL -> {
-                        recycler.animate().translationY(0f).setDuration(160L).start()
                         runtime.pullDistance = 0f
                         runtime.pullEligible = false
                         if (!runtime.refreshing) {
-                            indicator.visibility = View.GONE
-                            indicator.alpha = 0f
+                            indicator.animate().translationY(0f).alpha(0f).setDuration(100L).withEndAction {
+                                if (!runtime.refreshing) indicator.visibility = View.GONE
+                            }.start()
                         }
                     }
                 }
@@ -195,8 +196,8 @@ internal fun RecyclerHomeFeed(
                 if (refreshing) {
                     visibility = View.VISIBLE
                     alpha = 1f
-                } else if (recyclerView.translationY == 0f) {
-                    animate().alpha(0f).setDuration(140L).withEndAction {
+                } else if (runtime.pullDistance <= 0f) {
+                    animate().translationY(0f).alpha(0f).setDuration(120L).withEndAction {
                         if (!runtime.refreshing) visibility = View.GONE
                     }.start()
                 }
@@ -302,7 +303,8 @@ private class HomeFeedAdapter(
     ) {
         val hasContent = videos.isNotEmpty() || shorts.isNotEmpty() || mixVideo != null
         val rows = buildList {
-            if (refreshing && hasContent) add(HomeFeedRow.Loading)
+            // El refresco principal usa un unico indicador flotante. No insertar otra fila
+            // de carga dentro del feed porque desplaza el contenido y duplica el circulo.
             if (shorts.isNotEmpty()) add(HomeFeedRow.Shorts(shorts.take(14)))
             mixVideo?.let { add(HomeFeedRow.Mix(it)) }
             videos.forEach { video ->

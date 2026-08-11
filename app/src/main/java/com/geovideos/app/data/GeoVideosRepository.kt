@@ -12,7 +12,24 @@ class GeoVideosRepository(context: Context) {
         migrateLegacyAccountState()
     }
 
-    fun loadHistory(): List<VideoItem> = decodeVideos(preferences.getString(KEY_HISTORY, "[]").orEmpty())
+    fun loadHistory(): List<VideoItem> {
+        val storageKey = historyStorageKey()
+        preferences.getString(storageKey, null)?.let { return decodeVideos(it) }
+
+        // Migrar una sola vez el historial local de versiones anteriores a la cuenta Google
+        // actualmente conectada. Asi cambiar de cuenta no mezcla reproducciones entre usuarios.
+        if (storageKey != KEY_HISTORY) {
+            val legacy = preferences.getString(KEY_HISTORY, null)
+            if (!legacy.isNullOrBlank()) {
+                preferences.edit()
+                    .putString(storageKey, legacy)
+                    .remove(KEY_HISTORY)
+                    .apply()
+                return decodeVideos(legacy)
+            }
+        }
+        return emptyList()
+    }
     fun loadWatchLater(): List<VideoItem> = decodeVideos(preferences.getString(KEY_WATCH_LATER, "[]").orEmpty())
     fun loadDownloads(): List<VideoItem> = decodeVideos(preferences.getString(KEY_DOWNLOADS, "[]").orEmpty())
     fun loadSearchHistory(): List<String> = decodeStrings(preferences.getString(KEY_SEARCH_HISTORY, "[]").orEmpty())
@@ -178,7 +195,7 @@ class GeoVideosRepository(context: Context) {
         )
         val updated = loadHistory().filterNot { it.id == video.id }.toMutableList()
         updated.add(0, merged)
-        return updated.take(MAX_HISTORY_ITEMS).also { saveVideos(KEY_HISTORY, it) }
+        return updated.take(MAX_HISTORY_ITEMS).also(::saveHistory)
     }
 
     fun updatePlayback(video: VideoItem, positionMs: Long, durationMs: Long): List<VideoItem> {
@@ -200,12 +217,12 @@ class GeoVideosRepository(context: Context) {
                 watchedAtMs = System.currentTimeMillis()
             )
         )
-        return current.take(MAX_HISTORY_ITEMS).also { saveVideos(KEY_HISTORY, it) }
+        return current.take(MAX_HISTORY_ITEMS).also(::saveHistory)
     }
 
     fun removeFromHistory(videoId: String): List<VideoItem> {
         val updated = loadHistory().filterNot { it.id == videoId }
-        saveVideos(KEY_HISTORY, updated)
+        saveHistory(updated)
         return updated
     }
 
@@ -284,8 +301,11 @@ class GeoVideosRepository(context: Context) {
     }
 
     fun clearLocalUserData() {
-        preferences.edit()
-            .remove(KEY_HISTORY)
+        val editor = preferences.edit()
+        preferences.all.keys
+            .filter { it == KEY_HISTORY || it.startsWith(KEY_HISTORY_ACCOUNT_PREFIX) }
+            .forEach { key -> editor.remove(key) }
+        editor
             .remove(KEY_WATCH_LATER)
             .remove(KEY_DOWNLOADS)
             .remove(KEY_SEARCH_HISTORY)
@@ -519,6 +539,20 @@ class GeoVideosRepository(context: Context) {
         }
     }.getOrDefault(emptyList())
 
+    private fun historyStorageKey(): String {
+        val email = decodeProfile(accountPreferences.getString(KEY_PROFILE, null))
+            ?.email
+            .orEmpty()
+            .trim()
+            .lowercase()
+        if (email.isBlank()) return KEY_HISTORY
+        return KEY_HISTORY_ACCOUNT_PREFIX + Integer.toHexString(email.hashCode())
+    }
+
+    private fun saveHistory(videos: List<VideoItem>) {
+        saveVideos(historyStorageKey(), videos)
+    }
+
     private fun saveStrings(key: String, values: List<String>) {
         val array = JSONArray()
         values.forEach { value -> array.put(value) }
@@ -534,6 +568,7 @@ class GeoVideosRepository(context: Context) {
 
     private companion object {
         const val KEY_HISTORY = "history"
+        const val KEY_HISTORY_ACCOUNT_PREFIX = "history_account_"
         const val KEY_WATCH_LATER = "watch_later"
         const val KEY_DOWNLOADS = "downloads"
         const val KEY_SEARCH_HISTORY = "search_history"
