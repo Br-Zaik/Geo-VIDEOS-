@@ -1,0 +1,26 @@
+GEO VIDEOS V50.9.1 - CORRECCIONES PUNTUALES
+
+Cambios aplicados únicamente a los fallos solicitados:
+1. Pull-to-refresh menos sensible:
+   - solo puede armarse si el dedo toca la pantalla cuando Principal ya está exactamente arriba;
+   - llegar arriba durante el mismo gesto de scroll no activa refresh;
+   - exige un arrastre claro de aproximadamente 118 dp antes de refrescar;
+   - pequeños movimientos no disparan actualización;
+   - al llegar al final del feed continúa usando carga incremental, no refresh completo.
+2. Controles del reproductor:
+   - un toque sobre el video expandido vuelve a mostrar/ocultar controles aunque la transición interna no esté exactamente en 0.00;
+   - calidad, velocidad y pantalla completa vuelven a ser accesibles después de que los controles se oculten automáticamente.
+3. Transición grande <-> mini:
+   - eliminada la transparencia cruzada entre player, detalles, feed y mini;
+   - el player grande permanece sólido durante bajar/subir y el cambio al mini se hace al terminar;
+   - se evita que player y feed aparezcan superpuestos en el mismo fotograma.
+4. El diseño, tamaño, posición y forma del mini reproductor V50.9 se mantienen sin cambios.
+
+Versión: 50.9.1
+versionCode: 511
+
+Validación local:
+- 21 archivos Kotlin con delimitadores básicos balanceados.
+- XML parseable.
+- Sin anotaciones OptIn duplicadas consecutivas detectadas.
+- No fue posible ejecutar compilación Android completa porque el entorno no puede resolver services.gradle.org para descargar Gradle 8.13.

@@ -115,28 +115,34 @@ internal fun RecyclerHomeFeed(
                 when (event.actionMasked) {
                     MotionEvent.ACTION_DOWN -> {
                         runtime.startY = event.y
+                        // El refresh solo puede comenzar si el dedo TOCA la pantalla cuando el
+                        // feed ya esta exactamente arriba. Llegar arriba durante el mismo gesto
+                        // de scroll nunca debe activar una actualización accidental.
                         runtime.pullEligible = !recycler.canScrollVertically(-1)
+                        runtime.rawPullDistance = 0f
                         runtime.pullDistance = 0f
                     }
                     MotionEvent.ACTION_MOVE -> {
-                        if (!recycler.canScrollVertically(-1) && event.y >= runtime.startY) {
-                            runtime.pullEligible = true
+                        if (runtime.pullEligible && !recycler.canScrollVertically(-1) && event.y >= runtime.startY) {
                             val raw = (event.y - runtime.startY).coerceAtLeast(0f)
-                            runtime.pullDistance = (raw * 0.28f).coerceAtMost(48f * density)
-                            // Mantener el feed fijo. Solo el indicador acompana levemente el gesto,
-                            // evitando que toda la lista se desplace y se vea como una capa suelta.
-                            val pullProgress = (runtime.pullDistance / (34f * density)).coerceIn(0f, 1f)
-                            if (runtime.pullDistance >= 10f * density) {
+                            runtime.rawPullDistance = raw
+                            runtime.pullDistance = (raw * 0.22f).coerceAtMost(44f * density)
+                            // Mantener el feed fijo. El indicador aparece solo tras un tirón
+                            // intencional, no con pequeños movimientos del dedo.
+                            val pullProgress = ((raw - 36f * density) / (92f * density)).coerceIn(0f, 1f)
+                            if (raw >= 36f * density) {
                                 indicator.visibility = View.VISIBLE
                                 indicator.alpha = pullProgress
-                                indicator.translationY = (8f * density * pullProgress)
+                                indicator.translationY = (7f * density * pullProgress)
                             }
                         }
                     }
                     MotionEvent.ACTION_UP -> {
                         val shouldRefresh = runtime.pullEligible &&
                             !runtime.refreshing &&
-                            runtime.pullDistance >= 36f * density
+                            !recycler.canScrollVertically(-1) &&
+                            runtime.rawPullDistance >= 118f * density
+                        runtime.rawPullDistance = 0f
                         runtime.pullDistance = 0f
                         runtime.pullEligible = false
                         if (shouldRefresh) {
@@ -150,6 +156,7 @@ internal fun RecyclerHomeFeed(
                         }
                     }
                     MotionEvent.ACTION_CANCEL -> {
+                        runtime.rawPullDistance = 0f
                         runtime.pullDistance = 0f
                         runtime.pullEligible = false
                         if (!runtime.refreshing) {
@@ -236,6 +243,7 @@ private class HomeFeedRuntime(
 ) {
     var startY: Float = 0f
     var pullEligible: Boolean = false
+    var rawPullDistance: Float = 0f
     var pullDistance: Float = 0f
 }
 
