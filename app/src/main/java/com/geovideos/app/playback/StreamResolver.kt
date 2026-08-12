@@ -90,16 +90,23 @@ internal object StreamResolver {
         dataSaver: Boolean,
         preferredHeight: Int? = null,
         preferProgressive: Boolean = false,
-        fallbackAttempt: Int = 0
+        fallbackAttempt: Int = 0,
+        forceFresh: Boolean = false
     ): ResolvedMedia {
         if (video.mediaKind != MediaKind.YOUTUBE) return ResolvedMedia(video.source)
         val safeAttempt = fallbackAttempt.coerceIn(0, MAX_PLAYBACK_FALLBACK_ATTEMPT)
         val key = cacheKey(video.id, dataSaver, preferredHeight, preferProgressive, safeAttempt)
         val now = System.currentTimeMillis()
-        resolvedCache[key]?.takeIf { it.expiresAtMs > now }?.let { return it.media }
+        if (forceFresh) {
+            // Un error real de Media3 suele significar que YouTube invalidó una URL firmada
+            // o que la extracción ya quedó vieja. No reutilizar ni la URL ni StreamInfo.
+            invalidatePlayback(video.id, includeInfo = true)
+        } else {
+            resolvedCache[key]?.takeIf { it.expiresAtMs > now }?.let { return it.media }
+        }
 
         val media = withContext(Dispatchers.IO) {
-            val info = streamInfo(video.id)
+            val info = streamInfo(video.id, forceRefresh = forceFresh)
             cacheQualities(video.id, info)
 
             if (video.isLive && info.hlsUrl.isNotBlank()) {
@@ -385,9 +392,11 @@ internal object StreamResolver {
             }
     }
 
-    private suspend fun streamInfo(videoId: String): StreamInfo {
+    private suspend fun streamInfo(videoId: String, forceRefresh: Boolean = false): StreamInfo {
         val now = System.currentTimeMillis()
-        infoCache[videoId]?.takeIf { it.expiresAtMs > now }?.let { return it.info }
+        if (!forceRefresh) {
+            infoCache[videoId]?.takeIf { it.expiresAtMs > now }?.let { return it.info }
+        }
 
         // If a home-feed preload and a tap request the same video at the same time, only run
         // the expensive NewPipe extraction once. Other videos are not blocked by this lock.
@@ -395,7 +404,9 @@ internal object StreamResolver {
         return try {
             mutex.withLock {
                 val lockedNow = System.currentTimeMillis()
-                infoCache[videoId]?.takeIf { it.expiresAtMs > lockedNow }?.let { return@withLock it.info }
+                if (!forceRefresh) {
+                    infoCache[videoId]?.takeIf { it.expiresAtMs > lockedNow }?.let { return@withLock it.info }
+                }
                 withContext(Dispatchers.IO) {
                     ensureInitialized()
                     val watchUrl = "https://www.youtube.com/watch?v=$videoId"
@@ -671,6 +682,22 @@ internal object StreamResolver {
                 .lowercase()
                 .takeIf { it.matches(Regex("[a-z0-9]{2,5}")) }
                 ?: "mp4"
+        }
+    }
+
+    /**
+     * Purga únicamente datos de reproducción de un video. Se usa cuando Media3 confirma que
+     * una URL dejó de servir; no borra preferencias, historial ni ningún dato del usuario.
+     */
+    fun invalidatePlayback(videoId: String, includeInfo: Boolean = true) {
+        if (videoId.isBlank()) return
+        val prefix = "$videoId:"
+        resolvedCache.keys
+            .filter { it.startsWith(prefix) }
+            .forEach { resolvedCache.remove(it) }
+        if (includeInfo) {
+            infoCache.remove(videoId)
+            qualityCache.remove(videoId)
         }
     }
 

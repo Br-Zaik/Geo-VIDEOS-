@@ -524,9 +524,17 @@ internal fun UnifiedPlayerOverlay(
         val miniShape = RoundedCornerShape(if (compactMini) 8.dp else 12.dp)
         val velocityThresholdPx = with(density) { 920.dp.toPx() }
         val p = transition.coerceIn(0f, 1f)
-        // No hacer crossfade entre player grande, feed y mini player. Esa mezcla era la
-        // causa de los fotogramas transparentes y superpuestos al bajar/subir el video.
+        // El player grande y los detalles permanecen montados durante TODO el gesto.
+        // En lugar de desaparecer de golpe, el player interpola su rectángulo hasta el
+        // mini reproductor y los detalles se deslizan fuera de la pantalla. Al terminar,
+        // el mini existente toma el relevo exactamente en las mismas coordenadas.
         val showExpandedSurface = fullscreen || expanded || dragging || settling
+        val miniScaleX = (miniWidthPx / screenWidthPx).coerceIn(0.1f, 1f)
+        val miniScaleY = (miniHeightPx / fullPlayerHeightPx).coerceIn(0.1f, 1f)
+        val playerScaleX = 1f - (1f - miniScaleX) * p
+        val playerScaleY = 1f - (1f - miniScaleY) * p
+        val playerTranslateX = miniLeftPx * p
+        val playerTranslateY = miniTopPx * p
 
         val dragTravelPx = miniTopPx.coerceAtLeast(with(density) { 220.dp.toPx() })
         val dragState = rememberDraggableState { delta: Float ->
@@ -558,7 +566,9 @@ internal fun UnifiedPlayerOverlay(
                     .fillMaxSize()
                     .graphicsLayer {
                         alpha = 1f
-                        translationY = with(density) { 12.dp.toPx() } * p
+                        // El contenido inferior acompaña el gesto y revela el feed de fondo
+                        // progresivamente, sin transparencias ni saltos al soltar.
+                        translationY = screenHeightPx * p
                     },
                 color = MaterialTheme.colorScheme.background
             ) {
@@ -852,9 +862,16 @@ internal fun UnifiedPlayerOverlay(
                 .height(with(density) { fullPlayerHeightPx.toDp() })
                 .zIndex(50f)
                 .graphicsLayer {
-                    // Movimiento corto y solido: nunca se transparenta sobre el feed.
-                    translationY = with(density) { 28.dp.toPx() } * p
+                    // Un único player sigue el dedo desde grande hasta el rectángulo mini.
+                    // No se cambia tamaño/posición final del mini; solo se interpola hasta él.
+                    transformOrigin = TransformOrigin(0f, 0f)
+                    translationX = playerTranslateX
+                    translationY = playerTranslateY
+                    scaleX = playerScaleX
+                    scaleY = playerScaleY
                     alpha = 1f
+                    clip = p > 0.02f
+                    shape = miniShape
                 }
         }
 

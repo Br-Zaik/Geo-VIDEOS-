@@ -1,0 +1,8 @@
+GEO VIDEOS V50.10.0
+
+Cambios limitados a los dos fallos solicitados:
+- Transicion grande <-> mini fluida: el mismo player sigue el dedo e interpola posicion y escala hasta las coordenadas existentes del mini. El diseno/tamano/posicion final del mini no se modifica.
+- Los detalles se deslizan fuera mientras aparece el feed, sin crossfade ni salto al soltar.
+- Reproduccion YouTube: ante un error real de Media3 se purgan URL resuelta y StreamInfo de ese video, se hace una extraccion fresca y se prueba el siguiente fallback conservando la posicion.
+- Reintentar ya no reutiliza el mismo MediaItem/URL fallido.
+- No se tocaron feed, refresh, login, OAuth, cuenta, historial, Shorts ni el diseno final del mini reproductor.

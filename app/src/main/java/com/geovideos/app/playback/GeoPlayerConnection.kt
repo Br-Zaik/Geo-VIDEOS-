@@ -184,7 +184,10 @@ class GeoPlayerConnection private constructor(context: Context) {
                     audioOnly = false,
                     forceProgressive = nextAttempt == 1,
                     updateQualityPreference = false,
-                    fallbackAttempt = nextAttempt
+                    fallbackAttempt = nextAttempt,
+                    // Un error del player invalida la URL firmada actual: reextraer YouTube
+                    // completamente antes de probar el siguiente formato.
+                    forceFreshResolver = true
                 )
                 return
             }
@@ -240,14 +243,23 @@ class GeoPlayerConnection private constructor(context: Context) {
         dataSaver: Boolean,
         repeat: Boolean = false
     ) {
+        val controllerNow = _controller.value
+        val retryingFailedVideo = _state.value.currentVideoId == video.id && _state.value.error != null
+        val resumePosition = if (retryingFailedVideo) {
+            controllerNow?.currentPosition?.takeIf { it >= 0L } ?: video.resumePositionMs
+        } else {
+            video.resumePositionMs
+        }
         openInternal(
-            video = video,
+            video = video.copy(resumePositionMs = resumePosition),
             autoplay = autoplay,
             dataSaver = dataSaver,
             repeat = repeat,
             preferredHeight = _preferredQualityHeight.value,
-            forceReload = false,
-            audioOnly = false
+            // El botón Reintentar no debe preparar otra vez el mismo MediaItem roto.
+            forceReload = retryingFailedVideo,
+            audioOnly = false,
+            forceFreshResolver = retryingFailedVideo
         )
     }
 
@@ -261,7 +273,8 @@ class GeoPlayerConnection private constructor(context: Context) {
         audioOnly: Boolean,
         forceProgressive: Boolean = false,
         updateQualityPreference: Boolean = true,
-        fallbackAttempt: Int = 0
+        fallbackAttempt: Int = 0,
+        forceFreshResolver: Boolean = false
     ) {
         // Si el usuario acaba de tocar un video, la reproduccion real tiene prioridad sobre
         // cualquier precarga especulativa que estuviera resolviendo otro elemento del feed.
@@ -320,7 +333,8 @@ class GeoPlayerConnection private constructor(context: Context) {
                                 dataSaver = dataSaver,
                                 preferredHeight = if (attempt == 0 && !forceProgressive) preferredHeight else null,
                                 preferProgressive = forceProgressive || repeat || attempt == 1,
-                                fallbackAttempt = attempt
+                                fallbackAttempt = attempt,
+                                forceFresh = forceFreshResolver
                             )
                             playbackFallbackAttempt = attempt
                         } catch (failure: CancellationException) {
@@ -539,8 +553,9 @@ class GeoPlayerConnection private constructor(context: Context) {
     }
 
     fun retryShort(video: VideoItem, dataSaver: Boolean) {
+        val resume = _controller.value?.currentPosition?.takeIf { it >= 0L } ?: video.resumePositionMs
         openInternal(
-            video = video.copy(resumePositionMs = 0L),
+            video = video.copy(resumePositionMs = resume),
             autoplay = true,
             dataSaver = dataSaver,
             repeat = true,
@@ -548,7 +563,8 @@ class GeoPlayerConnection private constructor(context: Context) {
             forceReload = true,
             audioOnly = false,
             forceProgressive = true,
-            updateQualityPreference = false
+            updateQualityPreference = false,
+            forceFreshResolver = true
         )
     }
 
@@ -646,7 +662,9 @@ class GeoPlayerConnection private constructor(context: Context) {
                 videoHeight = player.videoSize.height.coerceAtLeast(0),
                 playbackState = player.playbackState,
                 repeatMode = player.repeatMode,
-                error = player.playerError?.localizedMessage ?: it.error
+                // Mientras se prueba un stream nuevo, no volver a mostrar el error del
+                // MediaItem anterior. El mensaje definitivo aparece solo al agotar fallbacks.
+                error = if (it.resolving) null else player.playerError?.localizedMessage ?: it.error
             )
         }
     }
