@@ -11,6 +11,9 @@ import com.geovideos.app.data.NotificationItem
 import com.geovideos.app.data.PlaylistItem
 import com.geovideos.app.data.VideoItem
 import com.geovideos.app.data.VideoDetails
+import com.geovideos.app.data.YouTubeSessionStore
+import com.geovideos.app.network.InnerTubeClient
+import com.geovideos.app.network.YouTubeSessionExpiredException
 import com.geovideos.app.network.VideoPage
 import com.geovideos.app.network.YouTubeApi
 import com.geovideos.app.network.YouTubeApiException
@@ -22,6 +25,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -116,8 +120,44 @@ data class GeoVideosUiState(
     val youtubeSyncAuthorized: Boolean = false,
     val youtubeSyncBusy: Boolean = false,
     val lastSyncMs: Long = 0L,
+    val youtubeSessionConnected: Boolean = false,
+    val youtubeSessionBusy: Boolean = false,
+    val youtubeHistory: List<VideoItem> = emptyList(),
+    val youtubeHistoryFetchedAtMs: Long = 0L,
+    val youtubeWatchLater: List<VideoItem> = emptyList(),
+    val historyLoadingMore: Boolean = false,
+    val historyCanLoadMore: Boolean = false,
+    val watchLaterLoadingMore: Boolean = false,
+    val watchLaterCanLoadMore: Boolean = false,
     val message: String? = null
 ) {
+    /** Historial visible: el real de YouTube + lo visto recién en Geo Videos. */
+    val libraryHistory: List<VideoItem> by lazy {
+        if (!youtubeSessionConnected || youtubeHistory.isEmpty()) return@lazy history
+        val local = history.associateBy { it.id }
+        val remote = youtubeHistory.map { yt ->
+            val saved = local[yt.id]
+            if (saved != null && saved.resumePositionMs > 0L) {
+                yt.copy(
+                    resumePositionMs = saved.resumePositionMs,
+                    durationMs = maxOf(yt.durationMs, saved.durationMs)
+                )
+            } else {
+                yt
+            }
+        }
+        val recent = history.filter { it.watchedAtMs >= youtubeHistoryFetchedAtMs }
+        val recentIds = recent.mapTo(HashSet()) { it.id }
+        recent + remote.filterNot { it.id in recentIds }
+    }
+
+    /** Ver más tarde visible: la lista real de YouTube + lo guardado solo en el teléfono. */
+    val libraryWatchLater: List<VideoItem> by lazy {
+        if (!youtubeSessionConnected) return@lazy watchLater
+        val remoteIds = youtubeWatchLater.mapTo(HashSet()) { it.id }
+        youtubeWatchLater + watchLater.filterNot { it.id in remoteIds }
+    }
+
     fun isLoadingMore(category: HomeCategory): Boolean = loadingMoreCategory == category
 
     fun canLoadMore(category: HomeCategory): Boolean = when (category) {
@@ -143,6 +183,13 @@ private data class AccountSyncResult(
 class GeoVideosViewModel(application: Application) : AndroidViewModel(application) {
     private val repository = GeoVideosRepository(application)
     private val api = YouTubeApi()
+    private val youtubeSession = YouTubeSessionStore(application)
+    private val innerTube = InnerTubeClient { youtubeSession.load() }
+    private var youtubeHomeActive: Boolean = false
+    private var youtubeHomeContinuation: String = ""
+    private var youtubeHistoryContinuation: String = ""
+    private var youtubeWatchLaterContinuation: String = ""
+    private var youtubeSessionJob: Job? = null
 
     private var accessToken: String? = null
     private var youtubeWriteToken: String? = null
@@ -181,7 +228,8 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
             notificationsEnabled = repository.loadNotificationsEnabled(),
             youtubeSyncEnabled = repository.loadYouTubeSyncEnabled(),
             youtubeSyncAuthorized = false,
-            lastSyncMs = repository.loadLastSyncMs()
+            lastSyncMs = repository.loadLastSyncMs(),
+            youtubeSessionConnected = youtubeSession.hasStoredSession()
         )
     )
     val uiState: StateFlow<GeoVideosUiState> = _uiState.asStateFlow()
@@ -312,6 +360,9 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
                     )
                 }
             }
+
+            // Con la sesión de YouTube conectada, traer historial, Ver más tarde e inicio reales.
+            if (youtubeSession.hasStoredSession()) refreshYouTubeSession()
         }
     }
 
@@ -695,11 +746,14 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
         resetPagination()
         fullSyncJob?.cancel()
         fullSyncJob = null
+        youtubeHomeActive = false
+        youtubeHomeContinuation = ""
         repository.clearAccountCache()
         _uiState.update {
             GeoVideosUiState(
                 authStatus = AuthStatus.DISCONNECTED,
                 youtubeSyncAuthorized = false,
+                youtubeSessionConnected = youtubeSession.hasStoredSession(),
                 history = repository.loadHistory(),
                 watchLater = repository.loadWatchLater(),
                 localLikedIds = repository.loadLocalLikedIds(),
@@ -732,6 +786,10 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
 
     fun refresh() {
         if (_uiState.value.refreshing) return
+        if (accessToken.isNullOrBlank() && youtubeSession.hasStoredSession()) {
+            refreshYouTubeSession()
+            return
+        }
         if (accessToken.isNullOrBlank()) {
             _uiState.update {
                 it.copy(message = "La cuenta sigue guardada, pero debes pulsar Renovar acceso en Cuenta una vez.")
@@ -872,9 +930,19 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
                         current.copy(
                             refreshing = false,
                             subscriptions = subscriptions,
-                            personalized = if (personalized.isNotEmpty()) personalized else current.personalized.filter(::isNormalHomeVideo),
+                            personalized = if (youtubeHomeActive && current.personalized.isNotEmpty()) {
+                                current.personalized
+                            } else if (personalized.isNotEmpty()) {
+                                personalized
+                            } else {
+                                current.personalized.filter(::isNormalHomeVideo)
+                            },
                             shorts = if (shorts.isNotEmpty()) shorts else current.shorts,
-                            canLoadMoreForYou = subscriptionOffset < subscriptions.size,
+                            canLoadMoreForYou = if (youtubeHomeActive && current.personalized.isNotEmpty()) {
+                                youtubeHomeContinuation.isNotBlank()
+                            } else {
+                                subscriptionOffset < subscriptions.size
+                            },
                             message = null
                         )
                     }
@@ -1110,9 +1178,19 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
                             subscriptions = subscriptions,
                             liked = likedRaw,
                             uploads = uploadsPage.items,
-                            personalized = if (earlyPersonalized.isNotEmpty()) earlyPersonalized else current.personalized.filter(::isNormalHomeVideo),
+                            personalized = if (youtubeHomeActive && current.personalized.isNotEmpty()) {
+                                current.personalized
+                            } else if (earlyPersonalized.isNotEmpty()) {
+                                earlyPersonalized
+                            } else {
+                                current.personalized.filter(::isNormalHomeVideo)
+                            },
                             shorts = if (earlyShorts.isNotEmpty()) earlyShorts else current.shorts,
-                            canLoadMoreForYou = subscriptionOffset < subscriptions.size,
+                            canLoadMoreForYou = if (youtubeHomeActive && current.personalized.isNotEmpty()) {
+                                youtubeHomeContinuation.isNotBlank()
+                            } else {
+                                subscriptionOffset < subscriptions.size
+                            },
                             message = null
                         )
                     }
@@ -1327,7 +1405,11 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
                             loadingMoreCategory = null,
                             shortsLoadingMore = false,
                             uploadsLoadingMore = false,
-                            canLoadMoreForYou = subscriptionOffset < subscriptions.size,
+                            canLoadMoreForYou = if (youtubeHomeActive && it.personalized.isNotEmpty()) {
+                                youtubeHomeContinuation.isNotBlank()
+                            } else {
+                                subscriptionOffset < subscriptions.size
+                            },
                             canLoadMoreLive = liveNextToken.isNotBlank(),
                             canLoadMoreGaming = gamingNextToken.isNotBlank(),
                             canLoadMoreMusic = musicNextToken.isNotBlank(),
@@ -1336,7 +1418,11 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
                             likedLoadingMore = false,
                             likedCanLoadMore = likedNextToken.isNotBlank(),
                             profile = profile,
-                            personalized = personalized,
+                            personalized = if (youtubeHomeActive && it.personalized.isNotEmpty()) {
+                                it.personalized
+                            } else {
+                                withChannelAvatars(personalized, subscriptions)
+                            },
                             popular = popular,
                             live = live,
                             gaming = gaming,
@@ -1358,6 +1444,9 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
                             } else null
                         )
                     }
+                }
+                if (youtubeSession.hasStoredSession() && (!initialLoad || !youtubeHomeActive)) {
+                    refreshYouTubeSession()
                 }
             } catch (cancelled: CancellationException) {
                 throw cancelled
@@ -1405,7 +1494,7 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
         viewModelScope.launch {
             try {
                 when (category) {
-                    HomeCategory.FOR_YOU -> loadMorePersonalized(token)
+                    HomeCategory.FOR_YOU -> if (!loadMoreYouTubeHome()) loadMorePersonalized(token)
                     HomeCategory.LIVE -> loadMorePagedCategory(
                         category = category,
                         current = _uiState.value.live,
@@ -1429,6 +1518,11 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
                     )
                 }
                 persistCurrentSnapshot()
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (expired: YouTubeSessionExpiredException) {
+                handleYouTubeSessionExpired(expired)
+                _uiState.update { it.copy(loadingMoreCategory = null) }
             } catch (error: Exception) {
                 _uiState.update {
                     it.copy(
@@ -1877,6 +1971,7 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
         // Guardar la entrada de historial desde el primer toque. Así Colección no depende
         // de que el reproductor alcance un checkpoint posterior para mostrar la reproducción.
         viewModelScope.launch(Dispatchers.IO) { repository.addToHistory(watched) }
+        trackYouTubeWatch(playable)
         loadPlayerContext(playable)
     }
 
@@ -1903,6 +1998,7 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
             )
         }
         viewModelScope.launch(Dispatchers.IO) { repository.addToHistory(watched) }
+        trackYouTubeWatch(playable)
     }
 
     fun openShortDetails(video: VideoItem) {
@@ -1964,6 +2060,7 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
         viewModelScope.launch(Dispatchers.IO) {
             repository.updatePlayback(video, safePosition, durationMs)
         }
+        reportYouTubeProgress(video, safePosition, durationMs)
     }
 
     fun closePlayer() {
@@ -2198,6 +2295,10 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     fun toggleWatchLater(video: VideoItem) {
+        if (_uiState.value.youtubeSessionConnected && video.mediaKind == MediaKind.YOUTUBE) {
+            toggleYouTubeWatchLater(video)
+            return
+        }
         val updated = repository.toggleWatchLater(video)
         val added = updated.any { it.id == video.id }
         _uiState.update {
@@ -2490,7 +2591,13 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
 
     fun removeHistory(videoId: String) {
         val history = repository.removeFromHistory(videoId)
-        _uiState.update { it.copy(history = history, message = "Video eliminado del historial.") }
+        _uiState.update {
+            it.copy(
+                history = history,
+                youtubeHistory = it.youtubeHistory.filterNot { video -> video.id == videoId },
+                message = "Video eliminado del historial."
+            )
+        }
     }
 
     fun onPlayerTransition(videoId: String) {
@@ -2517,6 +2624,7 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
                 relatedCanLoadMore = true
             )
         }
+        trackYouTubeWatch(playable)
         loadPlayerContext(playable)
     }
 
@@ -2936,6 +3044,296 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
+    // ------------------------------------------------------------------
+    // Sesión de YouTube (inicio de sesión dentro de la app, como Daylitube)
+    // ------------------------------------------------------------------
+
+    fun onYouTubeSessionConnected() {
+        if (!youtubeSession.isConnected()) {
+            _uiState.update { it.copy(message = "No se pudo guardar la sesión de YouTube. Intenta otra vez.") }
+            return
+        }
+        _uiState.update {
+            it.copy(
+                youtubeSessionConnected = true,
+                message = "Sesión de YouTube conectada. Cargando tu historial…"
+            )
+        }
+        refreshYouTubeSession()
+    }
+
+    fun disconnectYouTubeSession() {
+        youtubeSessionJob?.cancel()
+        youtubeSession.clear()
+        innerTube.clearWatch()
+        runCatching { android.webkit.CookieManager.getInstance().removeAllCookies(null) }
+        youtubeHomeActive = false
+        youtubeHomeContinuation = ""
+        youtubeHistoryContinuation = ""
+        youtubeWatchLaterContinuation = ""
+        _uiState.update {
+            it.copy(
+                youtubeSessionConnected = false,
+                youtubeSessionBusy = false,
+                youtubeHistory = emptyList(),
+                youtubeWatchLater = emptyList(),
+                historyLoadingMore = false,
+                historyCanLoadMore = false,
+                watchLaterLoadingMore = false,
+                watchLaterCanLoadMore = false,
+                message = "Sesión de YouTube desconectada."
+            )
+        }
+        if (!accessToken.isNullOrBlank()) refresh()
+    }
+
+    private fun refreshYouTubeSession() {
+        if (!youtubeSession.hasStoredSession()) return
+        youtubeSessionJob?.cancel()
+        youtubeSessionJob = viewModelScope.launch {
+            _uiState.update { it.copy(youtubeSessionBusy = true) }
+            try {
+                val fetchedAt = System.currentTimeMillis()
+                supervisorScope {
+                    val homeDeferred = async { runCatching { innerTube.home() } }
+                    val historyDeferred = async { runCatching { innerTube.history() } }
+                    val laterDeferred = async { runCatching { innerTube.watchLater() } }
+                    val home = homeDeferred.await()
+                    val history = historyDeferred.await()
+                    val later = laterDeferred.await()
+                    ensureActive()
+
+                    val failures = listOfNotNull(
+                        home.exceptionOrNull(),
+                        history.exceptionOrNull(),
+                        later.exceptionOrNull()
+                    )
+                    failures.firstOrNull { it is YouTubeSessionExpiredException }?.let { throw it }
+
+                    val homePage = home.getOrNull()
+                    val historyPage = history.getOrNull()
+                    val laterPage = later.getOrNull()
+                    if (homePage != null) youtubeHomeContinuation = homePage.continuation
+                    if (historyPage != null) youtubeHistoryContinuation = historyPage.continuation
+                    if (laterPage != null) youtubeWatchLaterContinuation = laterPage.continuation
+
+                    val homeVideos = homePage?.videos.orEmpty().filter(::isNormalHomeVideo)
+                    val homeShorts = homePage?.shorts.orEmpty()
+                    if (homeVideos.isNotEmpty()) youtubeHomeActive = true
+
+                    _uiState.update { state ->
+                        state.copy(
+                            youtubeSessionConnected = true,
+                            youtubeSessionBusy = false,
+                            youtubeHistory = historyPage?.let { it.videos + it.shorts } ?: state.youtubeHistory,
+                            youtubeHistoryFetchedAtMs = if (historyPage != null) fetchedAt else state.youtubeHistoryFetchedAtMs,
+                            historyCanLoadMore = youtubeHistoryContinuation.isNotBlank(),
+                            youtubeWatchLater = laterPage?.videos ?: state.youtubeWatchLater,
+                            watchLaterCanLoadMore = youtubeWatchLaterContinuation.isNotBlank(),
+                            personalized = if (homeVideos.isNotEmpty()) {
+                                homeVideos.take(MAX_YOUTUBE_ITEMS)
+                            } else {
+                                state.personalized
+                            },
+                            canLoadMoreForYou = if (homeVideos.isNotEmpty()) {
+                                youtubeHomeContinuation.isNotBlank()
+                            } else {
+                                state.canLoadMoreForYou
+                            },
+                            // No cambiar la lista de Shorts mientras se está viendo uno.
+                            shorts = if (homeShorts.isEmpty() || state.section == MainSection.SHORTS) {
+                                state.shorts
+                            } else {
+                                mergeUniqueVideos(homeShorts, state.shorts).take(60)
+                            },
+                            loading = if (homeVideos.isNotEmpty()) false else state.loading,
+                            message = if (homePage == null && historyPage == null && laterPage == null) {
+                                "No se pudo leer YouTube ahora. Se mantienen tus listas."
+                            } else {
+                                state.message
+                            }
+                        )
+                    }
+                    if (homeVideos.isNotEmpty()) persistCurrentSnapshot()
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (expired: YouTubeSessionExpiredException) {
+                handleYouTubeSessionExpired(expired)
+            } catch (error: Exception) {
+                _uiState.update { it.copy(youtubeSessionBusy = false) }
+            }
+        }
+    }
+
+    private fun handleYouTubeSessionExpired(error: Exception) {
+        youtubeSession.clear()
+        innerTube.clearWatch()
+        youtubeHomeActive = false
+        youtubeHomeContinuation = ""
+        youtubeHistoryContinuation = ""
+        youtubeWatchLaterContinuation = ""
+        _uiState.update {
+            it.copy(
+                youtubeSessionConnected = false,
+                youtubeSessionBusy = false,
+                youtubeHistory = emptyList(),
+                youtubeWatchLater = emptyList(),
+                historyLoadingMore = false,
+                historyCanLoadMore = false,
+                watchLaterLoadingMore = false,
+                watchLaterCanLoadMore = false,
+                message = error.message ?: "La sesión de YouTube venció. Vuelve a conectarla en Cuenta."
+            )
+        }
+    }
+
+    /** Devuelve true si el inicio de YouTube se encargó de cargar más. */
+    private suspend fun loadMoreYouTubeHome(): Boolean {
+        if (!youtubeHomeActive || !_uiState.value.youtubeSessionConnected) return false
+        val token = youtubeHomeContinuation
+        if (token.isBlank()) {
+            _uiState.update { it.copy(loadingMoreCategory = null, canLoadMoreForYou = false) }
+            return true
+        }
+        val page = innerTube.home(token)
+        youtubeHomeContinuation = page.continuation
+        _uiState.update { state ->
+            state.copy(
+                personalized = mergeUniqueVideos(
+                    state.personalized,
+                    page.videos.filter(::isNormalHomeVideo)
+                ).take(MAX_YOUTUBE_ITEMS),
+                shorts = if (page.shorts.isEmpty() || state.section == MainSection.SHORTS) {
+                    state.shorts
+                } else {
+                    mergeUniqueVideos(state.shorts, page.shorts).take(MAX_YOUTUBE_ITEMS)
+                },
+                loadingMoreCategory = null,
+                canLoadMoreForYou = page.continuation.isNotBlank()
+            )
+        }
+        return true
+    }
+
+    fun loadMoreHistory() {
+        val state = _uiState.value
+        if (!state.youtubeSessionConnected || state.historyLoadingMore || youtubeHistoryContinuation.isBlank()) return
+        _uiState.update { it.copy(historyLoadingMore = true) }
+        viewModelScope.launch {
+            try {
+                val page = innerTube.history(youtubeHistoryContinuation)
+                youtubeHistoryContinuation = page.continuation
+                _uiState.update {
+                    it.copy(
+                        youtubeHistory = mergeUniqueVideos(it.youtubeHistory, page.videos, page.shorts)
+                            .take(MAX_YOUTUBE_ITEMS),
+                        historyLoadingMore = false,
+                        historyCanLoadMore = page.continuation.isNotBlank()
+                    )
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (expired: YouTubeSessionExpiredException) {
+                handleYouTubeSessionExpired(expired)
+            } catch (error: Exception) {
+                _uiState.update { it.copy(historyLoadingMore = false, message = "No se pudo cargar más historial.") }
+            }
+        }
+    }
+
+    fun loadMoreWatchLater() {
+        val state = _uiState.value
+        if (!state.youtubeSessionConnected || state.watchLaterLoadingMore || youtubeWatchLaterContinuation.isBlank()) return
+        _uiState.update { it.copy(watchLaterLoadingMore = true) }
+        viewModelScope.launch {
+            try {
+                val page = innerTube.watchLater(youtubeWatchLaterContinuation)
+                youtubeWatchLaterContinuation = page.continuation
+                _uiState.update {
+                    it.copy(
+                        youtubeWatchLater = mergeUniqueVideos(it.youtubeWatchLater, page.videos)
+                            .take(MAX_YOUTUBE_ITEMS * 3),
+                        watchLaterLoadingMore = false,
+                        watchLaterCanLoadMore = page.continuation.isNotBlank()
+                    )
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (expired: YouTubeSessionExpiredException) {
+                handleYouTubeSessionExpired(expired)
+            } catch (error: Exception) {
+                _uiState.update { it.copy(watchLaterLoadingMore = false, message = "No se pudo cargar más de Ver más tarde.") }
+            }
+        }
+    }
+
+    private fun toggleYouTubeWatchLater(video: VideoItem) {
+        val state = _uiState.value
+        val inRemote = state.youtubeWatchLater.any { it.id == video.id }
+        val inLocal = state.watchLater.any { it.id == video.id }
+        val add = !inRemote && !inLocal
+        val localUpdated = if (inLocal) repository.toggleWatchLater(video) else state.watchLater
+        _uiState.update {
+            it.copy(
+                watchLater = localUpdated,
+                youtubeWatchLater = if (add) {
+                    listOf(video) + it.youtubeWatchLater
+                } else {
+                    it.youtubeWatchLater.filterNot { item -> item.id == video.id }
+                },
+                message = if (add) "Guardado en Ver más tarde de YouTube." else "Quitado de Ver más tarde."
+            )
+        }
+        if (!add && !inRemote) return
+        viewModelScope.launch {
+            try {
+                innerTube.editWatchLater(video.id, add)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (expired: YouTubeSessionExpiredException) {
+                handleYouTubeSessionExpired(expired)
+            } catch (error: Exception) {
+                // Revertir si YouTube no aceptó el cambio.
+                _uiState.update {
+                    it.copy(
+                        youtubeWatchLater = if (add) {
+                            it.youtubeWatchLater.filterNot { item -> item.id == video.id }
+                        } else {
+                            mergeUniqueVideos(listOf(video), it.youtubeWatchLater)
+                        },
+                        message = "YouTube no aceptó el cambio en Ver más tarde. Intenta otra vez."
+                    )
+                }
+            }
+        }
+    }
+
+    private fun trackYouTubeWatch(video: VideoItem) {
+        if (video.mediaKind != MediaKind.YOUTUBE || !_uiState.value.youtubeSessionConnected) return
+        viewModelScope.launch { runCatching { innerTube.startWatch(video.id) } }
+    }
+
+    private fun reportYouTubeProgress(video: VideoItem, positionMs: Long, durationMs: Long) {
+        if (video.mediaKind != MediaKind.YOUTUBE || !_uiState.value.youtubeSessionConnected) return
+        viewModelScope.launch { runCatching { innerTube.reportProgress(video.id, positionMs, durationMs) } }
+    }
+
+    /** Pone la foto del canal usando las suscripciones cuando la API no la trae. */
+    private fun withChannelAvatars(videos: List<VideoItem>, channels: List<ChannelItem>): List<VideoItem> {
+        if (channels.isEmpty() || videos.none { it.channelThumbnailUrl.isBlank() }) return videos
+        val avatars = channels
+            .filter { it.thumbnailUrl.isNotBlank() }
+            .associate { it.id to it.thumbnailUrl }
+        return videos.map { video ->
+            if (video.channelThumbnailUrl.isBlank()) {
+                avatars[video.channelId]?.let { video.copy(channelThumbnailUrl = it) } ?: video
+            } else {
+                video
+            }
+        }
+    }
+
     private companion object {
         const val AUTO_REFRESH_INTERVAL_MS = 10L * 60L * 1000L
         const val MAX_HISTORY_ITEMS_IN_MEMORY = 300
@@ -2948,5 +3346,6 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
         const val SHORT_MAX_DURATION_MS = 180_000L
         const val HOME_SHORTS_SHELF_SIZE = 14
         const val HOME_SHORTS_ROTATE_STEP = 7
+        const val MAX_YOUTUBE_ITEMS = 400
     }
 }

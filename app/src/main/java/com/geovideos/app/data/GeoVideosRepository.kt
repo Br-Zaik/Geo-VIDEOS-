@@ -413,6 +413,7 @@ class GeoVideosRepository(context: Context) {
                     .put("durationMs", video.durationMs)
                     .put("downloadId", video.downloadId)
                     .put("watchedAtMs", video.watchedAtMs)
+                    .put("viewCountText", video.viewCountText)
             )
         }
         return array
@@ -441,7 +442,8 @@ class GeoVideosRepository(context: Context) {
                         resumePositionMs = item.optLong("resumePositionMs", 0L),
                         durationMs = item.optLong("durationMs", 0L),
                         downloadId = item.optLong("downloadId", -1L),
-                        watchedAtMs = item.optLong("watchedAtMs", 0L)
+                        watchedAtMs = item.optLong("watchedAtMs", 0L),
+                        viewCountText = item.optString("viewCountText", "")
                     )
                 )
             }

@@ -301,6 +301,7 @@ private class FullVideoHolder(context: Context) : RecyclerView.ViewHolder(FullVi
         card.title.text = video.title.ifBlank { "Video" }
         card.channel.text = buildString {
             append(video.channelTitle.ifBlank { "Canal" })
+            video.viewCountText.takeIf { it.isNotBlank() }?.let { append(" · ").append(it) }
             formatRelativeTime(video.publishedAt).takeIf { it.isNotBlank() }?.let { append(" · ").append(it) }
         }
         card.duration.text = durationText(video.durationMs)

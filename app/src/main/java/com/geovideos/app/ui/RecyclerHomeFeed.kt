@@ -445,6 +445,10 @@ private class VideoHolder(
         card.titleView.text = video.title
         card.channelView.text = buildString {
             append(video.channelTitle)
+            if (video.viewCountText.isNotBlank()) {
+                if (isNotEmpty()) append(" · ")
+                append(video.viewCountText)
+            }
             val published = formatRecyclerPublished(video.publishedAt)
             if (published.isNotBlank()) {
                 append(" · ")
@@ -680,7 +684,7 @@ private class ShortHolder(context: Context) : RecyclerView.ViewHolder(ShortCardV
         card.setOnClickListener { onOpenShort(video) }
         card.title.text = video.title
         card.meta.text = buildString {
-            append("Recomendado")
+            append(video.viewCountText.ifBlank { "Recomendado" })
             formatRecyclerPublished(video.publishedAt).takeIf { it.isNotBlank() }?.let {
                 append(" · ")
                 append(it)

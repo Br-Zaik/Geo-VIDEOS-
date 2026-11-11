@@ -34,7 +34,9 @@ data class VideoItem(
     val durationMs: Long = 0L,
     val downloadId: Long = -1L,
     val watchedAtMs: Long = 0L,
-    val isMix: Boolean = false
+    val isMix: Boolean = false,
+    /** Texto de vistas tal como lo muestra YouTube, por ejemplo "150 K vistas". */
+    val viewCountText: String = ""
 )
 
 @Immutable

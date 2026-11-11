@@ -333,7 +333,9 @@ fun GeoVideosApp(
                         onOpenVideo = viewModel::openShortDetails,
                         onPreviewShort = viewModel::previewShort,
                         onWatchLater = { video ->
-                            if (!state.youtubeSyncAuthorized && !state.youtubeSyncBusy) onRequestYouTubeSync()
+                            if (!state.youtubeSessionConnected && !state.youtubeSyncAuthorized && !state.youtubeSyncBusy) {
+                                onRequestYouTubeSync()
+                            }
                             viewModel.toggleWatchLater(video)
                         },
                         onLike = { video ->
@@ -369,6 +371,10 @@ fun GeoVideosApp(
                         onRegisterDownload = viewModel::registerDownload,
                         onRemoveDownload = viewModel::removeDownload,
                         onRemoveHistory = viewModel::removeHistory,
+                        onLoadMoreHistory = viewModel::loadMoreHistory,
+                        onLoadMoreWatchLater = viewModel::loadMoreWatchLater,
+                        onYouTubeSessionConnected = viewModel::onYouTubeSessionConnected,
+                        onDisconnectYouTubeSession = viewModel::disconnectYouTubeSession,
                         onAutoplayChange = viewModel::setAutoplay,
                         onDataSaverChange = viewModel::setDataSaver,
                         onNotificationsChange = viewModel::setNotificationsEnabled,
@@ -384,7 +390,7 @@ fun GeoVideosApp(
                         playerConnection = playerConnection,
                         isInPictureInPictureMode = isInPictureInPictureMode,
                         fullscreenRequestToken = fullscreenRequestToken,
-                        isWatchLater = state.watchLater.any { it.id == selectedVideo.id },
+                        isWatchLater = state.libraryWatchLater.any { it.id == selectedVideo.id },
                         isLiked = selectedVideo.id in state.localLikedIds,
                         isDisliked = selectedVideo.id in state.localDislikedIds,
                         autoplay = state.autoplay,
@@ -404,7 +410,9 @@ fun GeoVideosApp(
                             viewModel.closePlayer()
                         },
                         onWatchLater = {
-                            if (!state.youtubeSyncAuthorized && !state.youtubeSyncBusy) onRequestYouTubeSync()
+                            if (!state.youtubeSessionConnected && !state.youtubeSyncAuthorized && !state.youtubeSyncBusy) {
+                                onRequestYouTubeSync()
+                            }
                             viewModel.toggleWatchLater(selectedVideo)
                         },
                         onLike = {
@@ -578,6 +586,10 @@ private fun MainShell(
     onRegisterDownload: (String, String, Long) -> Unit,
     onRemoveDownload: (Long) -> Unit,
     onRemoveHistory: (String) -> Unit,
+    onLoadMoreHistory: () -> Unit,
+    onLoadMoreWatchLater: () -> Unit,
+    onYouTubeSessionConnected: () -> Unit,
+    onDisconnectYouTubeSession: () -> Unit,
     onAutoplayChange: (Boolean) -> Unit,
     onDataSaverChange: (Boolean) -> Unit,
     onNotificationsChange: (Boolean) -> Unit,
@@ -721,7 +733,7 @@ private fun MainShell(
                 refreshing = state.refreshing,
                 loadingMore = state.isLoadingMore(state.homeCategory),
                 canLoadMore = state.canLoadMore(state.homeCategory),
-                watchLater = state.watchLater,
+                watchLater = state.libraryWatchLater,
                 onRefresh = onRefresh,
                 onLoadMore = onLoadMoreHome,
                 onCategory = onCategory,
@@ -771,8 +783,8 @@ private fun MainShell(
                 if (libraryDestination == LibraryDestination.ROOT) {
                     LibraryScreen(
                         modifier = contentModifier,
-                        history = state.history,
-                        watchLater = state.watchLater,
+                        history = state.libraryHistory,
+                        watchLater = state.libraryWatchLater,
                         liked = (state.localLikedVideos + state.liked).distinctBy { it.id },
                         uploads = state.uploads,
                         uploadsLoadingMore = state.uploadsLoadingMore,
@@ -810,10 +822,10 @@ private fun MainShell(
                     )
                 } else {
                     val collectionVideos = when (libraryDestination) {
-                        LibraryDestination.HISTORY -> state.history
-                        LibraryDestination.WATCH_LATER -> state.watchLater
+                        LibraryDestination.HISTORY -> state.libraryHistory
+                        LibraryDestination.WATCH_LATER -> state.libraryWatchLater
                         LibraryDestination.LIKED -> (state.localLikedVideos + state.liked).distinctBy { it.id }
-                        LibraryDestination.MUSIC -> (state.history + state.localLikedVideos + state.liked)
+                        LibraryDestination.MUSIC -> (state.libraryHistory + state.localLikedVideos + state.liked)
                             .filter(::looksLikeMusicCollection)
                             .distinctBy { it.id }
                         LibraryDestination.UPLOADS -> state.uploads
@@ -826,16 +838,22 @@ private fun MainShell(
                         loadingMore = when (libraryDestination) {
                             LibraryDestination.LIKED -> state.likedLoadingMore
                             LibraryDestination.UPLOADS -> state.uploadsLoadingMore
+                            LibraryDestination.HISTORY -> state.historyLoadingMore
+                            LibraryDestination.WATCH_LATER -> state.watchLaterLoadingMore
                             else -> false
                         },
                         canLoadMore = when (libraryDestination) {
                             LibraryDestination.LIKED -> state.likedCanLoadMore
                             LibraryDestination.UPLOADS -> state.uploadsCanLoadMore
+                            LibraryDestination.HISTORY -> state.historyCanLoadMore
+                            LibraryDestination.WATCH_LATER -> state.watchLaterCanLoadMore
                             else -> false
                         },
                         onLoadMore = when (libraryDestination) {
                             LibraryDestination.LIKED -> onLoadMoreLiked
                             LibraryDestination.UPLOADS -> onLoadMoreUploads
+                            LibraryDestination.HISTORY -> onLoadMoreHistory
+                            LibraryDestination.WATCH_LATER -> onLoadMoreWatchLater
                             else -> null
                         },
                         onBack = { libraryDestination = LibraryDestination.ROOT },
@@ -855,6 +873,12 @@ private fun MainShell(
                 lastSyncMs = state.lastSyncMs,
                 youtubeWriteSyncEnabled = state.youtubeSyncEnabled,
                 youtubeWriteSyncAuthorized = state.youtubeSyncAuthorized,
+                youtubeSessionConnected = state.youtubeSessionConnected,
+                youtubeSessionBusy = state.youtubeSessionBusy,
+                youtubeHistoryCount = state.youtubeHistory.size,
+                youtubeWatchLaterCount = state.youtubeWatchLater.size,
+                onYouTubeSessionConnected = onYouTubeSessionConnected,
+                onDisconnectYouTubeSession = onDisconnectYouTubeSession,
                 autoplay = state.autoplay,
                 dataSaver = state.dataSaver,
                 notificationsEnabled = state.notificationsEnabled,
@@ -1631,6 +1655,12 @@ private fun AccountScreen(
     lastSyncMs: Long,
     youtubeWriteSyncEnabled: Boolean,
     youtubeWriteSyncAuthorized: Boolean,
+    youtubeSessionConnected: Boolean,
+    youtubeSessionBusy: Boolean,
+    youtubeHistoryCount: Int,
+    youtubeWatchLaterCount: Int,
+    onYouTubeSessionConnected: () -> Unit,
+    onDisconnectYouTubeSession: () -> Unit,
     autoplay: Boolean,
     dataSaver: Boolean,
     notificationsEnabled: Boolean,
@@ -1643,6 +1673,12 @@ private fun AccountScreen(
     onClearData: () -> Unit
 ) {
     var confirmClear by rememberSaveable { mutableStateOf(false) }
+    val accountContext = LocalContext.current
+    val youtubeLoginLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode == Activity.RESULT_OK) onYouTubeSessionConnected()
+    }
 
     Column(
         modifier = modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp),
@@ -1681,6 +1717,54 @@ private fun AccountScreen(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(top = 5.dp)
                 )
+            }
+        }
+
+        Spacer(Modifier.height(12.dp))
+        OutlinedCard(modifier = Modifier.fillMaxWidth()) {
+            Column(modifier = Modifier.fillMaxWidth().padding(14.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.History, null, tint = MaterialTheme.colorScheme.primary)
+                    Spacer(Modifier.width(9.dp))
+                    Text("Sesión de YouTube", fontWeight = FontWeight.Bold)
+                }
+                Text(
+                    when {
+                        youtubeSessionBusy -> "Cargando historial, Ver más tarde e inicio…"
+                        youtubeSessionConnected ->
+                            "Conectada · $youtubeHistoryCount en historial · $youtubeWatchLaterCount en Ver más tarde. " +
+                                "Lo que veas aquí se guarda en tu historial de YouTube."
+                        else ->
+                            "Conéctala para ver tu historial real, Ver más tarde y el inicio de YouTube, " +
+                                "y para que lo que veas se guarde en YouTube."
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 7.dp)
+                )
+                if (youtubeSessionConnected) {
+                    OutlinedButton(
+                        onClick = onDisconnectYouTubeSession,
+                        modifier = Modifier.fillMaxWidth().padding(top = 10.dp)
+                    ) {
+                        Icon(Icons.Default.Logout, null)
+                        Spacer(Modifier.width(10.dp))
+                        Text("Cerrar sesión de YouTube")
+                    }
+                } else {
+                    Button(
+                        onClick = {
+                            youtubeLoginLauncher.launch(
+                                Intent(accountContext, com.geovideos.app.YouTubeLoginActivity::class.java)
+                            )
+                        },
+                        modifier = Modifier.fillMaxWidth().padding(top = 10.dp)
+                    ) {
+                        Icon(Icons.Default.AccountCircle, null)
+                        Spacer(Modifier.width(10.dp))
+                        Text("Conectar sesión de YouTube")
+                    }
+                }
             }
         }
 

@@ -56,6 +56,12 @@
         </provider>
 
         <activity
+            android:name=".YouTubeLoginActivity"
+            android:exported="false"
+            android:configChanges="screenSize|smallestScreenSize|screenLayout|orientation|keyboardHidden"
+            android:theme="@style/Theme.GeoVideos" />
+
+        <activity
             android:name=".MainActivity"
             android:exported="true"
             android:supportsPictureInPicture="true"
