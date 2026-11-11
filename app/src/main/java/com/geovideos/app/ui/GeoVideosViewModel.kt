@@ -45,6 +45,7 @@ enum class AuthStatus {
 enum class MainSection {
     HOME,
     SHORTS,
+    SUBSCRIPTIONS,
     SEARCH,
     LIBRARY,
     ACCOUNT
@@ -129,6 +130,11 @@ data class GeoVideosUiState(
     val historyCanLoadMore: Boolean = false,
     val watchLaterLoadingMore: Boolean = false,
     val watchLaterCanLoadMore: Boolean = false,
+    val subsFeedVideos: List<VideoItem> = emptyList(),
+    val subsFeedShorts: List<VideoItem> = emptyList(),
+    val subsFeedLoading: Boolean = false,
+    val subsFeedLoadingMore: Boolean = false,
+    val subsFeedCanLoadMore: Boolean = false,
     val message: String? = null
 ) {
     /** Historial visible: el real de YouTube + lo visto recién en Geo Videos. */
@@ -182,9 +188,10 @@ private data class AccountSyncResult(
 
 class GeoVideosViewModel(application: Application) : AndroidViewModel(application) {
     private val repository = GeoVideosRepository(application)
-    private val api = YouTubeApi()
     private val youtubeSession = YouTubeSessionStore(application)
     private val innerTube = InnerTubeClient { youtubeSession.load() }
+    private val api = YouTubeApi(innerTube)
+    private var subsFeedContinuation: String = ""
     private var youtubeHomeActive: Boolean = false
     private var youtubeHomeContinuation: String = ""
     private var youtubeHistoryContinuation: String = ""
@@ -192,7 +199,14 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
     private var youtubeSessionJob: Job? = null
 
     private var accessToken: String? = null
-    private var youtubeWriteToken: String? = null
+    private var oauthWriteToken: String? = null
+
+    // Con la sesión de YouTube, las acciones (me gusta, suscribirse, listas) usan la misma sesión.
+    private var youtubeWriteToken: String?
+        get() = if (youtubeSession.hasStoredSession()) YouTubeApi.SESSION_TOKEN else oauthWriteToken
+        set(value) {
+            oauthWriteToken = value
+        }
     private var likesPlaylistId: String = ""
     private var uploadsPlaylistId: String = ""
     private var popularNextToken: String = ""
@@ -214,7 +228,8 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
     private var fullSyncJob: Job? = null
 
     private val cachedProfile = repository.loadProfile()
-    private val cachedAccountConnected = repository.hasConnectedAccount() && cachedProfile != null
+    private val cachedAccountConnected = repository.hasConnectedAccount() && cachedProfile != null &&
+        youtubeSession.hasStoredSession()
     private val _uiState = MutableStateFlow(
         GeoVideosUiState(
             authStatus = if (cachedAccountConnected) AuthStatus.CONNECTED else AuthStatus.DISCONNECTED,
@@ -226,8 +241,8 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
             autoplay = repository.loadAutoplay(),
             dataSaver = repository.loadDataSaver(),
             notificationsEnabled = repository.loadNotificationsEnabled(),
-            youtubeSyncEnabled = repository.loadYouTubeSyncEnabled(),
-            youtubeSyncAuthorized = false,
+            youtubeSyncEnabled = youtubeSession.hasStoredSession(),
+            youtubeSyncAuthorized = youtubeSession.hasStoredSession(),
             lastSyncMs = repository.loadLastSyncMs(),
             youtubeSessionConnected = youtubeSession.hasStoredSession()
         )
@@ -236,6 +251,8 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
 
     init {
         hydrateCachedState()
+        // Un solo inicio de sesión: si la sesión de YouTube está guardada, entrar directo.
+        if (youtubeSession.hasStoredSession()) connectWithYouTubeSession(interactive = false)
     }
 
     private fun hydrateCachedState() {
@@ -607,7 +624,7 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
                 }
 
                 val previousEmail = previousProfile?.email.orEmpty().trim()
-                if (!interactive && previousEmail.isNotBlank() &&
+                if (!interactive && token != YouTubeApi.SESSION_TOKEN && previousEmail.isNotBlank() &&
                     !previousEmail.equals(verifiedEmail, ignoreCase = true)
                 ) {
                     throw IllegalStateException(
@@ -666,8 +683,8 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
                             channelVideos = emptyList(),
                             channelPlaylists = emptyList(),
                             lastSyncMs = 0L,
-                            youtubeSyncEnabled = false,
-                            youtubeSyncAuthorized = false,
+                            youtubeSyncEnabled = youtubeSession.hasStoredSession(),
+                            youtubeSyncAuthorized = youtubeSession.hasStoredSession(),
                             youtubeSyncBusy = false
                         )
                     } else {
@@ -740,6 +757,13 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
         authorizationAttemptId += 1L
         accessToken = null
         youtubeWriteToken = null
+        youtubeSessionJob?.cancel()
+        youtubeSession.clear()
+        innerTube.clearWatch()
+        runCatching { android.webkit.CookieManager.getInstance().removeAllCookies(null) }
+        youtubeHistoryContinuation = ""
+        youtubeWatchLaterContinuation = ""
+        subsFeedContinuation = ""
         repository.clearYouTubeSyncAccountBinding()
         likesPlaylistId = ""
         uploadsPlaylistId = ""
@@ -787,7 +811,7 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
     fun refresh() {
         if (_uiState.value.refreshing) return
         if (accessToken.isNullOrBlank() && youtubeSession.hasStoredSession()) {
-            refreshYouTubeSession()
+            connectWithYouTubeSession(interactive = false)
             return
         }
         if (accessToken.isNullOrBlank()) {
@@ -1911,6 +1935,7 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
             return
         }
 
+        if (section == MainSection.SUBSCRIPTIONS) loadSubscriptionFeed()
         val leavingShorts = current.section == MainSection.SHORTS
         _uiState.update {
             it.copy(
@@ -3024,7 +3049,10 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     private fun handleApiError(error: YouTubeApiException) {
-        if (error.statusCode == 401) accessToken = null
+        if (error.statusCode == 401) {
+            handleYouTubeSessionExpired(error)
+            return
+        }
         _uiState.update {
             it.copy(
                 loading = false,
@@ -3049,42 +3077,93 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
     // ------------------------------------------------------------------
 
     fun onYouTubeSessionConnected() {
+        connectWithYouTubeSession(interactive = true)
+    }
+
+    /** Único inicio de sesión: usa la sesión de YouTube guardada por YouTubeLoginActivity. */
+    fun connectWithYouTubeSession(interactive: Boolean) {
         if (!youtubeSession.isConnected()) {
-            _uiState.update { it.copy(message = "No se pudo guardar la sesión de YouTube. Intenta otra vez.") }
+            youtubeSession.clear()
+            onAuthorizationFailure("No se encontró la sesión de YouTube. Inicia sesión otra vez.", false)
             return
         }
         _uiState.update {
             it.copy(
                 youtubeSessionConnected = true,
-                message = "Sesión de YouTube conectada. Cargando tu historial…"
+                youtubeSyncEnabled = true,
+                youtubeSyncAuthorized = true,
+                youtubeSyncBusy = false
             )
         }
-        refreshYouTubeSession()
+        onAuthorizationSuccess(token = YouTubeApi.SESSION_TOKEN, interactive = interactive)
+    }
+
+    /** Las acciones ya usan la sesión; no hace falta pedir otro permiso a Google. */
+    fun onYouTubeSessionSyncRequested() {
+        _uiState.update { it.copy(youtubeSyncEnabled = true, youtubeSyncAuthorized = true, youtubeSyncBusy = false) }
+        pendingSubscriptionToggle?.let { channel ->
+            pendingSubscriptionToggle = null
+            toggleSubscription(channel)
+        }
     }
 
     fun disconnectYouTubeSession() {
-        youtubeSessionJob?.cancel()
-        youtubeSession.clear()
-        innerTube.clearWatch()
-        runCatching { android.webkit.CookieManager.getInstance().removeAllCookies(null) }
-        youtubeHomeActive = false
-        youtubeHomeContinuation = ""
-        youtubeHistoryContinuation = ""
-        youtubeWatchLaterContinuation = ""
-        _uiState.update {
-            it.copy(
-                youtubeSessionConnected = false,
-                youtubeSessionBusy = false,
-                youtubeHistory = emptyList(),
-                youtubeWatchLater = emptyList(),
-                historyLoadingMore = false,
-                historyCanLoadMore = false,
-                watchLaterLoadingMore = false,
-                watchLaterCanLoadMore = false,
-                message = "Sesión de YouTube desconectada."
-            )
+        disconnect()
+    }
+
+    fun loadSubscriptionFeed(force: Boolean = false) {
+        val state = _uiState.value
+        if (!youtubeSession.hasStoredSession() || state.subsFeedLoading) return
+        if (!force && state.subsFeedVideos.isNotEmpty()) return
+        _uiState.update { it.copy(subsFeedLoading = true) }
+        viewModelScope.launch {
+            try {
+                val page = innerTube.subscriptionsFeed()
+                subsFeedContinuation = page.continuation
+                _uiState.update {
+                    it.copy(
+                        subsFeedVideos = page.videos,
+                        subsFeedShorts = page.shorts,
+                        subsFeedLoading = false,
+                        subsFeedCanLoadMore = page.continuation.isNotBlank()
+                    )
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (expired: YouTubeSessionExpiredException) {
+                handleYouTubeSessionExpired(expired)
+            } catch (error: Exception) {
+                _uiState.update {
+                    it.copy(subsFeedLoading = false, message = "No se pudieron cargar tus suscripciones.")
+                }
+            }
         }
-        if (!accessToken.isNullOrBlank()) refresh()
+    }
+
+    fun loadMoreSubscriptionFeed() {
+        val state = _uiState.value
+        if (state.subsFeedLoadingMore || state.subsFeedLoading || subsFeedContinuation.isBlank()) return
+        _uiState.update { it.copy(subsFeedLoadingMore = true) }
+        viewModelScope.launch {
+            try {
+                val page = innerTube.subscriptionsFeed(subsFeedContinuation)
+                subsFeedContinuation = page.continuation
+                _uiState.update {
+                    it.copy(
+                        subsFeedVideos = mergeUniqueVideos(it.subsFeedVideos, page.videos).take(MAX_YOUTUBE_ITEMS),
+                        subsFeedShorts = mergeUniqueVideos(it.subsFeedShorts, page.shorts).take(60),
+                        subsFeedLoadingMore = false,
+                        subsFeedCanLoadMore = page.continuation.isNotBlank()
+                    )
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (expired: YouTubeSessionExpiredException) {
+                handleYouTubeSessionExpired(expired)
+            } catch (error: Exception) {
+                _uiState.update { it.copy(subsFeedLoadingMore = false) }
+            }
+        }
     }
 
     private fun refreshYouTubeSession() {
@@ -3167,23 +3246,12 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     private fun handleYouTubeSessionExpired(error: Exception) {
-        youtubeSession.clear()
-        innerTube.clearWatch()
-        youtubeHomeActive = false
-        youtubeHomeContinuation = ""
-        youtubeHistoryContinuation = ""
-        youtubeWatchLaterContinuation = ""
+        disconnect()
         _uiState.update {
             it.copy(
-                youtubeSessionConnected = false,
-                youtubeSessionBusy = false,
-                youtubeHistory = emptyList(),
-                youtubeWatchLater = emptyList(),
-                historyLoadingMore = false,
-                historyCanLoadMore = false,
-                watchLaterLoadingMore = false,
-                watchLaterCanLoadMore = false,
-                message = error.message ?: "La sesión de YouTube venció. Vuelve a conectarla en Cuenta."
+                authStatus = AuthStatus.ERROR,
+                authError = error.message ?: "La sesión de YouTube venció. Vuelve a iniciar sesión.",
+                message = null
             )
         }
     }

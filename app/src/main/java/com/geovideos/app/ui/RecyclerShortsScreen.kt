@@ -747,7 +747,8 @@ private class ShortPageView(context: Context) : FrameLayout(context) {
     private var internalPlaybackState: Int = Player.STATE_IDLE
     private val playerView = (LayoutInflater.from(context).inflate(R.layout.geo_player_texture, null, false) as PlayerView).apply {
         useController = false
-        resizeMode = AspectRatioFrameLayout.RESIZE_MODE_ZOOM
+        // Mostrar el video completo (sin recortar ni ampliar), como YouTube.
+        resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
         setShowBuffering(PlayerView.SHOW_BUFFERING_NEVER)
         setShutterBackgroundColor(Color.TRANSPARENT)
         setKeepContentOnPlayerReset(true)
@@ -814,18 +815,18 @@ private class ShortPageView(context: Context) : FrameLayout(context) {
             gravity = Gravity.BOTTOM
             channelAvatar.scaleType = ImageView.ScaleType.CENTER_CROP
             channelAvatar.background = circleDrawable(0xFF3C2A55.toInt())
-            addView(channelAvatar, LinearLayout.LayoutParams(dpShort(context, 38), dpShort(context, 38)).apply {
+            addView(channelAvatar, LinearLayout.LayoutParams(dpShort(context, 42), dpShort(context, 42)).apply {
                 marginEnd = dpShort(context, 10)
             })
             addView(LinearLayout(context).apply {
                 orientation = LinearLayout.VERTICAL
                 channel.setTextColor(Color.WHITE)
-                channel.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14.5f)
+                channel.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16f)
                 channel.setTypeface(channel.typeface, android.graphics.Typeface.BOLD)
                 channel.maxLines = 1
                 channel.ellipsize = TextUtils.TruncateAt.END
                 title.setTextColor(Color.WHITE)
-                title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13.5f)
+                title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
                 title.maxLines = 3
                 title.ellipsize = TextUtils.TruncateAt.END
                 addView(channel)
@@ -842,13 +843,13 @@ private class ShortPageView(context: Context) : FrameLayout(context) {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER_HORIZONTAL
             listOf(like, share, save, download, quality).forEach { action ->
-                addView(action, LinearLayout.LayoutParams(dpShort(context, 46), dpShort(context, 48)).apply {
-                    bottomMargin = dpShort(context, 2)
+                addView(action, LinearLayout.LayoutParams(dpShort(context, 72), ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                    bottomMargin = dpShort(context, 14)
                 })
             }
         }
-        addView(actions, LayoutParams(dpShort(context, 52), ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM or Gravity.END).apply {
-            setMargins(0, 0, dpShort(context, 4), dpShort(context, 14))
+        addView(actions, LayoutParams(dpShort(context, 76), ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM or Gravity.END).apply {
+            setMargins(0, 0, dpShort(context, 2), dpShort(context, 18))
         })
     }
 
@@ -958,13 +959,14 @@ private class ShortActionView(context: Context, iconRes: Int, label: String) : L
         isFocusable = true
         icon.setImageResource(iconRes)
         icon.setColorFilter(Color.WHITE)
-        icon.setPadding(dpShort(context, 7), dpShort(context, 7), dpShort(context, 7), dpShort(context, 7))
+        icon.setPadding(dpShort(context, 10), dpShort(context, 10), dpShort(context, 10), dpShort(context, 10))
         icon.background = circleDrawable(0x5E000000.toInt())
-        addView(icon, LayoutParams(dpShort(context, 34), dpShort(context, 34)))
+        addView(icon, LayoutParams(dpShort(context, 48), dpShort(context, 48)))
         text.text = label
         text.gravity = Gravity.CENTER
         text.setTextColor(Color.WHITE)
-        text.setTextSize(TypedValue.COMPLEX_UNIT_SP, 8.2f)
+        text.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+        text.setShadowLayer(4f, 0f, 1f, 0xAA000000.toInt())
         text.maxLines = 2
         text.ellipsize = TextUtils.TruncateAt.END
         addView(text, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
@@ -1018,8 +1020,10 @@ private fun loadShortImage(view: ImageView, url: String) {
 }
 
 private fun loadShortAvatar(view: ImageView, url: String) {
+    // Círculo (no cuadrado) mientras carga o si el Short no trae foto del canal.
     if (url.isBlank()) {
-        view.setImageDrawable(ColorDrawable(0xFF3C2A55.toInt()))
+        Glide.with(view).clear(view)
+        view.setImageDrawable(circleDrawable(0xFF3C2A55.toInt()))
         return
     }
     Glide.with(view)
@@ -1027,8 +1031,8 @@ private fun loadShortAvatar(view: ImageView, url: String) {
         .override(96, 96)
         .dontAnimate()
         .circleCrop()
-        .placeholder(ColorDrawable(0xFF3C2A55.toInt()))
-        .error(ColorDrawable(0xFF3C2A55.toInt()))
+        .placeholder(circleDrawable(0xFF3C2A55.toInt()))
+        .error(circleDrawable(0xFF3C2A55.toInt()))
         .into(view)
 }
 

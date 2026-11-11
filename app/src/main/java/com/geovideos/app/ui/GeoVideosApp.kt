@@ -72,6 +72,7 @@ import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.Games
 import androidx.compose.material.icons.filled.History
+import androidx.compose.material.icons.filled.Subscriptions
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.LiveTv
@@ -372,6 +373,8 @@ fun GeoVideosApp(
                         onRemoveDownload = viewModel::removeDownload,
                         onRemoveHistory = viewModel::removeHistory,
                         onLoadMoreHistory = viewModel::loadMoreHistory,
+                        onRefreshSubscriptions = { viewModel.loadSubscriptionFeed(force = true) },
+                        onLoadMoreSubscriptions = viewModel::loadMoreSubscriptionFeed,
                         onLoadMoreWatchLater = viewModel::loadMoreWatchLater,
                         onYouTubeSessionConnected = viewModel::onYouTubeSessionConnected,
                         onDisconnectYouTubeSession = viewModel::disconnectYouTubeSession,
@@ -515,11 +518,11 @@ private fun GoogleConnectScreen(
             if (status == AuthStatus.CONNECTING) {
                 CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
                 Spacer(Modifier.width(12.dp))
-                Text("Abriendo Google…")
+                Text("Abriendo YouTube…")
             } else {
                 Icon(Icons.Default.AccountCircle, null)
                 Spacer(Modifier.width(10.dp))
-                Text("Continuar con Google")
+                Text("Iniciar sesión con YouTube")
             }
         }
         Text(
@@ -587,6 +590,8 @@ private fun MainShell(
     onRemoveDownload: (Long) -> Unit,
     onRemoveHistory: (String) -> Unit,
     onLoadMoreHistory: () -> Unit,
+    onRefreshSubscriptions: () -> Unit,
+    onLoadMoreSubscriptions: () -> Unit,
     onLoadMoreWatchLater: () -> Unit,
     onYouTubeSessionConnected: () -> Unit,
     onDisconnectYouTubeSession: () -> Unit,
@@ -609,6 +614,16 @@ private fun MainShell(
     }
     BackHandler(enabled = state.section == MainSection.LIBRARY && libraryDestination != LibraryDestination.ROOT) {
         libraryDestination = LibraryDestination.ROOT
+    }
+    BackHandler(
+        enabled = libraryDestination == LibraryDestination.ROOT && state.section in setOf(
+            MainSection.SEARCH,
+            MainSection.ACCOUNT,
+            MainSection.SUBSCRIPTIONS,
+            MainSection.LIBRARY
+        )
+    ) {
+        onSection(MainSection.HOME)
     }
     val storagePermissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
@@ -680,6 +695,9 @@ private fun MainShell(
                     }
                 },
                 actions = {
+                    IconButton(onClick = { onSection(MainSection.SEARCH) }) {
+                        Icon(Icons.Default.Search, contentDescription = "Buscar")
+                    }
                     IconButton(onClick = { showNotifications = true }) {
                         BadgedBox(badge = {
                             if (state.notifications.isNotEmpty()) Badge { Text(state.notifications.size.coerceAtMost(99).toString()) }
@@ -700,6 +718,9 @@ private fun MainShell(
                         target == MainSection.HOME && state.section == MainSection.HOME -> {
                             if (homeAtTop) onRefresh() else homeScrollToTopSignal += 1L
                         }
+                        target == MainSection.SUBSCRIPTIONS && state.section == MainSection.SUBSCRIPTIONS -> {
+                            onRefreshSubscriptions()
+                        }
                         target == MainSection.LIBRARY && state.section == MainSection.LIBRARY -> {
                             libraryDestination = LibraryDestination.ROOT
                             onSection(target)
@@ -709,9 +730,8 @@ private fun MainShell(
                 }
                 BottomItem(MainSection.HOME, state.section, "Principal", Icons.Default.Home, navigate)
                 BottomItem(MainSection.SHORTS, state.section, "Shorts", Icons.Default.AutoAwesome, navigate)
-                BottomItem(MainSection.SEARCH, state.section, "Buscar", Icons.Default.Search, navigate)
-                BottomItem(MainSection.LIBRARY, state.section, "Colección", Icons.Default.VideoLibrary, navigate)
-                BottomItem(MainSection.ACCOUNT, state.section, "Cuenta", Icons.Default.Person, navigate)
+                BottomItem(MainSection.SUBSCRIPTIONS, state.section, "Suscripciones", Icons.Default.Subscriptions, navigate)
+                BottomItem(MainSection.LIBRARY, state.section, "Tú", Icons.Default.VideoLibrary, navigate)
             }
         },
         snackbarHost = { SnackbarHost(snackbar) }
@@ -763,6 +783,21 @@ private fun MainShell(
                 onDislike = onDislike,
                 onRegisterDownload = onRegisterDownload,
                 onMessage = onMessage
+            )
+            MainSection.SUBSCRIPTIONS -> SubscriptionsFeedScreen(
+                modifier = contentModifier,
+                channels = state.subscriptions,
+                videos = state.subsFeedVideos,
+                shorts = state.subsFeedShorts,
+                loading = state.subsFeedLoading,
+                loadingMore = state.subsFeedLoadingMore,
+                canLoadMore = state.subsFeedCanLoadMore,
+                onRefresh = onRefreshSubscriptions,
+                onLoadMore = onLoadMoreSubscriptions,
+                onPlay = onPlay,
+                onOpenShort = onPreviewShort,
+                onOpenChannel = onOpenChannel,
+                onWatchLater = onWatchLater
             )
             MainSection.SEARCH -> SearchScreen(
                 modifier = contentModifier,
@@ -1673,12 +1708,6 @@ private fun AccountScreen(
     onClearData: () -> Unit
 ) {
     var confirmClear by rememberSaveable { mutableStateOf(false) }
-    val accountContext = LocalContext.current
-    val youtubeLoginLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.StartActivityForResult()
-    ) { result ->
-        if (result.resultCode == Activity.RESULT_OK) onYouTubeSessionConnected()
-    }
 
     Column(
         modifier = modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp),
@@ -1735,36 +1764,12 @@ private fun AccountScreen(
                             "Conectada · $youtubeHistoryCount en historial · $youtubeWatchLaterCount en Ver más tarde. " +
                                 "Lo que veas aquí se guarda en tu historial de YouTube."
                         else ->
-                            "Conéctala para ver tu historial real, Ver más tarde y el inicio de YouTube, " +
-                                "y para que lo que veas se guarde en YouTube."
+                            "Sin sesión. Vuelve a iniciar sesión con YouTube."
                     },
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(top = 7.dp)
                 )
-                if (youtubeSessionConnected) {
-                    OutlinedButton(
-                        onClick = onDisconnectYouTubeSession,
-                        modifier = Modifier.fillMaxWidth().padding(top = 10.dp)
-                    ) {
-                        Icon(Icons.Default.Logout, null)
-                        Spacer(Modifier.width(10.dp))
-                        Text("Cerrar sesión de YouTube")
-                    }
-                } else {
-                    Button(
-                        onClick = {
-                            youtubeLoginLauncher.launch(
-                                Intent(accountContext, com.geovideos.app.YouTubeLoginActivity::class.java)
-                            )
-                        },
-                        modifier = Modifier.fillMaxWidth().padding(top = 10.dp)
-                    ) {
-                        Icon(Icons.Default.AccountCircle, null)
-                        Spacer(Modifier.width(10.dp))
-                        Text("Conectar sesión de YouTube")
-                    }
-                }
             }
         }
 
@@ -1777,17 +1782,12 @@ private fun AccountScreen(
         OutlinedButton(onClick = onSwitchAccount, modifier = Modifier.fillMaxWidth()) {
             Icon(Icons.Default.AccountCircle, null)
             Spacer(Modifier.width(10.dp))
-            Text("Cambiar cuenta de Google")
-        }
-        OutlinedButton(onClick = onReconnect, modifier = Modifier.fillMaxWidth().padding(top = 10.dp)) {
-            Icon(Icons.Default.Refresh, null)
-            Spacer(Modifier.width(10.dp))
-            Text("Renovar acceso")
+            Text("Cambiar de cuenta")
         }
         OutlinedButton(onClick = onDisconnect, modifier = Modifier.fillMaxWidth().padding(top = 10.dp)) {
             Icon(Icons.Default.Logout, null)
             Spacer(Modifier.width(10.dp))
-            Text("Desconectar")
+            Text("Cerrar sesión")
         }
         TextButton(onClick = { confirmClear = true }, modifier = Modifier.padding(top = 12.dp)) {
             Icon(Icons.Default.Delete, null)

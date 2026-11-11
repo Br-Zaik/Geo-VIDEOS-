@@ -158,8 +158,13 @@ internal object StreamResolver {
 
             when (safeAttempt) {
                 0 -> {
-                    // Inicio rapido: un stream progresivo directo evita solicitudes extra de
-                    // manifiestos y suele empezar antes en redes moviles.
+                    // YouTube hoy solo entrega el formato "progresivo" (video+audio juntos) en
+                    // 360p. Si se pidió más calidad, usar video y audio adaptativos como hace
+                    // YouTube; así los videos y Shorts ya no se ven borrosos.
+                    val progressiveHeight = primaryProgressive?.height ?: 0
+                    if (!dataSaver && adaptive != null && progressiveHeight < targetHeight) {
+                        return@withContext adaptive
+                    }
                     primaryProgressive?.let { stream ->
                         return@withContext ResolvedMedia(stream.content, stream.format?.mimeType)
                     }

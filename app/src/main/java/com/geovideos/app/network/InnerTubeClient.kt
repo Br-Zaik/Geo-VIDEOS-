@@ -1,5 +1,7 @@
 package com.geovideos.app.network
 
+import com.geovideos.app.data.ChannelItem
+import com.geovideos.app.data.PlaylistItem
 import com.geovideos.app.data.VideoItem
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -21,8 +23,14 @@ class YouTubeSessionExpiredException :
 data class InnerTubePage(
     val videos: List<VideoItem>,
     val shorts: List<VideoItem>,
-    val continuation: String
+    val continuation: String,
+    val channels: List<ChannelItem> = emptyList(),
+    val playlists: List<PlaylistItem> = emptyList(),
+    val chips: List<HomeChip> = emptyList()
 )
+
+/** Filtro de YouTube (Videojuegos, Música, En vivo…) con su token para cargarlo. */
+data class HomeChip(val title: String, val token: String)
 
 /**
  * Cliente de la API interna de YouTube (la misma que usa youtube.com) con la sesión
@@ -54,9 +62,117 @@ class InnerTubeClient(private val cookieProvider: () -> String) {
     @Volatile
     private var watch: WatchSession? = null
 
+    @Volatile
+    private var lastHomeChips: List<HomeChip> = emptyList()
+
+    private val nextCache = HashMap<String, Pair<Long, JSONObject>>()
+
     // ---------------------------------------------------------------- Listas
 
-    suspend fun home(continuation: String = ""): InnerTubePage = browse("FEwhat_to_watch", continuation)
+    suspend fun home(continuation: String = ""): InnerTubePage {
+        val page = browse("FEwhat_to_watch", continuation)
+        if (continuation.isBlank() && page.chips.isNotEmpty()) lastHomeChips = page.chips
+        return page
+    }
+
+    /** Filtros personalizados del inicio de YouTube (se leen del último inicio cargado). */
+    suspend fun homeChips(): List<HomeChip> {
+        if (lastHomeChips.isEmpty()) runCatching { home() }
+        return lastHomeChips
+    }
+
+    suspend fun subscriptionsFeed(continuation: String = ""): InnerTubePage =
+        browse("FEsubscriptions", continuation)
+
+    suspend fun browsePage(browseId: String, params: String = "", continuation: String = ""): InnerTubePage =
+        withContext(Dispatchers.IO) {
+            val body = baseBody(WEB)
+            if (continuation.isNotBlank()) {
+                body.put("continuation", continuation)
+            } else {
+                body.put("browseId", browseId)
+                if (params.isNotBlank()) body.put("params", params)
+            }
+            parsePage(post("browse", body, WEB))
+        }
+
+    suspend fun search(query: String, params: String = "", continuation: String = ""): InnerTubePage =
+        withContext(Dispatchers.IO) {
+            val body = baseBody(WEB)
+            if (continuation.isNotBlank()) {
+                body.put("continuation", continuation)
+            } else {
+                body.put("query", query)
+                if (params.isNotBlank()) body.put("params", params)
+            }
+            parsePage(post("search", body, WEB))
+        }
+
+    /** Página de un video (detalles, relacionados, comentarios). La primera se guarda 3 min. */
+    suspend fun next(videoId: String, continuation: String = ""): JSONObject = withContext(Dispatchers.IO) {
+        if (continuation.isNotBlank()) {
+            return@withContext post("next", baseBody(WEB).put("continuation", continuation), WEB)
+        }
+        val now = System.currentTimeMillis()
+        synchronized(nextCache) {
+            nextCache[videoId]?.takeIf { now - it.first < 180_000L }?.let { return@withContext it.second }
+        }
+        val json = post("next", baseBody(WEB).put("videoId", videoId), WEB)
+        synchronized(nextCache) {
+            if (nextCache.size > 20) nextCache.clear()
+            nextCache[videoId] = now to json
+        }
+        json
+    }
+
+    /** Llamada genérica a la API interna con el cliente web. */
+    suspend fun call(endpoint: String, fill: JSONObject.() -> Unit = {}): JSONObject =
+        withContext(Dispatchers.IO) {
+            val body = baseBody(WEB)
+            body.fill()
+            post(endpoint, body, WEB)
+        }
+
+    fun parse(json: JSONObject): InnerTubePage = parsePage(json)
+
+    suspend fun rate(videoId: String, rating: String) {
+        val endpoint = when (rating) {
+            "like" -> "like/like"
+            "dislike" -> "like/dislike"
+            else -> "like/removelike"
+        }
+        call(endpoint) { put("target", JSONObject().put("videoId", videoId)) }
+    }
+
+    suspend fun setSubscribed(channelId: String, subscribed: Boolean) {
+        val endpoint = if (subscribed) "subscription/subscribe" else "subscription/unsubscribe"
+        call(endpoint) { put("channelIds", JSONArray().put(channelId)) }
+    }
+
+    suspend fun editPlaylist(playlistId: String, videoId: String, add: Boolean) {
+        val action = if (add) {
+            JSONObject().put("action", "ACTION_ADD_VIDEO").put("addedVideoId", videoId)
+        } else {
+            JSONObject().put("action", "ACTION_REMOVE_VIDEO_BY_VIDEO_ID").put("removedVideoId", videoId)
+        }
+        val json = call("browse/edit_playlist") {
+            put("playlistId", playlistId.removePrefix("VL"))
+            put("actions", JSONArray().put(action))
+        }
+        val status = json.optString("status")
+        if (status.isNotBlank() && status != "STATUS_SUCCEEDED") {
+            throw IOException("YouTube no aceptó el cambio en la lista.")
+        }
+    }
+
+    suspend fun createPlaylist(title: String): String {
+        val json = call("playlist/create") {
+            put("title", title)
+            put("privacyStatus", "PRIVATE")
+            put("videoIds", JSONArray())
+        }
+        return json.optString("playlistId")
+    }
 
     suspend fun history(continuation: String = ""): InnerTubePage = browse("FEhistory", continuation)
 
@@ -73,21 +189,7 @@ class InnerTubeClient(private val cookieProvider: () -> String) {
             parsePage(post("browse", body, WEB))
         }
 
-    suspend fun editWatchLater(videoId: String, add: Boolean) = withContext(Dispatchers.IO) {
-        val action = if (add) {
-            JSONObject().put("action", "ACTION_ADD_VIDEO").put("addedVideoId", videoId)
-        } else {
-            JSONObject().put("action", "ACTION_REMOVE_VIDEO_BY_VIDEO_ID").put("removedVideoId", videoId)
-        }
-        val body = baseBody(WEB)
-            .put("playlistId", "WL")
-            .put("actions", JSONArray().put(action))
-        val json = post("browse/edit_playlist", body, WEB)
-        val status = json.optString("status")
-        if (status.isNotBlank() && status != "STATUS_SUCCEEDED") {
-            throw IOException("YouTube no aceptó el cambio en Ver más tarde.")
-        }
-    }
+    suspend fun editWatchLater(videoId: String, add: Boolean) = editPlaylist("WL", videoId, add)
 
     // ------------------------------------------------- Historial de YouTube
 
@@ -284,8 +386,19 @@ class InnerTubeClient(private val cookieProvider: () -> String) {
     private fun parsePage(root: JSONObject): InnerTubePage {
         val videos = ArrayList<VideoItem>()
         val shorts = ArrayList<VideoItem>()
+        val channels = ArrayList<ChannelItem>()
+        val playlists = ArrayList<PlaylistItem>()
+        val chips = ArrayList<HomeChip>()
         val seen = HashSet<String>()
         var continuation = ""
+
+        fun addChannel(channel: ChannelItem?) {
+            if (channel != null && channel.id.isNotBlank() && seen.add("c:" + channel.id)) channels.add(channel)
+        }
+
+        fun addPlaylist(playlist: PlaylistItem?) {
+            if (playlist != null && playlist.id.isNotBlank() && seen.add("p:" + playlist.id)) playlists.add(playlist)
+        }
 
         fun addVideo(video: VideoItem?) {
             if (video != null && video.id.isNotBlank() && seen.add(video.id)) videos.add(video)
@@ -310,7 +423,23 @@ class InnerTubeClient(private val cookieProvider: () -> String) {
                             "playlistVideoRenderer" -> addVideo(obj?.let { parseVideoRenderer(it) })
                             "reelItemRenderer" -> addShort(obj?.let { parseReelItem(it) })
                             "shortsLockupViewModel" -> addShort(obj?.let { parseShortsLockup(it) })
-                            "lockupViewModel" -> addVideo(obj?.let { parseLockup(it) })
+                            "lockupViewModel" -> if (obj != null) {
+                                val type = obj.optString("contentType")
+                                if (type.isBlank() || type == "LOCKUP_CONTENT_TYPE_VIDEO") {
+                                    addVideo(parseLockup(obj))
+                                } else {
+                                    addPlaylist(parseLockupPlaylist(obj))
+                                }
+                            }
+                            "channelRenderer", "gridChannelRenderer" -> addChannel(obj?.let { parseChannelRenderer(it) })
+                            "gridPlaylistRenderer", "playlistRenderer", "radioRenderer", "compactRadioRenderer" ->
+                                addPlaylist(obj?.let { parsePlaylistRenderer(it) })
+                            "chipCloudChipRenderer" -> {
+                                val title = text(obj?.opt("text"))
+                                val token = obj?.optJSONObject("navigationEndpoint")
+                                    ?.let { findFirstString(it, "token") { t -> t.isNotBlank() } }
+                                if (title.isNotBlank() && !token.isNullOrBlank()) chips.add(HomeChip(title, token))
+                            }
                             "continuationItemRenderer" -> {
                                 val token = obj?.let { findFirstString(it, "token") { t -> t.isNotBlank() } }
                                 if (!token.isNullOrBlank()) continuation = token
@@ -324,7 +453,7 @@ class InnerTubeClient(private val cookieProvider: () -> String) {
         }
 
         visit(root)
-        return InnerTubePage(videos, shorts, continuation)
+        return InnerTubePage(videos, shorts, continuation, channels, playlists, chips)
     }
 
     private fun parseVideoRenderer(o: JSONObject): VideoItem? {
@@ -451,9 +580,67 @@ class InnerTubeClient(private val cookieProvider: () -> String) {
             viewCountText = views
         )
 
+    private fun parseChannelRenderer(o: JSONObject): ChannelItem? {
+        val id = o.optString("channelId")
+        if (id.isBlank()) return null
+        val texts = listOf(
+            text(o.opt("subscriberCountText")),
+            text(o.opt("videoCountText"))
+        ).filter { it.isNotBlank() }
+        val handle = texts.firstOrNull { it.startsWith("@") }.orEmpty()
+        val subscribers = texts.firstOrNull { it.contains("suscript", true) || it.contains("subscriber", true) }.orEmpty()
+        return ChannelItem(
+            id = id,
+            title = text(o.opt("title")),
+            thumbnailUrl = o.optJSONObject("thumbnail")?.let { lastThumb(it) }.orEmpty(),
+            description = text(o.opt("descriptionSnippet")),
+            handle = handle,
+            subscriberCount = parseCount(subscribers),
+            isSubscribed = (findFirst(o, "subscribed") as? Boolean) ?: false
+        )
+    }
+
+    private fun parsePlaylistRenderer(o: JSONObject): PlaylistItem? {
+        val id = o.optString("playlistId")
+        if (id.isBlank()) return null
+        val thumb = (findFirst(o.opt("thumbnailRenderer") ?: o.opt("thumbnail") ?: o.opt("thumbnails"), "thumbnails") as? JSONArray)
+            ?.let { list -> if (list.length() > 0) fixUrl(list.optJSONObject(list.length() - 1)?.optString("url").orEmpty()) else "" }
+            .orEmpty()
+        val count = parseCount(text(o.opt("videoCountText")).ifBlank { text(o.opt("videoCountShortText")) })
+            .takeIf { it > 0L } ?: o.optString("videoCount").toLongOrNull() ?: 0L
+        return PlaylistItem(
+            id = id,
+            title = text(o.opt("title")).ifBlank { "Lista" },
+            thumbnailUrl = thumb,
+            itemCount = count.toInt()
+        )
+    }
+
+    private fun parseLockupPlaylist(o: JSONObject): PlaylistItem? {
+        val id = o.optString("contentId")
+        if (id.isBlank()) return null
+        val meta = o.optJSONObject("metadata")?.optJSONObject("lockupMetadataViewModel")
+        val title = meta?.optJSONObject("title")?.optString("content").orEmpty()
+        val sources = findFirst(o.optJSONObject("contentImage"), "sources") as? JSONArray
+        val thumb = if (sources != null && sources.length() > 0) {
+            fixUrl(sources.optJSONObject(sources.length() - 1)?.optString("url").orEmpty())
+        } else {
+            ""
+        }
+        val badges = collectObjects(o.optJSONObject("contentImage"), "thumbnailBadgeViewModel")
+            .map { it.optString("text") }
+        val count = badges.map { parseCount(it) }.firstOrNull { it > 0L } ?: 0L
+        return PlaylistItem(
+            id = id,
+            title = title.ifBlank { if (id.startsWith("RD")) "Mix" else "Lista" },
+            thumbnailUrl = thumb,
+            itemCount = count.toInt()
+        )
+    }
+
     // ------------------------------------------------------------ Ayudantes
 
-    private fun text(node: Any?): String = when (node) {
+    internal fun text(node: Any?): String = when (node) {
         is String -> node
         is JSONObject -> {
             val simple = node.optString("simpleText")
@@ -475,7 +662,7 @@ class InnerTubeClient(private val cookieProvider: () -> String) {
         else -> ""
     }
 
-    private fun lastThumb(obj: JSONObject): String {
+    internal fun lastThumb(obj: JSONObject): String {
         val list = obj.optJSONArray("thumbnails") ?: obj.optJSONArray("sources") ?: return ""
         if (list.length() == 0) return ""
         return fixUrl(list.optJSONObject(list.length() - 1)?.optString("url").orEmpty())
@@ -484,7 +671,7 @@ class InnerTubeClient(private val cookieProvider: () -> String) {
     private fun videoThumb(id: String, thumbnail: JSONObject?): String =
         thumbnail?.let { lastThumb(it) }.orEmpty().ifBlank { "https://i.ytimg.com/vi/$id/hqdefault.jpg" }
 
-    private fun fixUrl(url: String): String = if (url.startsWith("//")) "https:$url" else url
+    internal fun fixUrl(url: String): String = if (url.startsWith("//")) "https:$url" else url
 
     private fun overlayTime(overlays: JSONArray?): String {
         if (overlays == null) return ""
@@ -534,6 +721,44 @@ class InnerTubeClient(private val cookieProvider: () -> String) {
         return seconds * 1000L
     }
 
+    /** Convierte "10 M de suscriptores", "1,2 K", "957" o "1.234.567 vistas" en número. */
+    internal fun parseCount(value: String): Long {
+        val lower = value.lowercase().replace('\u00a0', ' ')
+        val match = Regex("""(\d+(?:[.,]\d+)*)\s*(mil\s*m|mm|mil|k|m|b)?\b""").find(lower) ?: return 0L
+        val digits = match.groupValues[1]
+        val suffix = match.groupValues[2].replace(" ", "")
+        val multiplier = when (suffix) {
+            "k", "mil" -> 1_000.0
+            "m" -> 1_000_000.0
+            "milm", "mm", "b" -> 1_000_000_000.0
+            else -> 1.0
+        }
+        val number = if (multiplier == 1.0) {
+            digits.replace(".", "").replace(",", "").toDoubleOrNull()
+        } else {
+            val normalized = digits.replace(',', '.')
+            if (normalized.count { it == '.' } > 1) normalized.replace(".", "").toDoubleOrNull()
+            else normalized.toDoubleOrNull()
+        }
+        return ((number ?: 0.0) * multiplier).toLong()
+    }
+
+    /** Junta todos los textos de una clave (por ejemplo "content") dentro de un nodo. */
+    internal fun collectStrings(node: Any?, key: String, out: MutableList<String> = ArrayList()): List<String> {
+        when (node) {
+            is JSONObject -> {
+                val keys = node.keys()
+                while (keys.hasNext()) {
+                    val name = keys.next()
+                    val value = node.opt(name)
+                    if (name == key && value is String) out.add(value) else collectStrings(value, key, out)
+                }
+            }
+            is JSONArray -> for (i in 0 until node.length()) collectStrings(node.opt(i), key, out)
+        }
+        return out
+    }
+
     private fun looksLikeViews(value: String): Boolean {
         val lower = value.lowercase()
         return lower.contains("vista") || lower.contains("visualiz") ||
@@ -546,7 +771,7 @@ class InnerTubeClient(private val cookieProvider: () -> String) {
             lower.startsWith("transmitido") || lower.startsWith("streamed")
     }
 
-    private fun findFirst(node: Any?, key: String): Any? {
+    internal fun findFirst(node: Any?, key: String): Any? {
         when (node) {
             is JSONObject -> {
                 if (node.has(key)) return node.opt(key)
@@ -564,7 +789,7 @@ class InnerTubeClient(private val cookieProvider: () -> String) {
         return null
     }
 
-    private fun findFirstString(node: Any?, key: String, accept: (String) -> Boolean): String? {
+    internal fun findFirstString(node: Any?, key: String, accept: (String) -> Boolean): String? {
         when (node) {
             is JSONObject -> {
                 val direct = node.opt(key)
@@ -583,7 +808,7 @@ class InnerTubeClient(private val cookieProvider: () -> String) {
         return null
     }
 
-    private fun collectObjects(node: Any?, key: String, out: MutableList<JSONObject> = ArrayList()): List<JSONObject> {
+    internal fun collectObjects(node: Any?, key: String, out: MutableList<JSONObject> = ArrayList()): List<JSONObject> {
         when (node) {
             is JSONObject -> {
                 val keys = node.keys()
