@@ -1,11 +1,17 @@
-name: Leer ZIP y crear APK automaticamente
+name: Geo Videos - ZIP a APK
 
 on:
   push:
+    branches: [main]
     paths:
-      - "*.zip"
-      - "incoming/**/*.zip"
-
+      - '*.zip'
+      - 'incoming/**/*.zip'
+      - '.github/workflows/zip-to-apk.yml'
+      - 'app/**'
+      - 'build.gradle.kts'
+      - 'settings.gradle.kts'
+      - 'gradle/**'
+      - 'gradle.properties'
   workflow_dispatch:
 
 permissions:
@@ -17,322 +23,200 @@ concurrency:
 
 jobs:
   importar-y-compilar:
-    name: Importar proyecto y compilar APK
     runs-on: ubuntu-latest
-    timeout-minutes: 40
-
+    timeout-minutes: 45
     steps:
       - name: Descargar repositorio
         uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
-      - name: Encontrar archivo ZIP
+      - name: Detectar ZIP nuevo
         id: zip
         shell: bash
+        env:
+          PREVIOUS_SHA: ${{ github.event.before }}
         run: |
           set -euo pipefail
-
           python3 <<'PY'
           import os
+          import subprocess
           from pathlib import Path
 
-          archivos = list(Path(".").glob("*.zip"))
+          candidates = []
+          if os.getenv('GITHUB_EVENT_NAME') == 'push':
+              previous = os.getenv('PREVIOUS_SHA', '')
+              current = os.environ['GITHUB_SHA']
+              if previous and previous != '0' * 40:
+                  changed = subprocess.check_output(
+                      ['git', 'diff', '--name-only', '--diff-filter=ACMR', previous, current],
+                      text=True,
+                  ).splitlines()
+              else:
+                  changed = subprocess.check_output(
+                      ['git', 'show', '--pretty=format:', '--name-only', current],
+                      text=True,
+                  ).splitlines()
+              for name in changed:
+                  path = Path(name)
+                  if (path.is_file() and path.suffix.lower() == '.zip'
+                          and path.name != 'Geo-VIDEOS-actual.zip'
+                          and (len(path.parts) == 1 or path.parts[0] == 'incoming')):
+                      candidates.append(path)
 
-          incoming = Path("incoming")
-          if incoming.exists():
-              archivos.extend(incoming.rglob("*.zip"))
+          if len(candidates) > 1:
+              raise SystemExit('Sube un solo ZIP por actualizacion: ' + ', '.join(map(str, candidates)))
 
-          archivos = [
-              archivo
-              for archivo in archivos
-              if archivo.is_file()
-          ]
-
-          if not archivos:
-              raise SystemExit(
-                  "No se encontro ningun ZIP en la raiz ni en incoming."
-              )
-
-          zip_reciente = max(
-              archivos,
-              key=lambda archivo: archivo.stat().st_mtime
-          )
-
-          with open(os.environ["GITHUB_OUTPUT"], "a") as salida:
-              salida.write(
-                  f"file={zip_reciente.as_posix()}\n"
-              )
-
-          print(f"ZIP encontrado: {zip_reciente}")
+          file = candidates[0].as_posix() if candidates else ''
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write(f'has_zip={"true" if file else "false"}\n')
+              output.write(f'file={file}\n')
+          print('Nuevo ZIP: ' + (file or 'ninguno; compilar codigo existente'))
           PY
 
-      - name: Revisar y extraer ZIP
+      - name: Extraer e importar ZIP de forma segura
+        if: steps.zip.outputs.has_zip == 'true'
         shell: bash
         env:
           ZIP_FILE: ${{ steps.zip.outputs.file }}
         run: |
           set -euo pipefail
-
-          TEMP_DIR="$RUNNER_TEMP/geo_videos_extraido"
-
-          rm -rf "$TEMP_DIR"
-          mkdir -p "$TEMP_DIR"
-
-          python3 - "$ZIP_FILE" "$TEMP_DIR" <<'PY'
+          python3 <<'PY'
+          import os
+          import shutil
           import stat
-          import sys
           import zipfile
           from pathlib import Path, PurePosixPath
 
-          zip_path = Path(sys.argv[1])
-          destino = Path(sys.argv[2])
+          source_zip = Path(os.environ['ZIP_FILE'])
+          temp = Path(os.environ['RUNNER_TEMP']) / 'geo-videos-entrada'
+          if temp.exists():
+              shutil.rmtree(temp)
+          temp.mkdir(parents=True)
 
-          limite_total = 3 * 1024 * 1024 * 1024
           total = 0
+          with zipfile.ZipFile(source_zip) as z:
+              for item in z.infolist():
+                  name = item.filename.replace('\\', '/')
+                  parts = PurePosixPath(name)
+                  if parts.is_absolute() or '..' in parts.parts or stat.S_ISLNK(item.external_attr >> 16):
+                      raise SystemExit(f'Entrada insegura: {name}')
+                  total += item.file_size
+                  if total > 3 * 1024 ** 3:
+                      raise SystemExit('ZIP demasiado grande (limite 3 GB)')
+              z.extractall(temp)
 
-          with zipfile.ZipFile(zip_path, "r") as archivo:
-              elementos = archivo.infolist()
-
-              if not elementos:
-                  raise SystemExit("El ZIP esta vacio.")
-
-              for elemento in elementos:
-                  nombre = elemento.filename.replace("\\", "/")
-                  ruta = PurePosixPath(nombre)
-
-                  if ruta.is_absolute() or ".." in ruta.parts:
-                      raise SystemExit(
-                          f"Ruta insegura dentro del ZIP: "
-                          f"{elemento.filename}"
-                      )
-
-                  modo = elemento.external_attr >> 16
-
-                  if stat.S_ISLNK(modo):
-                      raise SystemExit(
-                          f"Enlace simbolico no permitido: "
-                          f"{elemento.filename}"
-                      )
-
-                  total += elemento.file_size
-
-                  if total > limite_total:
-                      raise SystemExit(
-                          "El contenido supera el limite de 3 GB."
-                      )
-
-              archivo.extractall(destino)
-
-          print("ZIP extraido correctamente.")
+          candidates = []
+          for name in ('settings.gradle.kts', 'settings.gradle'):
+              for settings in temp.rglob(name):
+                  project = settings.parent
+                  if (project / 'app').is_dir() and len(project.relative_to(temp).parts) <= 3:
+                      candidates.append(project)
+          if not candidates:
+              raise SystemExit('El ZIP no contiene un proyecto Android (app + settings.gradle)')
+          project = min(candidates, key=lambda p: (len(p.relative_to(temp).parts), str(p)))
+          print('Proyecto importado desde: ' + str(project))
+          # La gestion del repositorio, su README, su firma y su workflow se mantienen.
+          subprocess_args = [
+              'rsync', '-a', '--delete',
+              '--exclude=/.git/', '--exclude=/.github/', '--exclude=/incoming/',
+              '--exclude=*.zip', '--exclude=/README*', '--exclude=/.gitignore',
+              '--exclude=/COPYING', '--exclude=/THIRD_PARTY_NOTICES.md',
+              '--exclude=/VALIDACION*', '--exclude=/app/geovideos-dev.jks',
+              str(project) + '/', './',
+          ]
+          import subprocess
+          subprocess.run(subprocess_args, check=True)
           PY
 
-          rm -rf "$TEMP_DIR/__MACOSX"
-          find "$TEMP_DIR" -name ".DS_Store" -delete
-
-      - name: Detectar proyecto Android
-        id: project
+      - name: Limpiar archivos de validacion y README duplicados
         shell: bash
         run: |
           set -euo pipefail
+          find . -maxdepth 1 -type f \( -iname 'VALIDACION*.txt' -o -iname 'README*.md' ! -name 'README.md' \) -print -delete
 
-          TEMP_DIR="$RUNNER_TEMP/geo_videos_extraido"
-
-          python3 - "$TEMP_DIR" <<'PY'
-          import os
-          import sys
-          from pathlib import Path
-
-          raiz = Path(sys.argv[1])
-          candidatos = []
-
-          carpetas = [raiz]
-
-          for carpeta in raiz.rglob("*"):
-              if not carpeta.is_dir():
-                  continue
-
-              profundidad = len(
-                  carpeta.relative_to(raiz).parts
-              )
-
-              if profundidad <= 2:
-                  carpetas.append(carpeta)
-
-          for carpeta in carpetas:
-              tiene_settings = (
-                  (carpeta / "settings.gradle").is_file()
-                  or
-                  (carpeta / "settings.gradle.kts").is_file()
-              )
-
-              tiene_app = (carpeta / "app").is_dir()
-
-              if tiene_settings and tiene_app:
-                  candidatos.append(carpeta)
-
-          if not candidatos:
-              raise SystemExit(
-                  "No se encontro un proyecto Android valido."
-              )
-
-          candidatos.sort(
-              key=lambda carpeta: (
-                  len(carpeta.relative_to(raiz).parts),
-                  carpeta.as_posix()
-              )
-          )
-
-          proyecto = candidatos[0]
-
-          with open(os.environ["GITHUB_OUTPUT"], "a") as salida:
-              salida.write(
-                  f"source={proyecto.as_posix()}\n"
-              )
-
-          print(f"Proyecto detectado: {proyecto}")
-          PY
-
-      - name: Copiar proyecto al repositorio
-        shell: bash
-        env:
-          ORIGEN: ${{ steps.project.outputs.source }}
-        run: |
-          set -euo pipefail
-
-          rsync -a --delete \
-            --exclude=".git/" \
-            --exclude=".github/" \
-            --exclude="incoming/" \
-            --exclude="*.zip" \
-            "$ORIGEN"/ ./
-
-          echo "Proyecto copiado correctamente."
-
-      - name: Comprobar archivos Android
+      - name: Verificar proyecto Android
         shell: bash
         run: |
-          set -euo pipefail
-
-          if [ ! -d "app" ]; then
-            echo "::error::No existe la carpeta app."
-            exit 1
-          fi
-
-          if [ ! -f "settings.gradle" ] &&
-             [ ! -f "settings.gradle.kts" ]; then
-            echo "::error::Falta settings.gradle o settings.gradle.kts."
-            exit 1
-          fi
-
-          if [ ! -f "build.gradle" ] &&
-             [ ! -f "build.gradle.kts" ]; then
-            echo "::error::Falta build.gradle o build.gradle.kts."
-            exit 1
-          fi
-
-          echo "Proyecto Android valido."
+          test -d app
+          test -f app/build.gradle.kts
+          test -f settings.gradle.kts
 
       - name: Preparar Java 17
         uses: actions/setup-java@v5
         with:
           distribution: temurin
-          java-version: "17"
+          java-version: '17'
 
       - name: Preparar Gradle 8.13
         uses: gradle/actions/setup-gradle@v6
         with:
-          gradle-version: "8.13"
+          gradle-version: '8.13'
 
       - name: Compilar APK
         shell: bash
         run: |
           set -euo pipefail
-
-          if [ -f "gradle/wrapper/gradle-wrapper.jar" ] &&
-             [ -f "gradlew" ]; then
-
+          if [ -f gradle/wrapper/gradle-wrapper.jar ] && [ -f gradlew ]; then
             chmod +x gradlew
-
-            ./gradlew \
-              --no-daemon \
-              assembleDebug \
-              --stacktrace
+            ./gradlew --no-daemon assembleDebug --stacktrace
           else
-            echo "::warning::Falta gradle-wrapper.jar."
-            echo "Se utilizara Gradle 8.13 instalado por Actions."
-
-            gradle \
-              --no-daemon \
-              assembleDebug \
-              --stacktrace
+            gradle --no-daemon assembleDebug --stacktrace
           fi
-
-      - name: Verificar APK
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          APK_COUNT="$(
-            find . \
-              -type f \
-              -path "*/build/outputs/apk/debug/*.apk" |
-            wc -l
-          )"
-
-          if [ "$APK_COUNT" -eq 0 ]; then
-            echo "::error::No se encontro ninguna APK compilada."
-            exit 1
-          fi
-
-          echo "APK creada:"
-          find . \
-            -type f \
-            -path "*/build/outputs/apk/debug/*.apk" \
-            -print
 
       - name: Guardar APK para descargar
         uses: actions/upload-artifact@v7
         with:
           name: Geo-Videos-APK-${{ github.run_number }}
-          path: |
-            **/build/outputs/apk/debug/*.apk
+          path: '**/build/outputs/apk/debug/*.apk'
           if-no-files-found: error
           retention-days: 30
           compression-level: 0
 
-      - name: Eliminar ZIP y guardar proyecto
+      - name: Generar un solo ZIP del proyecto actual
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 <<'PY'
+          import os
+          import zipfile
+          from pathlib import Path
+
+          archive = Path('Geo-VIDEOS-actual.zip')
+          tmp = Path(os.environ['RUNNER_TEMP']) / 'Geo-VIDEOS-actual.zip'
+          skip_dirs = {'.git', '.gradle', '.idea', 'build', '.cxx', '.externalNativeBuild', '__MACOSX', 'incoming'}
+          with zipfile.ZipFile(tmp, 'w', zipfile.ZIP_DEFLATED, compresslevel=7) as z:
+              for root, dirs, files in os.walk('.'):
+                  dirs[:] = sorted(d for d in dirs if d not in skip_dirs)
+                  for name in sorted(files):
+                      path = Path(root) / name
+                      rel = path.as_posix().removeprefix('./')
+                      if (name.lower().endswith(('.zip', '.apk', '.aab', '.iml'))
+                              or name == '.DS_Store'
+                              or (len(path.parts) <= 2 and name.upper().startswith('VALIDACION'))
+                              or (len(path.parts) <= 2 and name.lower().startswith('readme') and name != 'README.md')):
+                          continue
+                      z.write(path, arcname='Geo-VIDEOS/' + rel)
+          tmp.replace(archive)
+          print(f'ZIP unico: {archive} ({archive.stat().st_size} bytes)')
+          PY
+
+      - name: Guardar proyecto limpio en GitHub
         shell: bash
         env:
           ZIP_FILE: ${{ steps.zip.outputs.file }}
         run: |
           set -euo pipefail
-
-          rm -f -- "$ZIP_FILE"
-
-          git config \
-            user.name \
-            "github-actions[bot]"
-
-          git config \
-            user.email \
-            "41898282+github-actions[bot]@users.noreply.github.com"
-
+          if [ -n "$ZIP_FILE" ]; then
+            rm -f -- "$ZIP_FILE"
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add -A
-
           if git diff --cached --quiet; then
-            echo "No hay cambios que guardar."
+            echo 'Repositorio actualizado sin cambios nuevos.'
             exit 0
           fi
-
-          git commit \
-            -m "Importar Geo Videos y compilar APK"
-
-          git pull \
-            --rebase \
-            origin \
-            "$GITHUB_REF_NAME"
-
-          git push \
-            origin \
-            "HEAD:$GITHUB_REF_NAME"
+          git commit -m 'Actualizar Geo Videos y ZIP unico del proyecto'
+          git pull --rebase origin "$GITHUB_REF_NAME"
+          git push origin "HEAD:$GITHUB_REF_NAME"

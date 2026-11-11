@@ -1,38 +1,27 @@
-# Geo Videos V50.7
+# Geo Videos
 
-Revision centrada en Principal, busqueda YouTube, historial y mini reproductor, manteniendo el acceso Google existente.
+Proyecto Android para explorar videos y Shorts, buscar contenido, administrar colecciones e historial local y reproducir videos con un reproductor integrado.
 
-## Principal
+## Descargar
 
-- Shorts en la franja superior y videos normales debajo.
-- El feed de Para ti se construye desde canales suscritos y usa historial/Me gusta como señales de orden, no como relleno directo.
-- Tendencias no sustituye al feed de la cuenta.
-- Pull-to-refresh con un solo indicador; videos y Shorts se actualizan en paralelo y la sincronizacion secundaria continua despues.
+- **Código fuente en un único archivo:** [Geo-VIDEOS-actual.zip](./Geo-VIDEOS-actual.zip). GitHub Actions actualiza este archivo después de una compilación exitosa. Si todavía no aparece, utiliza **Code → Download ZIP**.
+- **APK para instalar:** abre la pestaña **Actions**, selecciona la última ejecución correcta de «Geo Videos - ZIP a APK» y descarga el archivo «Geo-Videos-APK-...» en **Artifacts** (disponible durante 30 días).
 
-## Buscar
+## Actualizar el proyecto
 
-- Busqueda general de YouTube con videos, canales y listas de reproduccion.
-- Paginacion de resultados.
-- Acceso directo a canales y playlists desde los resultados.
+1. Sube **un solo ZIP** nuevo a la raíz del repositorio o a la carpeta `incoming/`.
+2. GitHub Actions detectará ese ZIP, importará el proyecto Android, compilará la APK y actualizará `Geo-VIDEOS-actual.zip`.
+3. Tras finalizar correctamente, GitHub conservará el código y **un solo ZIP del proyecto**. Los archivos antiguos de validación y los README duplicados no se incorporarán.
 
-## Historial
+También puedes ejecutar el workflow manualmente desde **Actions → Geo Videos - ZIP a APK → Run workflow** para compilar el código que ya esté en el repositorio.
 
-- Registra inmediatamente las reproducciones hechas dentro de Geo Videos.
-- Guarda progreso y permite reanudar.
-- Interfaz compacta con busqueda opcional.
-- No se presenta como historial privado oficial de YouTube.
+La versión de la app se define en [app/build.gradle.kts](./app/build.gradle.kts). Este README no necesita cambiar de nombre con cada versión.
 
-## Reproductor
+## Estructura
 
-- Mini reproductor en barra compacta sobre la navegacion inferior con video, titulo, canal, play/pausa y cerrar.
-- Tocar la barra restaura el reproductor grande conservando la posicion.
-- TextureView y transicion sin escalado agresivo para evitar que el video atraviese otras capas.
+- `app/`: código fuente y recursos de Android.
+- `gradle/`, `build.gradle.kts` y `settings.gradle.kts`: configuración de compilación.
+- `.github/workflows/zip-to-apk.yml`: importación de ZIP y generación de APK.
+- `COPYING` y `THIRD_PARTY_NOTICES.md`: licencias y avisos de terceros.
 
-## Cuenta YouTube
-
-- Lectura de perfil, suscripciones, playlists, Me gusta y subidos con la cuenta conectada.
-- Las acciones de escritura siguen pidiendo el permiso adicional correspondiente cuando hace falta.
-
-## Compilacion
-
-El proyecto conserva el workflow de GitHub Actions. En este entorno no fue posible descargar Gradle 8.13 desde services.gradle.org, por lo que la compilacion Android final debe validarse en Actions.
+**Nota:** la APK actual utiliza una firma de desarrollo. No utilices esa clave pública como firma definitiva para publicar en Google Play.

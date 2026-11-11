@@ -8,3 +8,8 @@
 .externalNativeBuild
 .cxx
 app/build
+
+# Los reportes temporales no forman parte del proyecto Android.
+/VALIDACION_*.txt
+/README_*.md
+/README-*.md
