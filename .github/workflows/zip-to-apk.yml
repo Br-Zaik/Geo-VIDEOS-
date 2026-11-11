@@ -164,11 +164,26 @@ jobs:
             gradle --no-daemon assembleDebug --stacktrace
           fi
 
+      - name: Preparar APK directo sin carpetas
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -d '' -t apks < <(
+            find app/build/outputs/apk/debug -maxdepth 1 -type f -name '*.apk' -print0
+          )
+          if [ "${#apks[@]}" -ne 1 ]; then
+            echo "::error::Se esperaba una sola APK debug y se encontraron ${#apks[@]}."
+            exit 1
+          fi
+          install -m 0644 "${apks[0]}" "$RUNNER_TEMP/Geo-Videos.apk"
+          test -s "$RUNNER_TEMP/Geo-Videos.apk"
+          echo "APK lista para descargar: Geo-Videos.apk"
+
       - name: Guardar APK para descargar
         uses: actions/upload-artifact@v7
         with:
           name: Geo-Videos-APK-${{ github.run_number }}
-          path: '**/build/outputs/apk/debug/*.apk'
+          path: ${{ runner.temp }}/Geo-Videos.apk
           if-no-files-found: error
           retention-days: 30
           compression-level: 0
