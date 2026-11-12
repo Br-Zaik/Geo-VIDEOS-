@@ -113,8 +113,34 @@ class InnerTubeClient(private val cookieProvider: () -> String) {
         val name: String,
         val version: String,
         val id: String,
-        val userAgent: String
+        val userAgent: String,
+        /** Datos extra del aparato que se mandan en context.client (como hace yt-dlp). */
+        val context: Map<String, String> = emptyMap(),
+        /** Usa la versión web actual que publica YouTube (si no, YouTube pide "volver a cargar"). */
+        val webVersioned: Boolean = false
     )
+
+    /**
+     * Versión actual del cliente web de YouTube. Con una versión vieja (la app tenía una de
+     * octubre de 2025) YouTube responde "Se debe volver a cargar la página" y no reproduce.
+     */
+    @Volatile
+    private var webClientVersion: String = WEB_FALLBACK_VERSION
+
+    fun updateWebClientVersion(version: String?) {
+        val clean = version?.trim().orEmpty()
+        if (Regex("""2\.\d{8}\.\d{2}\.\d{2}""").matches(clean)) webClientVersion = clean
+    }
+
+    /** Identificador de visitante que YouTube entrega en cada respuesta (como en el navegador). */
+    @Volatile
+    private var sessionVisitorData: String = ""
+
+    @Volatile
+    private var anonymousVisitorData: String = ""
+
+    private fun versionOf(client: ClientInfo): String =
+        if (client.webVersioned) webClientVersion else client.version
 
     private data class WatchSession(
         val videoId: String,
@@ -262,11 +288,19 @@ class InnerTubeClient(private val cookieProvider: () -> String) {
         )
     }
 
-    private fun playerBody(client: ClientInfo, videoId: String, signatureTimestamp: Int?): JSONObject {
-        val body = baseBody(client)
+    private fun playerBody(
+        client: ClientInfo,
+        videoId: String,
+        signatureTimestamp: Int?,
+        anonymous: Boolean = false
+    ): JSONObject {
+        val body = baseBody(client, anonymous)
             .put("videoId", videoId)
             .put("contentCheckOk", true)
             .put("racyCheckOk", true)
+        if (client.name == WEB_EMBEDDED.name) {
+            body.optJSONObject("context")?.put("thirdParty", JSONObject().put("embedUrl", "https://www.youtube.com/"))
+        }
         val playback = JSONObject().put("html5Preference", "HTML5_PREF_WANTS")
         if (signatureTimestamp != null && signatureTimestamp > 0) playback.put("signatureTimestamp", signatureTimestamp)
         body.put("playbackContext", JSONObject().put("contentPlaybackContext", playback))
@@ -310,9 +344,26 @@ class InnerTubeClient(private val cookieProvider: () -> String) {
         }.distinctBy { it.second }.sortedBy { it.second }
     }
 
-    /** Reproducción con tu sesión usando el cliente de TV: devuelve streamingData. */
+    /** Reproducción con tu sesión usando el cliente de TV (Samsung): devuelve streamingData. */
     suspend fun sessionTvStreams(videoId: String, signatureTimestamp: Int?): JSONObject? = withContext(Dispatchers.IO) {
         val json = post("player", playerBody(TV, videoId, signatureTimestamp), TV)
+        checkPlayable(json)
+        json.optJSONObject("streamingData")
+    }
+
+    /** Reproductor "insertado" con tu sesión (el primero que usa yt-dlp con cuenta). */
+    suspend fun sessionEmbeddedStreams(videoId: String, signatureTimestamp: Int?): JSONObject? = withContext(Dispatchers.IO) {
+        val json = post("player", playerBody(WEB_EMBEDDED, videoId, signatureTimestamp), WEB_EMBEDDED)
+        checkPlayable(json)
+        json.optJSONObject("streamingData")
+    }
+
+    /**
+     * Cliente de TV (Samsung) SIN cuenta: funciona aunque no hayas iniciado sesión o aunque
+     * YouTube rechace la vía de NewPipe. Es el primero que usa yt-dlp sin cuenta.
+     */
+    suspend fun anonymousTvStreams(videoId: String, signatureTimestamp: Int?): JSONObject? = withContext(Dispatchers.IO) {
+        val json = request("player", playerBody(TV, videoId, signatureTimestamp, anonymous = true), TV, anonymous = true)
         checkPlayable(json)
         json.optJSONObject("streamingData")
     }
@@ -513,7 +564,7 @@ class InnerTubeClient(private val cookieProvider: () -> String) {
                     "ver" to "2",
                     "cpn" to session.cpn,
                     "c" to client.name,
-                    "cver" to client.version,
+                    "cver" to versionOf(client),
                     "cmt" to "0",
                     "fs" to "0",
                     "el" to "detailpage"
@@ -543,7 +594,7 @@ class InnerTubeClient(private val cookieProvider: () -> String) {
             "ver" to "2",
             "cpn" to session.cpn,
             "c" to session.client.name,
-            "cver" to session.client.version,
+            "cver" to versionOf(session.client),
             "st" to seconds(start),
             "et" to seconds(current),
             "cmt" to seconds(current),
@@ -560,29 +611,38 @@ class InnerTubeClient(private val cookieProvider: () -> String) {
 
     // ------------------------------------------------------------------ Red
 
-    private fun baseBody(client: ClientInfo): JSONObject {
+    private fun baseBody(client: ClientInfo, anonymous: Boolean = false): JSONObject {
         val zone = TimeZone.getDefault()
         val offsetMinutes = zone.getOffset(System.currentTimeMillis()) / 60_000
+        val clientJson = JSONObject()
+            .put("clientName", client.name)
+            .put("clientVersion", versionOf(client))
+            .put("hl", "es-419")
+            .put("gl", "PE")
+            .put("timeZone", zone.id)
+            .put("utcOffsetMinutes", offsetMinutes)
+            .put("userAgent", client.userAgent)
+        client.context.forEach { (key, value) -> clientJson.put(key, value) }
+        val visitor = if (anonymous) anonymousVisitorData else sessionVisitorData
+        if (visitor.isNotBlank()) clientJson.put("visitorData", visitor)
         return JSONObject().put(
             "context",
             JSONObject()
-                .put(
-                    "client",
-                    JSONObject()
-                        .put("clientName", client.name)
-                        .put("clientVersion", client.version)
-                        .put("hl", "es-419")
-                        .put("gl", "PE")
-                        .put("timeZone", zone.id)
-                        .put("utcOffsetMinutes", offsetMinutes)
-                )
+                .put("client", clientJson)
                 .put("user", JSONObject().put("lockedSafetyMode", false))
         )
     }
 
-    private fun post(endpoint: String, body: JSONObject, client: ClientInfo): JSONObject {
-        val cookies = cookieProvider()
-        if (cookies.isBlank()) throw YouTubeSessionExpiredException()
+    private fun post(endpoint: String, body: JSONObject, client: ClientInfo): JSONObject =
+        request(endpoint, body, client, anonymous = false)
+
+    /**
+     * Petición a YouTube. Con [anonymous] va sin cookies ni firma de sesión (como un TV
+     * sin cuenta); si no, con tu sesión.
+     */
+    private fun request(endpoint: String, body: JSONObject, client: ClientInfo, anonymous: Boolean): JSONObject {
+        val cookies = if (anonymous) "" else cookieProvider()
+        if (!anonymous && cookies.isBlank()) throw YouTubeSessionExpiredException()
         val connection = URL("$ORIGIN/youtubei/v1/$endpoint?prettyPrint=false")
             .openConnection() as HttpURLConnection
         try {
@@ -590,23 +650,39 @@ class InnerTubeClient(private val cookieProvider: () -> String) {
             connection.connectTimeout = 15_000
             connection.readTimeout = 20_000
             connection.doOutput = true
-            applyHeaders(connection, cookies, client)
+            if (anonymous) applyAnonymousHeaders(connection, client) else applyHeaders(connection, cookies, client)
             connection.setRequestProperty("Content-Type", "application/json")
             connection.outputStream.use { it.write(body.toString().toByteArray(Charsets.UTF_8)) }
             val code = connection.responseCode
             val stream = if (code in 200..299) connection.inputStream else connection.errorStream
             val text = stream?.bufferedReader()?.use { it.readText() }.orEmpty()
-            if (code == 401) throw YouTubeSessionExpiredException()
+            if (code == 401 && !anonymous) throw YouTubeSessionExpiredException()
             if (code !in 200..299) throw IOException("YouTube respondió $code")
             val json = JSONObject(text)
-            val loggedOut = json.optJSONObject("responseContext")
-                ?.optJSONObject("mainAppWebResponseContext")
-                ?.optBoolean("loggedOut", false) == true
-            if (loggedOut) throw YouTubeSessionExpiredException()
+            val context = json.optJSONObject("responseContext")
+            context?.optString("visitorData").orEmpty().takeIf { it.isNotBlank() }?.let { visitor ->
+                if (anonymous) anonymousVisitorData = visitor else sessionVisitorData = visitor
+            }
+            if (!anonymous) {
+                val loggedOut = context
+                    ?.optJSONObject("mainAppWebResponseContext")
+                    ?.optBoolean("loggedOut", false) == true
+                if (loggedOut) throw YouTubeSessionExpiredException()
+            }
             return json
         } finally {
             connection.disconnect()
         }
+    }
+
+    private fun applyAnonymousHeaders(connection: HttpURLConnection, client: ClientInfo) {
+        connection.setRequestProperty("User-Agent", client.userAgent)
+        connection.setRequestProperty("Origin", ORIGIN)
+        connection.setRequestProperty("Referer", "$ORIGIN/")
+        connection.setRequestProperty("Accept-Language", "es-419,es;q=0.9")
+        connection.setRequestProperty("X-Youtube-Client-Name", client.id)
+        connection.setRequestProperty("X-Youtube-Client-Version", versionOf(client))
+        anonymousVisitorData.takeIf { it.isNotBlank() }?.let { connection.setRequestProperty("X-Goog-Visitor-Id", it) }
     }
 
     private fun ping(baseUrl: String, params: Map<String, String>, client: ClientInfo) {
@@ -638,7 +714,9 @@ class InnerTubeClient(private val cookieProvider: () -> String) {
         connection.setRequestProperty("Accept-Language", "es-419,es;q=0.9")
         connection.setRequestProperty("X-Goog-AuthUser", "0")
         connection.setRequestProperty("X-Youtube-Client-Name", client.id)
-        connection.setRequestProperty("X-Youtube-Client-Version", client.version)
+        connection.setRequestProperty("X-Youtube-Client-Version", versionOf(client))
+        connection.setRequestProperty("X-Youtube-Bootstrap-Logged-In", "true")
+        sessionVisitorData.takeIf { it.isNotBlank() }?.let { connection.setRequestProperty("X-Goog-Visitor-Id", it) }
         authorization(cookies)?.let { connection.setRequestProperty("Authorization", it) }
     }
 
@@ -1619,37 +1697,64 @@ class InnerTubeClient(private val cookieProvider: () -> String) {
         private const val ORIGIN = "https://www.youtube.com"
         private const val MIN_PROGRESS_INTERVAL_MS = 20_000L
 
+        /** Versión web de respaldo (la de NewPipeExtractor 0.27.1); al abrir se pide la actual. */
+        private const val WEB_FALLBACK_VERSION = "2.20260805.01.00"
+
+        private const val SAFARI_UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 " +
+            "(KHTML, like Gecko) Version/15.5 Safari/605.1.15,gzip(gfe)"
+
         private val WEB = ClientInfo(
             name = "WEB",
-            version = "2.20251020.01.00",
+            version = WEB_FALLBACK_VERSION,
             id = "1",
             userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
-                "(KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36"
+                "(KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36",
+            webVersioned = true
         )
 
         /** Safari en la web: con tu sesión entrega HLS (audio y video juntos) sin PO token. */
         private val WEB_SAFARI = ClientInfo(
             name = "WEB",
-            version = "2.20251020.01.00",
+            version = WEB_FALLBACK_VERSION,
             id = "1",
-            userAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 " +
-                "(KHTML, like Gecko) Version/15.5 Safari/605.1.15,gzip(gfe)"
+            userAgent = SAFARI_UA,
+            webVersioned = true
         )
 
-        /** Cliente de TV: con tu sesión entrega formatos normales (firma descifrada aparte). */
+        /** Reproductor insertado: con tu sesión entrega formatos con firma (no pide PO token). */
+        private val WEB_EMBEDDED = ClientInfo(
+            name = "WEB_EMBEDDED_PLAYER",
+            version = WEB_FALLBACK_VERSION,
+            id = "56",
+            userAgent = SAFARI_UA,
+            webVersioned = true
+        )
+
+        /**
+         * TV Samsung (Tizen), igual que el cliente "tv_samsung" de yt-dlp (noviembre 2026).
+         * El TV anterior ("Cobalt/Version") es justo el que YouTube rechaza con
+         * "Se debe volver a cargar la página".
+         */
         private val TV = ClientInfo(
             name = "TVHTML5",
-            version = "7.20250923.13.00",
+            version = "5.20260707",
             id = "7",
-            userAgent = "Mozilla/5.0 (ChromiumStylePlatform) Cobalt/Version"
+            userAgent = "Mozilla/5.0 (SMART-TV; Linux; Tizen 2.4.0) AppleWebKit/538.1 " +
+                "(KHTML, like Gecko) Version/2.4.0 TV Safari/538.1",
+            context = mapOf(
+                "deviceMake" to "Samsung",
+                "deviceModel" to "UKS9800",
+                "osName" to "Tizen",
+                "osVersion" to "2.4.0"
+            )
         )
 
         private val MWEB = ClientInfo(
             name = "MWEB",
-            version = "2.20251020.01.00",
+            version = "2.20260708.05.00",
             id = "2",
             userAgent = "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 " +
-                "(KHTML, like Gecko) Chrome/141.0.0.0 Mobile Safari/537.36"
+                "(KHTML, like Gecko) Chrome/142.0.0.0 Mobile Safari/537.36"
         )
     }
 }

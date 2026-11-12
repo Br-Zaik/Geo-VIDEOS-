@@ -158,7 +158,14 @@ internal object StreamResolver {
     private val rejectedLinks = ConcurrentHashMap<String, Long>()
 
     fun markLinkRejected(videoId: String) {
-        if (videoId.isNotBlank()) rejectedLinks[videoId] = System.currentTimeMillis() + 30 * 60_000L
+        if (videoId.isBlank()) return
+        rejectedLinks[videoId] = System.currentTimeMillis() + 30 * 60_000L
+        // Si el enlace malo vino de una forma alternativa, no repetirla para este video.
+        resolvedWith.remove(videoId)?.let { client ->
+            excludedClients[videoId] = excludedClients[videoId].orEmpty() + client
+            if (lastWorkingClient == client) lastWorkingClient = null
+            if (client == FallbackClient.SAFARI_HLS) sessionCache.remove(videoId)
+        }
     }
 
     private fun preferSession(videoId: String, attempt: Int): Boolean {
@@ -274,15 +281,13 @@ internal object StreamResolver {
             data.heights
         }.orEmpty()
         var downloads: List<DownloadStreamOption> = emptyList()
-        if (includeDownloadSizes) {
-            val tvProvider = sessionTvProvider
-            if (tvProvider != null) {
-                ensureInitialized()
-                val sts = runCatching {
-                    org.schabi.newpipe.extractor.services.youtube.YoutubeJavaScriptPlayerManager.getSignatureTimestamp(video.id)
-                }.getOrNull()
-                val data = runCatching { tvProvider(video.id, sts) }.getOrNull()
-                if (data != null) downloads = attachSizes(tvDownloads(video.id, data))
+        if (includeDownloadSizes || heights.isEmpty()) {
+            ensureInitialized()
+            val sts = runCatching { org.schabi.newpipe.extractor.services.youtube.YoutubeJavaScriptPlayerManager.getSignatureTimestamp(video.id) }.getOrNull()
+            val data = fallbackStreamingData(video.id, sts)
+            if (data != null) {
+                val options = tvDownloads(video.id, data)
+                downloads = if (includeDownloadSizes) attachSizes(options) else options
             }
         }
         // Calidades que no salieron por el cliente TV: descargarlas desde el HLS (último recurso).
@@ -312,6 +317,88 @@ internal object StreamResolver {
     @Volatile
     var sessionTvProvider: (suspend (videoId: String, signatureTimestamp: Int?) -> org.json.JSONObject?)? = null
 
+    /** Reproductor insertado de YouTube con tu sesión (streamingData). */
+    @Volatile
+    var sessionEmbeddedProvider: (suspend (videoId: String, signatureTimestamp: Int?) -> org.json.JSONObject?)? = null
+
+    /** TV Samsung sin cuenta (streamingData): sirve aunque no hayas iniciado sesión. */
+    @Volatile
+    var anonymousTvProvider: (suspend (videoId: String, signatureTimestamp: Int?) -> org.json.JSONObject?)? = null
+
+    /** Versión web actual de YouTube (la lee NewPipe del service worker de YouTube). */
+    fun webClientVersion(): String? {
+        ensureInitialized()
+        return runCatching {
+            org.schabi.newpipe.extractor.services.youtube.YoutubeParsingHelper.getClientVersion()
+        }.getOrNull()
+    }
+
+    /** Formas de pedir el video a YouTube cuando la vía de NewPipe falla. */
+    private enum class FallbackClient { EMBEDDED, TV, SAFARI_HLS, TV_ANONYMOUS }
+
+    /** La última forma que funcionó se prueba primero (así no se pierde tiempo). */
+    @Volatile
+    private var lastWorkingClient: FallbackClient? = null
+
+    /** Con qué forma se obtuvo el enlace de cada video (para descartarla si el enlace falla). */
+    private val resolvedWith = ConcurrentHashMap<String, FallbackClient>()
+    private val excludedClients = ConcurrentHashMap<String, Set<FallbackClient>>()
+
+    @Volatile
+    private var playerJsLoadedAtMs: Long = 0L
+
+    /** Cada 6 h se vuelve a leer el reproductor de YouTube (firma, "n" y sts al día). */
+    private fun refreshPlayerJsIfStale() {
+        val now = System.currentTimeMillis()
+        if (playerJsLoadedAtMs == 0L) {
+            playerJsLoadedAtMs = now
+            return
+        }
+        if (now - playerJsLoadedAtMs > 6 * 60 * 60_000L) {
+            playerJsLoadedAtMs = now
+            runCatching { org.schabi.newpipe.extractor.services.youtube.YoutubeJavaScriptPlayerManager.clearAllCaches() }
+        }
+    }
+
+    /**
+     * El enlace HLS trae un desafío "/n/<valor>/" que hay que resolver con el reproductor de
+     * YouTube (yt-dlp hace lo mismo); sin eso las partes del video fallan o van lentísimo.
+     */
+    private fun solveManifestN(videoId: String, manifestUrl: String): String {
+        val challenge = Regex("/n/([^/]+)/").find(manifestUrl)?.groupValues?.getOrNull(1) ?: return manifestUrl
+        val solved = runCatching {
+            val probe = org.schabi.newpipe.extractor.services.youtube.YoutubeJavaScriptPlayerManager.getUrlWithThrottlingParameterDeobfuscated(
+                videoId,
+                "https://www.youtube.com/videoplayback?n=$challenge"
+            )
+            Regex("[?&]n=([^&]+)").find(probe)?.groupValues?.getOrNull(1)
+        }.getOrNull()
+        if (solved.isNullOrBlank() || solved == challenge) return manifestUrl
+        return manifestUrl.replace("/n/$challenge/", "/n/$solved/")
+    }
+
+    /** streamingData de la primera forma (sin HLS) que responda: para calidades y descargas. */
+    private suspend fun fallbackStreamingData(videoId: String, sts: Int?): org.json.JSONObject? {
+        val base = listOf(FallbackClient.TV, FallbackClient.EMBEDDED, FallbackClient.TV_ANONYMOUS)
+        val order = lastWorkingClient?.takeIf { it in base }?.let { listOf(it) + (base - it) } ?: base
+        for (client in order) {
+            val provider = when (client) {
+                FallbackClient.TV -> sessionTvProvider
+                FallbackClient.EMBEDDED -> sessionEmbeddedProvider
+                FallbackClient.TV_ANONYMOUS -> anonymousTvProvider
+                FallbackClient.SAFARI_HLS -> null
+            } ?: continue
+            val data = try {
+                provider(videoId, sts)
+            } catch (error: Exception) {
+                if (error is kotlinx.coroutines.CancellationException) throw error
+                null
+            }
+            if (data != null && (data.optJSONArray("adaptiveFormats")?.length() ?: 0) > 0) return data
+        }
+        return null
+    }
+
     /** Mientras YouTube bloquee la vía anónima, ir directo con la sesión (ahorra tiempo). */
     @Volatile
     private var anonymousBlockedUntilMs: Long = 0L
@@ -321,53 +408,91 @@ internal object StreamResolver {
         while (current != null) {
             val text = (current.message.orEmpty() + " " + current.javaClass.simpleName).lowercase()
             if ("bot" in text || "sign in to confirm" in text || "signinconfirm" in text ||
-                "login_required" in text || "page needs to be reloaded" in text
+                "login_required" in text || "page needs to be reloaded" in text ||
+                "volver a cargar" in text || "robot" in text
             ) return true
             current = current.cause
         }
         return false
     }
 
+    /**
+     * Cuando NewPipe no puede (YouTube pide "no eres un robot" o "volver a cargar"), se prueba
+     * como lo hace yt-dlp hoy: reproductor insertado y TV Samsung con tu cuenta, Safari (HLS)
+     * con tu cuenta y, al final, TV Samsung sin cuenta. La primera que funcione gana y se
+     * recuerda para el siguiente video.
+     */
     private suspend fun sessionFallback(video: VideoItem, dataSaver: Boolean, preferredHeight: Int?): ResolvedMedia? {
-        val playerProvider = sessionPlayerProvider ?: return null
-        sessionCache[video.id]?.takeIf { it.expiresAtMs > System.currentTimeMillis() && it.hlsUrl.isNotBlank() }?.let {
-            return ResolvedMedia(it.hlsUrl, MimeTypes.APPLICATION_M3U8)
+        val excluded = excludedClients[video.id].orEmpty()
+        if (FallbackClient.SAFARI_HLS !in excluded) {
+            sessionCache[video.id]?.takeIf { it.expiresAtMs > System.currentTimeMillis() && it.hlsUrl.isNotBlank() }?.let {
+                resolvedWith[video.id] = FallbackClient.SAFARI_HLS
+                return ResolvedMedia(it.hlsUrl, MimeTypes.APPLICATION_M3U8)
+            }
         }
         ensureInitialized()
-        val sts = runCatching {
-            org.schabi.newpipe.extractor.services.youtube.YoutubeJavaScriptPlayerManager.getSignatureTimestamp(video.id)
-        }.getOrNull()
-        var lastError: Throwable? = null
-        // 1) Como Safari con tu cuenta: HLS con audio y video juntos (todas las calidades del video).
-        runCatching { playerProvider(video.id, sts) }
-            .onSuccess { json ->
-                val url = json?.optJSONObject("streamingData")?.optString("hlsManifestUrl").orEmpty()
-                if (json != null && url.isNotBlank()) {
-                    val spec = json.optJSONObject("storyboards")
-                        ?.optJSONObject("playerStoryboardSpecRenderer")
-                        ?.optString("spec").orEmpty()
-                    val length = json.optJSONObject("videoDetails")?.optString("lengthSeconds")?.toLongOrNull() ?: 0L
-                    sessionCache[video.id] = SessionData(
-                        hlsUrl = url,
-                        storyboard = if (spec.isBlank()) null else runCatching { parseStoryboardSpec(spec, length) }.getOrNull(),
-                        expiresAtMs = System.currentTimeMillis() + 4 * 60 * 60_000L
-                    )
-                    return ResolvedMedia(url, MimeTypes.APPLICATION_M3U8)
-                }
+        refreshPlayerJsIfStale()
+        val sts = runCatching { org.schabi.newpipe.extractor.services.youtube.YoutubeJavaScriptPlayerManager.getSignatureTimestamp(video.id) }.getOrNull()
+        val base = listOf(FallbackClient.EMBEDDED, FallbackClient.TV, FallbackClient.SAFARI_HLS, FallbackClient.TV_ANONYMOUS)
+        var order = (lastWorkingClient?.let { listOf(it) + (base - it) } ?: base).filter { it !in excluded }
+        if (order.isEmpty()) {
+            // Ya se descartaron todas para este video: empezar de nuevo.
+            excludedClients.remove(video.id)
+            order = base
+        }
+        val errors = mutableListOf<Throwable>()
+        for (client in order) {
+            val media = try {
+                tryFallbackClient(client, video, dataSaver, preferredHeight, sts)
+            } catch (error: Exception) {
+                if (error is kotlinx.coroutines.CancellationException) throw error
+                errors += error
+                null
             }
-            .onFailure { lastError = it }
-        // 2) Cliente de TV con firma descifrada.
-        val tvProvider = sessionTvProvider
-        if (tvProvider != null) {
-            runCatching { tvProvider(video.id, sts) }
-                .onSuccess { data -> if (data != null) tvMedia(video.id, data, dataSaver, preferredHeight)?.let { return it } }
-                .onFailure { lastError = it }
+            if (media != null) {
+                lastWorkingClient = client
+                resolvedWith[video.id] = client
+                return media
+            }
         }
-        lastError?.let { error ->
-            // Si la sesión también dice por qué no se puede ver (privado, edad...), mostrar eso.
-            if (error.message.orEmpty().startsWith("Got error")) throw error
-        }
+        // Ninguna funcionó: mostrar el motivo más útil (privado, edad, país... antes que "recargar").
+        val reasons = errors.filter { it.message.orEmpty().startsWith("Got error") }
+        reasons.firstOrNull { !isBotBlock(it) }?.let { throw it }
+        reasons.firstOrNull()?.let { throw it }
         return null
+    }
+
+    private suspend fun tryFallbackClient(
+        client: FallbackClient,
+        video: VideoItem,
+        dataSaver: Boolean,
+        preferredHeight: Int?,
+        sts: Int?
+    ): ResolvedMedia? = when (client) {
+        FallbackClient.EMBEDDED -> sessionEmbeddedProvider?.invoke(video.id, sts)
+            ?.let { tvMedia(video.id, it, dataSaver, preferredHeight) }
+        FallbackClient.TV -> sessionTvProvider?.invoke(video.id, sts)
+            ?.let { tvMedia(video.id, it, dataSaver, preferredHeight) }
+        FallbackClient.TV_ANONYMOUS -> anonymousTvProvider?.invoke(video.id, sts)
+            ?.let { tvMedia(video.id, it, dataSaver, preferredHeight) }
+        FallbackClient.SAFARI_HLS -> sessionPlayerProvider?.invoke(video.id, sts)?.let { json ->
+            val raw = json.optJSONObject("streamingData")?.optString("hlsManifestUrl").orEmpty()
+            if (raw.isBlank()) {
+                null
+            } else {
+                val url = solveManifestN(video.id, raw)
+                val spec = json.optJSONObject("storyboards")
+                    ?.optJSONObject("playerStoryboardSpecRenderer")
+                    ?.optString("spec").orEmpty()
+                val length = json.optJSONObject("videoDetails")?.optString("lengthSeconds")?.toLongOrNull() ?: 0L
+                sessionCache[video.id] = SessionData(
+                    hlsUrl = url,
+                    storyboard = if (spec.isBlank()) null else runCatching { parseStoryboardSpec(spec, length) }.getOrNull(),
+                    expiresAtMs = System.currentTimeMillis() + 4 * 60 * 60_000L
+                )
+                ResolvedMedia(url, MimeTypes.APPLICATION_M3U8)
+            }
+        }
     }
 
     private fun nsig(videoId: String, url: String): String = runCatching {
@@ -842,7 +967,7 @@ internal object StreamResolver {
         // Con YouTube bloqueando la vía anónima no se insiste por ahí (cada intento suma al
         // bloqueo): se precarga con tu sesión, así el siguiente video/Short arranca al instante.
         if (System.currentTimeMillis() < anonymousBlockedUntilMs) {
-            if (sessionPlayerProvider == null) return
+            if (lastWorkingClient == null) return
             videos.asSequence()
                 .filter { it.mediaKind == MediaKind.YOUTUBE && it.id.isNotBlank() }
                 .distinctBy { it.id }
@@ -850,7 +975,7 @@ internal object StreamResolver {
                 .forEach { video ->
                     val cached = sessionCache[video.id]
                         ?.takeIf { it.expiresAtMs > System.currentTimeMillis() && it.hlsUrl.isNotBlank() }
-                    if (cached == null) runCatching { sessionFallback(video, dataSaver, preferredHeight) }
+                    if (cached == null) runCatching { resolve(video, dataSaver, preferredHeight) }
                 }
             return
         }

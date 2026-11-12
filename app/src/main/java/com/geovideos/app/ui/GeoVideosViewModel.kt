@@ -414,6 +414,17 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
         com.geovideos.app.playback.StreamResolver.sessionTvProvider = { id, sts ->
             if (!youtubeSession.hasStoredSession()) null else innerTube.sessionTvStreams(id, sts)
         }
+        com.geovideos.app.playback.StreamResolver.sessionEmbeddedProvider = { id, sts ->
+            if (!youtubeSession.hasStoredSession()) null else innerTube.sessionEmbeddedStreams(id, sts)
+        }
+        // TV Samsung sin cuenta: última opción, funciona aunque no hayas iniciado sesión.
+        com.geovideos.app.playback.StreamResolver.anonymousTvProvider = { id, sts ->
+            innerTube.anonymousTvStreams(id, sts)
+        }
+        // Versión web actual de YouTube: con una vieja YouTube responde "volver a cargar la página".
+        viewModelScope.launch(Dispatchers.IO) {
+            innerTube.updateWebClientVersion(com.geovideos.app.playback.StreamResolver.webClientVersion())
+        }
         hydrateCachedState()
         // Un solo inicio de sesión: si la sesión de YouTube está guardada, entrar directo
         // y pedir el inicio de YouTube YA (antes era al final de toda la sincronización).

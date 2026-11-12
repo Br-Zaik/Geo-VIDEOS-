@@ -769,8 +769,11 @@ class GeoPlayerConnection private constructor(context: Context) {
                 message.contains("inappropriate", ignoreCase = true) ->
                 "YouTube pide confirmar la edad para este video. Ábrelo en YouTube."
             message.contains("SignInConfirmNotBot", ignoreCase = true) ||
-                message.contains("not a bot", ignoreCase = true) ->
-                "YouTube pidió verificar que no eres un robot. Reintenta en unos minutos o ábrelo en YouTube."
+                message.contains("not a bot", ignoreCase = true) ||
+                message.contains("eres un bot", ignoreCase = true) ||
+                message.contains("volver a cargar", ignoreCase = true) ||
+                message.contains("page needs to be reloaded", ignoreCase = true) ->
+                "YouTube rechazó esta conexión por ahora. Pulsa Reintentar o \"Ver en web\"."
             message.contains("members", ignoreCase = true) ||
                 message.contains("PaidContent", ignoreCase = true) ||
                 message.contains("Premium", ignoreCase = true) ->

@@ -606,7 +606,24 @@ internal fun UnifiedPlayerOverlay(
         val availableMaxHeight = maxHeight
         val screenWidthPx = with(density) { maxWidth.toPx() }
         val screenHeightPx = with(density) { availableMaxHeight.toPx() }
-        val fullPlayerHeightPx = screenWidthPx * 9f / 16f
+        // Como YouTube: el reproductor toma la forma de cada video (cuadrado, 4:3, vertical...).
+        // Mínimo 16:9 y máximo 60 % de la pantalla, para que siempre se vean los detalles.
+        val sizeKnown = playback.videoWidth > 0 && playback.videoHeight > 0 &&
+            (playback.currentVideoId.isBlank() || playback.currentVideoId == video.id)
+        val wideHeightPx = screenWidthPx * 9f / 16f
+        val naturalHeightPx = if (sizeKnown) {
+            screenWidthPx * playback.videoHeight.toFloat() / playback.videoWidth.toFloat()
+        } else {
+            wideHeightPx
+        }
+        val maxPlayerHeightPx = (screenHeightPx * 0.6f).coerceAtLeast(wideHeightPx)
+        // Al empezar a bajarlo vuelve a 16:9, así se achica hasta el mini sin deformarse.
+        val keepNaturalShape = !dragging && !settling && transition <= 0.001f
+        val fullPlayerHeightPx by animateFloatAsState(
+            targetValue = if (keepNaturalShape) naturalHeightPx.coerceIn(wideHeightPx, maxPlayerHeightPx) else wideHeightPx,
+            animationSpec = tween(durationMillis = 260, easing = FastOutSlowInEasing),
+            label = "playerHeight"
+        )
         // Cuando no es un Mix, el usuario prefirió un mini reproductor grande tipo YouTube,
         // flotante y rectangular, para seguir viendo el feed de abajo. Para Mix se conserva
         // la barra compacta de toda la anchura.
@@ -710,22 +727,22 @@ internal fun UnifiedPlayerOverlay(
         )
 
         if (!fullscreen && showExpandedSurface) {
-            // Oscurece el inicio que va apareciendo arriba mientras se baja el video.
+            // Oscurece el inicio que va apareciendo mientras se baja el video.
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .graphicsLayer { alpha = ((1f - p) * 0.7f).coerceIn(0f, 0.7f) }
+                    .graphicsLayer { alpha = ((1f - p) * 0.8f).coerceIn(0f, 0.8f) }
                     .background(Color.Black)
             )
             Surface(
                 modifier = Modifier
                     .fillMaxSize()
                     .graphicsLayer {
-                        // Como YouTube: la página baja pegada al video y SIN transparencia
-                        // (nada de textos encima del feed); solo al final se desvanece.
-                        val videoBottom = playerTranslateY + fullPlayerHeightPx * playerScaleY
-                        translationY = (videoBottom - fullPlayerHeightPx).coerceAtLeast(0f)
-                        alpha = ((1f - p) / 0.25f).coerceIn(0f, 1f)
+                        // Como YouTube: al empezar a bajar, la página del video se desvanece
+                        // enseguida (no baja detrás del video) y queda solo el video
+                        // achicándose sobre el inicio oscurecido.
+                        translationY = p * 48.dp.toPx()
+                        alpha = (1f - p / 0.22f).coerceIn(0f, 1f)
                     },
                 color = MaterialTheme.colorScheme.background
             ) {
@@ -1416,20 +1433,34 @@ internal fun UnifiedPlayerOverlay(
                             Button(onClick = { playerConnection.open(video, autoplay, dataSaver, repeat = false) }) {
                                 Text("Reintentar")
                             }
+                            // Último recurso dentro de la app: la página de YouTube con tu cuenta.
                             OutlinedButton(
                                 onClick = {
                                     runCatching {
-                                        context.startActivity(
-                                            android.content.Intent(
-                                                android.content.Intent.ACTION_VIEW,
-                                                android.net.Uri.parse("https://www.youtube.com/watch?v=${video.id}")
-                                            )
+                                        com.geovideos.app.WebPlayerActivity.open(
+                                            context,
+                                            video.id,
+                                            (progressState.positionMs / 1000L).coerceAtLeast(0L)
                                         )
                                     }
                                 }
                             ) {
-                                Text("Abrir en YouTube", color = Color.White)
+                                Text("Ver en web", color = Color.White)
                             }
+                        }
+                        androidx.compose.material3.TextButton(
+                            onClick = {
+                                runCatching {
+                                    context.startActivity(
+                                        android.content.Intent(
+                                            android.content.Intent.ACTION_VIEW,
+                                            android.net.Uri.parse("https://www.youtube.com/watch?v=${video.id}")
+                                        )
+                                    )
+                                }
+                            }
+                        ) {
+                            Text("Abrir en la app de YouTube", color = Color.White.copy(alpha = 0.8f))
                         }
                     }
                 }
