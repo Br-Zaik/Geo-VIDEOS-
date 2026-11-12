@@ -318,6 +318,11 @@ internal fun RecyclerShortsScreen(
             adapter.submitList(shortVideos)
             if (selectedVideoId.isBlank() && shortVideos.isNotEmpty() && adapter.activeId.isBlank()) {
                 recyclerView.post { adapter.onPreviewCurrent(shortVideos.first()) }
+                // Los dos siguientes Shorts quedan listos antes de deslizar (sin competir con el primero).
+                recyclerView.postDelayed({
+                    playerConnection.preload(shortVideos.drop(1).take(2), dataSaver)
+                    adapter.preloadAround(0)
+                }, 1_500L)
             }
             adapter.setState(
                 selectedVideoId = selectedVideoId,

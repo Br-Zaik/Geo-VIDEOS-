@@ -28,6 +28,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
@@ -301,17 +302,23 @@ class ResolvedMediaDownloadService : Service() {
         val muxedFile = File(directory, "result.$finalExtension")
         try {
             if (!directory.mkdirs() && !directory.isDirectory) error("No se pudo preparar la descarga.")
-            updateStatus(request, GeoDownloadStage.VIDEO, downloadedBytes(videoFile, audioFile))
-            if (request.videoBytes <= 0L || videoFile.length() < request.videoBytes) {
-                downloadResumable(request, request.videoUrl, videoFile, GeoDownloadStage.VIDEO, videoFile, audioFile)
+            val hls = request.videoMime.equals(HLS_MIME, true)
+            if (!hls) {
+                updateStatus(request, GeoDownloadStage.VIDEO, downloadedBytes(videoFile, audioFile))
+                if (request.videoBytes <= 0L || videoFile.length() < request.videoBytes) {
+                    downloadResumable(request, request.videoUrl, videoFile, GeoDownloadStage.VIDEO, videoFile, audioFile)
+                }
             }
 
-            val completedFile = if (request.audioUrl.isNullOrBlank()) {
+            val latest = GeoDownloadStore.readRequest(this, id) ?: request
+            val completedFile = if (hls) {
+                runHlsDownload(request, directory)
+            } else if (latest.audioUrl.isNullOrBlank()) {
                 videoFile
             } else {
                 updateStatus(request, GeoDownloadStage.AUDIO, downloadedBytes(videoFile, audioFile))
-                if (request.audioBytes <= 0L || audioFile.length() < request.audioBytes) {
-                    downloadResumable(request, request.audioUrl, audioFile, GeoDownloadStage.AUDIO, videoFile, audioFile)
+                if (latest.audioBytes <= 0L || audioFile.length() < latest.audioBytes) {
+                    downloadResumable(latest, latest.audioUrl, audioFile, GeoDownloadStage.AUDIO, videoFile, audioFile)
                 }
                 updateStatus(request, GeoDownloadStage.MERGING, request.totalBytes.takeIf { it > 0L }
                     ?: downloadedBytes(videoFile, audioFile))
@@ -348,7 +355,7 @@ class ResolvedMediaDownloadService : Service() {
             ) return
             val message = when {
                 error.message?.contains("HTTP 403", true) == true ->
-                    "El enlace temporal venció. Abre el video y vuelve a iniciar la descarga."
+                    "YouTube negó el enlace incluso tras renovarlo. Toca Reanudar para intentarlo otra vez."
                 error.message?.contains("track", true) == true ||
                     error.message?.contains("mux", true) == true ->
                     "El video y el audio no pudieron unirse en este dispositivo."
@@ -361,6 +368,156 @@ class ResolvedMediaDownloadService : Service() {
         }
     }
 
+    private class HttpStatusException(val code: Int) : java.io.IOException("HTTP $code")
+
+    /**
+     * Último recurso (como Muka): descargar desde el HLS de tu sesión. Baja las partes de la
+     * calidad elegida, reanuda donde quedó y luego las une en un MP4 normal.
+     */
+    private suspend fun runHlsDownload(request: GeoDownloadRequest, directory: File): File = withContext(Dispatchers.IO) {
+        val master = String(fetchHlsBytes(request.videoUrl), Charsets.UTF_8)
+        val (videoPlaylist, audioPlaylist) = pickHlsVariant(request.videoUrl, master, request.height)
+        val videoTs = File(directory, "hls_video.ts")
+        downloadHlsPlaylist(request, videoPlaylist, videoTs, File(directory, "hls_video.progress"), GeoDownloadStage.VIDEO)
+        val audioTs = audioPlaylist?.let { url ->
+            File(directory, "hls_audio.ts").also { file ->
+                downloadHlsPlaylist(request, url, file, File(directory, "hls_audio.progress"), GeoDownloadStage.AUDIO)
+            }
+        }
+        updateStatus(request, GeoDownloadStage.MERGING, videoTs.length() + (audioTs?.length() ?: 0L))
+        val output = File(directory, "result.mp4")
+        muxFiles(videoTs, audioTs ?: videoTs, output, "mp4")
+        output
+    }
+
+    private fun resolveHlsUrl(base: String, reference: String): String =
+        runCatching { URL(URL(base), reference).toString() }.getOrDefault(reference)
+
+    /** Elige la variante de la altura pedida (o la más cercana por debajo) y su audio si va aparte. */
+    private fun pickHlsVariant(masterUrl: String, master: String, height: Int): Pair<String, String?> {
+        val lines = master.lines().map { it.trim() }
+        if (lines.none { it.startsWith("#EXT-X-STREAM-INF") }) return masterUrl to null
+        data class Variant(val height: Int, val bandwidth: Long, val uri: String, val audioGroup: String?)
+        val variants = ArrayList<Variant>()
+        lines.forEachIndexed { index, line ->
+            if (!line.startsWith("#EXT-X-STREAM-INF")) return@forEachIndexed
+            val uri = lines.drop(index + 1).firstOrNull { it.isNotBlank() && !it.startsWith("#") } ?: return@forEachIndexed
+            val variantHeight = Regex("RESOLUTION=\\d+x(\\d+)").find(line)?.groupValues?.get(1)?.toIntOrNull() ?: 0
+            val bandwidth = Regex("BANDWIDTH=(\\d+)").find(line)?.groupValues?.get(1)?.toLongOrNull() ?: 0L
+            val audioGroup = Regex("AUDIO=\"([^\"]+)\"").find(line)?.groupValues?.get(1)
+            variants.add(Variant(variantHeight, bandwidth, resolveHlsUrl(masterUrl, uri), audioGroup))
+        }
+        val chosen = variants.filter { it.height in 1..height.coerceAtLeast(1) }
+            .maxWithOrNull(compareBy<Variant>({ it.height }, { it.bandwidth }))
+            ?: variants.filter { it.height > 0 }.minByOrNull { it.height }
+            ?: variants.maxByOrNull { it.bandwidth }
+            ?: return masterUrl to null
+        val audio = chosen.audioGroup?.let { group ->
+            lines.firstOrNull {
+                it.startsWith("#EXT-X-MEDIA") && it.contains("TYPE=AUDIO") &&
+                    it.contains("GROUP-ID=\"$group\"") && it.contains("URI=")
+            }?.let { Regex("URI=\"([^\"]+)\"").find(it)?.groupValues?.get(1) }
+                ?.let { resolveHlsUrl(masterUrl, it) }
+        }
+        return chosen.uri to audio
+    }
+
+    private suspend fun downloadHlsPlaylist(
+        request: GeoDownloadRequest,
+        playlistUrl: String,
+        target: File,
+        progressFile: File,
+        stage: GeoDownloadStage
+    ) {
+        val lines = String(fetchHlsBytes(playlistUrl), Charsets.UTF_8).lines().map { it.trim() }
+        if (lines.any { it.startsWith("#EXT-X-KEY") && !it.contains("METHOD=NONE") }) {
+            error("Este video está protegido y no se puede descargar.")
+        }
+        val init = lines.firstOrNull { it.startsWith("#EXT-X-MAP") }
+            ?.let { Regex("URI=\"([^\"]+)\"").find(it)?.groupValues?.get(1) }
+            ?.let { resolveHlsUrl(playlistUrl, it) }
+        val parts = listOfNotNull(init) + lines.filter { it.isNotBlank() && !it.startsWith("#") }
+            .map { resolveHlsUrl(playlistUrl, it) }
+        if (parts.isEmpty()) error("La lista del video llegó vacía.")
+        var done = 0
+        var bytes = 0L
+        if (progressFile.exists()) {
+            val saved = progressFile.readText().trim().split(" ")
+            done = saved.getOrNull(0)?.toIntOrNull() ?: 0
+            bytes = saved.getOrNull(1)?.toLongOrNull() ?: 0L
+        }
+        if (done > parts.size || target.length() < bytes) {
+            done = 0
+            bytes = 0L
+            target.delete()
+        } else if (target.length() > bytes) {
+            java.io.RandomAccessFile(target, "rw").use { it.setLength(bytes) }
+        }
+        val startedAt = System.currentTimeMillis()
+        val startedBytes = bytes
+        var lastUpdate = 0L
+        FileOutputStream(target, true).use { output ->
+            for (index in done until parts.size) {
+                coroutineContext.ensureActive()
+                val data = fetchHlsBytes(parts[index])
+                output.write(data)
+                output.flush()
+                bytes += data.size
+                done = index + 1
+                progressFile.writeText("$done $bytes")
+                val now = System.currentTimeMillis()
+                if (now - lastUpdate >= STATUS_UPDATE_INTERVAL_MS) {
+                    lastUpdate = now
+                    val estimatedTotal = if (done > 0) bytes * parts.size / done else -1L
+                    val elapsed = (now - startedAt).coerceAtLeast(1L)
+                    val speed = (bytes - startedBytes).coerceAtLeast(0L) * 1000L / elapsed
+                    val remaining = if (speed > 0L && estimatedTotal > 0L) (estimatedTotal - bytes).coerceAtLeast(0L) * 1000L / speed else -1L
+                    updateStatus(request.copy(totalBytes = estimatedTotal), stage, bytes, speed, remaining)
+                }
+            }
+        }
+    }
+
+    /** Descarga una parte (o una lista) con hasta 5 intentos si la red falla. */
+    private suspend fun fetchHlsBytes(url: String): ByteArray {
+        var lastError: Exception? = null
+        for (attempt in 0 until 5) {
+            coroutineContext.ensureActive()
+            val connection = (URL(url).openConnection() as HttpURLConnection).apply {
+                instanceFollowRedirects = true
+                connectTimeout = 20_000
+                readTimeout = 40_000
+                useCaches = false
+                setRequestProperty("User-Agent", HLS_USER_AGENT)
+                setRequestProperty("Accept", "*/*")
+                setRequestProperty("Accept-Encoding", "identity")
+            }
+            try {
+                val code = connection.responseCode
+                if (code == 403 || code == 410) throw HttpStatusException(code)
+                if (code !in 200..299) throw HttpStatusException(code)
+                return connection.inputStream.use { it.readBytes() }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (forbidden: HttpStatusException) {
+                if (forbidden.code == 403 || forbidden.code == 410) throw forbidden
+                lastError = forbidden
+            } catch (error: Exception) {
+                lastError = error
+            } finally {
+                connection.disconnect()
+            }
+            delay((1_000L * (attempt + 1) * (attempt + 1)).coerceAtMost(15_000L))
+        }
+        throw lastError ?: java.io.IOException("No se pudo descargar una parte del video.")
+    }
+
+
+    /**
+     * Descarga como Muka: por partes de 8 MB (YouTube no frena las peticiones con rango),
+     * reanudando donde quedó, con reintentos automáticos si se corta la red y, si el enlace
+     * vence (403/410), pidiendo uno nuevo de la misma calidad y siguiendo.
+     */
     private suspend fun downloadResumable(
         request: GeoDownloadRequest,
         url: String,
@@ -369,64 +526,161 @@ class ResolvedMediaDownloadService : Service() {
         videoFile: File,
         audioFile: File
     ) = withContext(Dispatchers.IO) {
-        val existing = target.length().coerceAtLeast(0L)
-        val connection = (URL(url).openConnection() as HttpURLConnection).apply {
-            instanceFollowRedirects = true
-            connectTimeout = 25_000
-            readTimeout = 45_000
-            useCaches = false
-            setRequestProperty("User-Agent", USER_AGENT)
-            setRequestProperty("Accept", "*/*")
-            setRequestProperty("Accept-Encoding", "identity")
-            setRequestProperty("Origin", "https://www.youtube.com")
-            setRequestProperty("Referer", "https://www.youtube.com/")
-            if (existing > 0L) setRequestProperty("Range", "bytes=$existing-")
-        }
-        try {
-            val response = connection.responseCode
-            if (response == 416 && existing > 0L) {
+        var currentUrl = url
+        var failures = 0
+        var refreshes = 0
+        val expected = if (stage == GeoDownloadStage.AUDIO) request.audioBytes else request.videoBytes
+        while (true) {
+            coroutineContext.ensureActive()
+            try {
+                downloadInChunks(request, currentUrl, target, stage, videoFile, audioFile, expected)
+                if (!target.exists() || target.length() <= 0L) error("El archivo descargado está vacío.")
+                updateStatus(request, stage, downloadedBytes(videoFile, audioFile))
                 return@withContext
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                val code = (error as? HttpStatusException)?.code
+                if (code != null && code in setOf(401, 403, 404, 410) && refreshes < 3) {
+                    refreshes++
+                    val fresh = refreshLink(request, stage, currentUrl, target) ?: throw error
+                    currentUrl = fresh
+                    continue
+                }
+                failures++
+                if (failures > MAX_DOWNLOAD_RETRIES) throw error
+                updateStatus(request, stage, downloadedBytes(videoFile, audioFile))
+                // Espera creciente: 2 s, 5 s, 10 s... (la red del celular suele volver sola).
+                delay((1_500L * failures * failures).coerceAtMost(30_000L))
             }
-            if (response !in 200..299) error("HTTP $response")
-            val append = existing > 0L && response == HttpURLConnection.HTTP_PARTIAL
-            if (existing > 0L && !append) target.delete()
-            var lastUpdate = System.currentTimeMillis()
-            var sampleStartedAt = lastUpdate
-            var sampleStartedBytes = downloadedBytes(videoFile, audioFile)
-            connection.inputStream.buffered(DOWNLOAD_BUFFER_SIZE).use { input ->
-                FileOutputStream(target, append).buffered(DOWNLOAD_BUFFER_SIZE).use { output ->
-                    val buffer = ByteArray(DOWNLOAD_BUFFER_SIZE)
-                    while (true) {
-                        coroutineContext.ensureActive()
-                        val count = input.read(buffer)
-                        if (count < 0) break
-                        output.write(buffer, 0, count)
-                        val now = System.currentTimeMillis()
-                        if (now - lastUpdate >= STATUS_UPDATE_INTERVAL_MS) {
-                            lastUpdate = now
-                            val currentBytes = downloadedBytes(videoFile, audioFile)
-                            val elapsed = (now - sampleStartedAt).coerceAtLeast(1L)
-                            val speed = ((currentBytes - sampleStartedBytes).coerceAtLeast(0L) * 1000L) / elapsed
-                            val remaining = if (request.totalBytes > 0L && speed > 0L) {
-                                ((request.totalBytes - currentBytes).coerceAtLeast(0L) * 1000L) / speed
-                            } else {
-                                -1L
-                            }
-                            updateStatus(request, stage, currentBytes, speed, remaining)
-                            if (elapsed >= SPEED_SAMPLE_WINDOW_MS) {
-                                sampleStartedAt = now
-                                sampleStartedBytes = currentBytes
+        }
+    }
+
+    private suspend fun downloadInChunks(
+        request: GeoDownloadRequest,
+        url: String,
+        target: File,
+        stage: GeoDownloadStage,
+        videoFile: File,
+        audioFile: File,
+        expectedBytes: Long
+    ) {
+        var total = expectedBytes
+        var lastUpdate = System.currentTimeMillis()
+        var sampleStartedAt = lastUpdate
+        var sampleStartedBytes = downloadedBytes(videoFile, audioFile)
+        while (true) {
+            coroutineContext.ensureActive()
+            val start = target.length().coerceAtLeast(0L)
+            if (total > 0L && start >= total) return
+            val end = if (total > 0L) minOf(start + DOWNLOAD_CHUNK_BYTES - 1, total - 1) else start + DOWNLOAD_CHUNK_BYTES - 1
+            val connection = (URL(url).openConnection() as HttpURLConnection).apply {
+                instanceFollowRedirects = true
+                connectTimeout = 25_000
+                readTimeout = 45_000
+                useCaches = false
+                setRequestProperty("User-Agent", USER_AGENT)
+                setRequestProperty("Accept", "*/*")
+                setRequestProperty("Accept-Encoding", "identity")
+                setRequestProperty("Origin", "https://www.youtube.com")
+                setRequestProperty("Referer", "https://www.youtube.com/")
+                setRequestProperty("Range", "bytes=$start-$end")
+            }
+            try {
+                val response = connection.responseCode
+                if (response == 416) {
+                    // Ya está completo (o el tamaño cambió): dar por terminado este archivo.
+                    if (start > 0L) return
+                    throw HttpStatusException(response)
+                }
+                if (response !in 200..299) throw HttpStatusException(response)
+                val partial = response == HttpURLConnection.HTTP_PARTIAL
+                if (partial) {
+                    connection.getHeaderField("Content-Range")
+                        ?.substringAfter('/')
+                        ?.trim()
+                        ?.toLongOrNull()
+                        ?.takeIf { it > 0L }
+                        ?.let { total = it }
+                } else {
+                    // El servidor ignoró el rango: manda el archivo completo desde el inicio.
+                    if (start > 0L) target.delete()
+                    total = connection.contentLengthLong.takeIf { it > 0L } ?: -1L
+                }
+                var received = 0L
+                connection.inputStream.buffered(DOWNLOAD_BUFFER_SIZE).use { input ->
+                    FileOutputStream(target, partial && start > 0L).buffered(DOWNLOAD_BUFFER_SIZE).use { output ->
+                        val buffer = ByteArray(DOWNLOAD_BUFFER_SIZE)
+                        while (true) {
+                            coroutineContext.ensureActive()
+                            val count = input.read(buffer)
+                            if (count < 0) break
+                            output.write(buffer, 0, count)
+                            received += count
+                            val now = System.currentTimeMillis()
+                            if (now - lastUpdate >= STATUS_UPDATE_INTERVAL_MS) {
+                                lastUpdate = now
+                                val currentBytes = downloadedBytes(videoFile, audioFile)
+                                val elapsed = (now - sampleStartedAt).coerceAtLeast(1L)
+                                val speed = ((currentBytes - sampleStartedBytes).coerceAtLeast(0L) * 1000L) / elapsed
+                                val remaining = if (request.totalBytes > 0L && speed > 0L) {
+                                    ((request.totalBytes - currentBytes).coerceAtLeast(0L) * 1000L) / speed
+                                } else {
+                                    -1L
+                                }
+                                updateStatus(request, stage, currentBytes, speed, remaining)
+                                if (elapsed >= SPEED_SAMPLE_WINDOW_MS) {
+                                    sampleStartedAt = now
+                                    sampleStartedBytes = currentBytes
+                                }
                             }
                         }
+                        output.flush()
                     }
-                    output.flush()
                 }
+                if (!partial) return
+                if (received <= 0L) {
+                    if (total <= 0L) return
+                    throw java.io.IOException("La conexión se cortó sin datos.")
+                }
+                if (total <= 0L && received < DOWNLOAD_CHUNK_BYTES) return
+            } finally {
+                connection.disconnect()
             }
-            if (!target.exists() || target.length() <= 0L) error("El archivo descargado está vacío.")
-            updateStatus(request, stage, downloadedBytes(videoFile, audioFile))
-        } finally {
-            connection.disconnect()
         }
+    }
+
+    /**
+     * El enlace venció: pide de nuevo las opciones del video y toma la misma calidad.
+     * Si el formato cambió, empieza ese archivo de cero para no mezclar datos.
+     */
+    private suspend fun refreshLink(
+        request: GeoDownloadRequest,
+        stage: GeoDownloadStage,
+        oldUrl: String,
+        target: File
+    ): String? {
+        val video = VideoItem(id = request.videoId, title = request.title, channelTitle = "", thumbnailUrl = "")
+        StreamResolver.invalidatePlayback(request.videoId, includeInfo = true)
+        val options = runCatching { StreamResolver.options(video, includeDownloadSizes = true) }.getOrNull() ?: return null
+        val sameKind = options.downloads.filter { it.height == request.height }
+        val option = sameKind.firstOrNull { (it.audioUri != null) == (request.audioUrl != null) }
+            ?: sameKind.firstOrNull()
+            ?: return null
+        val fresh = if (stage == GeoDownloadStage.AUDIO) option.audioUri ?: return null else option.uri
+        fun itag(value: String) = Regex("[?&]itag=(\\d+)").find(value)?.groupValues?.get(1)
+        if (itag(fresh) != itag(oldUrl)) target.delete()
+        val stored = GeoDownloadStore.readRequest(this, request.id) ?: request
+        GeoDownloadStore.saveRequest(
+            this,
+            stored.copy(
+                videoUrl = option.uri,
+                audioUrl = option.audioUri ?: stored.audioUrl,
+                videoBytes = option.videoSizeBytes.takeIf { it > 0L } ?: stored.videoBytes,
+                audioBytes = option.audioSizeBytes.takeIf { it > 0L } ?: stored.audioBytes
+            )
+        )
+        return fresh
     }
 
     private fun updateStatus(
@@ -918,6 +1172,11 @@ private fun notificationId(id: Long): Int =
     (id.absoluteValue % 1_000_000L).toInt().coerceAtLeast(2000)
 
 private const val DOWNLOAD_BUFFER_SIZE = 256 * 1024
+private const val DOWNLOAD_CHUNK_BYTES = 8L * 1024L * 1024L
+private const val HLS_MIME = "application/x-mpegURL"
+private const val HLS_USER_AGENT =
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.5 Safari/605.1.15"
+private const val MAX_DOWNLOAD_RETRIES = 8
 private const val STATUS_UPDATE_INTERVAL_MS = 500L
 private const val SPEED_SAMPLE_WINDOW_MS = 2_000L
 private const val MAX_WAKE_LOCK_MS = 6L * 60L * 60L * 1000L

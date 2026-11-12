@@ -262,6 +262,61 @@ class InnerTubeClient(private val cookieProvider: () -> String) {
         )
     }
 
+    private fun playerBody(client: ClientInfo, videoId: String, signatureTimestamp: Int?): JSONObject {
+        val body = baseBody(client)
+            .put("videoId", videoId)
+            .put("contentCheckOk", true)
+            .put("racyCheckOk", true)
+        val playback = JSONObject().put("html5Preference", "HTML5_PREF_WANTS")
+        if (signatureTimestamp != null && signatureTimestamp > 0) playback.put("signatureTimestamp", signatureTimestamp)
+        body.put("playbackContext", JSONObject().put("contentPlaybackContext", playback))
+        return body
+    }
+
+    private fun checkPlayable(json: JSONObject) {
+        val status = json.optJSONObject("playabilityStatus")
+        val code = status?.optString("status").orEmpty()
+        if (code.isNotBlank() && !code.equals("OK", true)) {
+            val reason = status?.optString("reason").orEmpty().ifBlank { text(status?.opt("errorScreen")) }
+            throw IllegalStateException("Got error $code: \"$reason\"")
+        }
+    }
+
+    /**
+     * Reproducción con tu sesión de YouTube (como Safari): devuelve el manifiesto HLS.
+     * Sirve cuando YouTube bloquea la reproducción anónima ("no eres un robot").
+     */
+    suspend fun sessionPlayer(videoId: String, signatureTimestamp: Int?): JSONObject = withContext(Dispatchers.IO) {
+        val json = post("player", playerBody(WEB_SAFARI, videoId, signatureTimestamp), WEB_SAFARI)
+        checkPlayable(json)
+        json
+    }
+
+    /** Capítulos del video tal como los muestra YouTube (barra del reproductor o "Momentos clave"). */
+    suspend fun chapters(videoId: String): List<Triple<String, Long, String>> = withContext(Dispatchers.IO) {
+        val json = next(videoId)
+        val fromBar = collectObjects(json, "chapterRenderer").map { chapter ->
+            Triple(
+                text(chapter.opt("title")),
+                chapter.optLong("timeRangeStartMillis", 0L),
+                chapter.optJSONObject("thumbnail")?.let { lastThumb(it) }.orEmpty()
+            )
+        }.filter { it.first.isNotBlank() }
+        if (fromBar.isNotEmpty()) return@withContext fromBar.distinctBy { it.second }.sortedBy { it.second }
+        collectObjects(json, "macroMarkersListItemRenderer").mapNotNull { marker ->
+            val seconds = (findFirst(marker.opt("onTap"), "startTimeSeconds") as? Number)?.toLong() ?: return@mapNotNull null
+            val title = text(marker.opt("title"))
+            if (title.isBlank()) null else Triple(title, seconds * 1000L, marker.optJSONObject("thumbnail")?.let { lastThumb(it) }.orEmpty())
+        }.distinctBy { it.second }.sortedBy { it.second }
+    }
+
+    /** Reproducción con tu sesión usando el cliente de TV: devuelve streamingData. */
+    suspend fun sessionTvStreams(videoId: String, signatureTimestamp: Int?): JSONObject? = withContext(Dispatchers.IO) {
+        val json = post("player", playerBody(TV, videoId, signatureTimestamp), TV)
+        checkPlayable(json)
+        json.optJSONObject("streamingData")
+    }
+
     /** Sugerencias de búsqueda (las mismas del cuadro de búsqueda de YouTube). */
     suspend fun searchSuggestions(query: String): List<String> = withContext(Dispatchers.IO) {
         val clean = query.trim()
@@ -1570,6 +1625,23 @@ class InnerTubeClient(private val cookieProvider: () -> String) {
             id = "1",
             userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
                 "(KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36"
+        )
+
+        /** Safari en la web: con tu sesión entrega HLS (audio y video juntos) sin PO token. */
+        private val WEB_SAFARI = ClientInfo(
+            name = "WEB",
+            version = "2.20251020.01.00",
+            id = "1",
+            userAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 " +
+                "(KHTML, like Gecko) Version/15.5 Safari/605.1.15,gzip(gfe)"
+        )
+
+        /** Cliente de TV: con tu sesión entrega formatos normales (firma descifrada aparte). */
+        private val TV = ClientInfo(
+            name = "TVHTML5",
+            version = "7.20250923.13.00",
+            id = "7",
+            userAgent = "Mozilla/5.0 (ChromiumStylePlatform) Cobalt/Version"
         )
 
         private val MWEB = ClientInfo(

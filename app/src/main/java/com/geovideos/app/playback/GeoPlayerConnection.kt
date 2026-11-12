@@ -4,6 +4,7 @@ import android.content.ComponentName
 import android.content.Context
 import android.net.Uri
 import androidx.core.content.ContextCompat
+import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.PlaybackException
@@ -96,6 +97,17 @@ class GeoPlayerConnection private constructor(context: Context) {
         val safe = seconds.coerceIn(5, 60)
         _doubleTapSeekSeconds.value = safe
         playerPreferences.edit().putInt(KEY_DOUBLE_TAP_SECONDS, safe).apply()
+    }
+
+    /** Al salir de la app con un video sonando, seguir en la ventana emergente (como Daylitube). */
+    private val _autoFloatingOnLeave = MutableStateFlow(
+        playerPreferences.getBoolean(KEY_AUTO_FLOATING, true)
+    )
+    val autoFloatingOnLeave: StateFlow<Boolean> = _autoFloatingOnLeave.asStateFlow()
+
+    fun setAutoFloatingOnLeave(enabled: Boolean) {
+        _autoFloatingOnLeave.value = enabled
+        playerPreferences.edit().putBoolean(KEY_AUTO_FLOATING, enabled).apply()
     }
 
     internal suspend fun playbackExtras(video: VideoItem): PlaybackExtras = StreamResolver.extras(video)
@@ -195,6 +207,15 @@ class GeoPlayerConnection private constructor(context: Context) {
         override fun onPlayerError(error: PlaybackException) {
             val video = currentVideo
             val player = _controller.value
+            // YouTube rechazó el enlace (403/410…): el siguiente intento va directo con tu sesión.
+            if (video != null && (
+                    error.errorCode == PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS ||
+                        error.errorCode == PlaybackException.ERROR_CODE_IO_INVALID_HTTP_CONTENT_TYPE ||
+                        error.errorCode == PlaybackException.ERROR_CODE_PARSING_CONTAINER_MALFORMED
+                    )
+            ) {
+                StreamResolver.markLinkRejected(video.id)
+            }
             if (
                 video != null &&
                 !activeAudioOnly &&
@@ -392,12 +413,14 @@ class GeoPlayerConnection private constructor(context: Context) {
                         .buildUpon()
                         .clearVideoSizeConstraints()
                     if (!audioOnly && !resolved.hasSeparateAudio) {
-                        preferredHeight
-                            ?.takeIf { playbackFallbackAttempt == 0 && it > 0 }
-                            ?.let { exactHeight ->
+                        val exact = preferredHeight?.takeIf { playbackFallbackAttempt == 0 && it > 0 }
+                        if (exact != null) {
                             trackBuilder
-                                .setMinVideoSize(0, exactHeight)
-                                .setMaxVideoSize(Int.MAX_VALUE, exactHeight)
+                                .setMinVideoSize(0, exact)
+                                .setMaxVideoSize(Int.MAX_VALUE, exact)
+                        } else if (dataSaver && resolved.mimeType == androidx.media3.common.MimeTypes.APPLICATION_M3U8) {
+                            // HLS con la sesión: en Ahorro de datos no pasar de 360p.
+                            trackBuilder.setMaxVideoSize(Int.MAX_VALUE, 360)
                         }
                     }
                     controller.setTrackSelectionParameters(trackBuilder.build())
@@ -659,6 +682,57 @@ class GeoPlayerConnection private constructor(context: Context) {
         _state.value = PlaybackUiState(connecting = _controller.value == null)
     }
 
+    @Volatile
+    private var videoDisabledForBackground = false
+
+    /**
+     * Pantalla apagada o app en segundo plano: sigue sonando, pero sin decodificar la imagen
+     * (ahorra batería y datos). Al volver, la imagen regresa sola. Con la ventana flotante
+     * abierta no se toca nada porque ahí sí se ve el video.
+     */
+    fun setAppInBackground(background: Boolean) {
+        appInBackground = background
+        // Si la app está a la vista, la pantalla está encendida.
+        if (!background) screenOff = false
+        applyVideoVisibility()
+    }
+
+    /** Pantalla apagada con la ventana emergente abierta: solo audio, así ahorra batería. */
+    fun setScreenOff(off: Boolean) {
+        screenOff = off
+        applyVideoVisibility()
+    }
+
+    /**
+     * La ventana emergente se cerró. Se revisa un momento después si la imagen sigue haciendo
+     * falta (si el usuario volvió a la app, sí; si quedó atrás, solo audio).
+     */
+    fun onFloatingWindowClosed() {
+        screenOff = false
+        scope.launch {
+            delay(1_500L)
+            applyVideoVisibility()
+        }
+    }
+
+    @Volatile
+    private var appInBackground = false
+
+    @Volatile
+    private var screenOff = false
+
+    private fun applyVideoVisibility() = withController { controller ->
+        val floating = FloatingPlayerService.isActiveOrStarting()
+        val disable = screenOff || (appInBackground && !floating)
+        if (disable == videoDisabledForBackground) return@withController
+        if (disable && !controller.isPlaying) return@withController
+        videoDisabledForBackground = disable
+        controller.trackSelectionParameters = controller.trackSelectionParameters
+            .buildUpon()
+            .setTrackTypeDisabled(C.TRACK_TYPE_VIDEO, disable)
+            .build()
+    }
+
     private fun withController(action: (MediaController) -> Unit) {
         val ready = _controller.value
         if (ready != null) {
@@ -763,6 +837,7 @@ class GeoPlayerConnection private constructor(context: Context) {
     companion object {
         private const val KEY_PREFERRED_QUALITY = "preferred_quality_height"
         private const val KEY_DOUBLE_TAP_SECONDS = "double_tap_seek_seconds"
+        private const val KEY_AUTO_FLOATING = "auto_floating_on_leave"
         private const val MAX_PLAYBACK_FALLBACK_ATTEMPT = 3
 
         @Volatile

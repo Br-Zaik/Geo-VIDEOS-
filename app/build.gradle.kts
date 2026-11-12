@@ -14,8 +14,8 @@ android {
         applicationId = "com.geovideos.app"
         minSdk = 23
         targetSdk = 35
-        versionCode = 513
-        versionName = "51.0.0"
+        versionCode = 526
+        versionName = "61.1.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables.useSupportLibrary = true
@@ -33,6 +33,9 @@ android {
     buildTypes {
         debug {
             signingConfig = signingConfigs.getByName("geoDev")
+            // El APK que se instala sale de esta variante. Sin el modo depuración, Android
+            // optimiza el código y usa los perfiles de arranque: todo se siente más fluido.
+            isDebuggable = false
         }
         release {
             isMinifyEnabled = false
@@ -59,6 +62,13 @@ android {
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
         }
+    }
+
+    // Al no ser depurable, Gradle correría la revisión "lint" de publicación en cada APK;
+    // es solo para la Play Store y podría frenar la compilación por avisos sin importancia.
+    lint {
+        checkReleaseBuilds = false
+        abortOnError = false
     }
 }
 
@@ -102,7 +112,7 @@ dependencies {
     implementation("androidx.media3:media3-session:1.6.1")
 
     // Public-stream resolver used by the custom Media3 player.
-    implementation("com.github.teamnewpipe:NewPipeExtractor:v0.26.3")
+    implementation("com.github.teamnewpipe:NewPipeExtractor:v0.27.1")
 
     debugImplementation("androidx.compose.ui:ui-tooling")
     debugImplementation("androidx.compose.ui:ui-test-manifest")

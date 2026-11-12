@@ -132,6 +132,294 @@ internal object StreamResolver {
     private val infoLocks = ConcurrentHashMap<String, Mutex>()
     private val contentLengthCache = ConcurrentHashMap<String, Pair<Long, Long>>()
 
+    /**
+     * Respaldo con tu sesión de YouTube. Lo conecta el ViewModel. Si YouTube pide
+     * "confirma que no eres un robot" a la reproducción anónima, se reproduce con la sesión.
+     */
+    @Volatile
+    var sessionPlayerProvider: (suspend (videoId: String, signatureTimestamp: Int?) -> org.json.JSONObject?)? = null
+
+    @Volatile
+    var sessionChaptersProvider: (suspend (videoId: String) -> List<VideoChapter>)? = null
+
+    /** Lo que llegó por la sesión: manifiesto HLS, vista previa y duración. */
+    private data class SessionData(
+        val hlsUrl: String,
+        val storyboard: StoryboardInfo?,
+        val expiresAtMs: Long,
+        var heights: List<Int> = emptyList()
+    )
+
+    private val sessionCache = ConcurrentHashMap<String, SessionData>()
+
+    private fun isAnonymousBlocked(): Boolean = System.currentTimeMillis() < anonymousBlockedUntilMs
+
+    /** Videos cuyo enlace normal falló al reproducir: el reintento usa la sesión primero. */
+    private val rejectedLinks = ConcurrentHashMap<String, Long>()
+
+    fun markLinkRejected(videoId: String) {
+        if (videoId.isNotBlank()) rejectedLinks[videoId] = System.currentTimeMillis() + 30 * 60_000L
+    }
+
+    private fun preferSession(videoId: String, attempt: Int): Boolean {
+        val until = rejectedLinks[videoId] ?: 0L
+        if (until in 1 until System.currentTimeMillis()) rejectedLinks.remove(videoId)
+        return attempt >= 2 || until > System.currentTimeMillis()
+    }
+
+    /** Spec del storyboard de YouTube: "url|ancho#alto#total#cols#filas#ms#nombre#sigh|…". */
+    private fun parseStoryboardSpec(spec: String, lengthSeconds: Long): StoryboardInfo? {
+        val parts = spec.split("|")
+        if (parts.size < 2) return null
+        val baseUrl = parts[0]
+        var best: StoryboardInfo? = null
+        for (index in 1 until parts.size) {
+            val fields = parts[index].split("#")
+            if (fields.size < 8) continue
+            val width = fields[0].toIntOrNull() ?: continue
+            val height = fields[1].toIntOrNull() ?: continue
+            val count = fields[2].toIntOrNull() ?: continue
+            val cols = fields[3].toIntOrNull() ?: continue
+            val rows = fields[4].toIntOrNull() ?: continue
+            val interval = fields[5].toIntOrNull() ?: 0
+            if (width <= 0 || cols <= 0 || rows <= 0 || count <= 0 || width > 320) continue
+            val duration = when {
+                interval > 0 -> interval
+                lengthSeconds > 0 -> (lengthSeconds * 1000L / count).toInt()
+                else -> continue
+            }
+            val pages = (count + cols * rows - 1) / (cols * rows)
+            val levelUrl = baseUrl.replace("\$L", (index - 1).toString()).replace("\$N", fields[6])
+            val urls = (0 until pages).map { page ->
+                levelUrl.replace("\$M", page.toString()) + (if ('?' in levelUrl) "&" else "?") + "sigh=" + fields[7]
+            }
+            val candidate = StoryboardInfo(urls, width, height, cols, rows, count, duration)
+            if (best == null || width > best.frameWidth) best = candidate
+        }
+        return best
+    }
+
+    /** Alturas que trae el manifiesto HLS (para el menú de calidad). */
+    private fun hlsHeights(url: String): List<Int> = runCatching {
+        val connection = (URL(url).openConnection() as HttpURLConnection).apply {
+            connectTimeout = 8_000
+            readTimeout = 8_000
+        }
+        try {
+            val text = connection.inputStream.bufferedReader().use { it.readText() }
+            Regex("RESOLUTION=\\d+x(\\d+)").findAll(text)
+                .mapNotNull { it.groupValues[1].toIntOrNull() }
+                .distinct()
+                .sortedDescending()
+                .toList()
+        } finally {
+            connection.disconnect()
+        }
+    }.getOrDefault(emptyList())
+
+    private fun tvDownloads(videoId: String, data: org.json.JSONObject): List<DownloadStreamOption> {
+        fun list(key: String): List<org.json.JSONObject> {
+            val array = data.optJSONArray(key) ?: return emptyList()
+            return (0 until array.length()).mapNotNull { array.optJSONObject(it) }
+                .filter { it.optJSONArray("drmFamilies") == null }
+        }
+        val adaptive = list("adaptiveFormats")
+        val audio = adaptive.filter { it.optString("mimeType").startsWith("audio/mp4") }
+            .maxByOrNull { it.optInt("bitrate") }
+        val audioUrl = audio?.let { tvFormatUrl(videoId, it) }
+        val byHeight = adaptive.filter {
+            val mime = it.optString("mimeType")
+            mime.startsWith("video/mp4") && mime.contains("avc1") && it.optInt("height") > 0
+        }.groupBy { it.optInt("height") }
+        val result = ArrayList<DownloadStreamOption>()
+        if (audioUrl != null) {
+            byHeight.keys.sortedDescending().forEach { height ->
+                val format = byHeight[height]?.maxByOrNull { it.optInt("bitrate") } ?: return@forEach
+                val videoUrl = tvFormatUrl(videoId, format) ?: return@forEach
+                result.add(
+                    DownloadStreamOption(
+                        id = "session:$height",
+                        label = "Video ${height}p",
+                        height = height,
+                        uri = videoUrl,
+                        mimeType = MimeTypes.VIDEO_MP4,
+                        extension = "mp4",
+                        audioUri = audioUrl,
+                        audioMimeType = MimeTypes.AUDIO_MP4,
+                        audioExtension = "m4a"
+                    )
+                )
+            }
+        }
+        list("formats").maxByOrNull { it.optInt("height") }?.let { muxed ->
+            val height = muxed.optInt("height")
+            if (result.none { it.height == height }) {
+                tvFormatUrl(videoId, muxed)?.let { url ->
+                    result.add(DownloadStreamOption("session-direct:$height", "Video ${height}p", height, url, MimeTypes.VIDEO_MP4, "mp4"))
+                }
+            }
+        }
+        return result.sortedByDescending { it.height }
+    }
+
+    /** Calidades y descargas con la sesión cuando la vía anónima está bloqueada. */
+    private suspend fun sessionOptions(video: VideoItem, includeDownloadSizes: Boolean): StreamOptions? {
+        if (sessionCache[video.id]?.takeIf { it.expiresAtMs > System.currentTimeMillis() } == null) {
+            // Aún no se reprodujo: pedir el HLS con la sesión para conocer calidades.
+            runCatching { sessionFallback(video, dataSaver = false, preferredHeight = null) }
+        }
+        val cached = sessionCache[video.id]?.takeIf { it.expiresAtMs > System.currentTimeMillis() }
+        val heights = cached?.let { data ->
+            if (data.heights.isEmpty() && data.hlsUrl.isNotBlank()) data.heights = hlsHeights(data.hlsUrl)
+            data.heights
+        }.orEmpty()
+        var downloads: List<DownloadStreamOption> = emptyList()
+        if (includeDownloadSizes) {
+            val tvProvider = sessionTvProvider
+            if (tvProvider != null) {
+                ensureInitialized()
+                val sts = runCatching {
+                    org.schabi.newpipe.extractor.services.youtube.YoutubeJavaScriptPlayerManager.getSignatureTimestamp(video.id)
+                }.getOrNull()
+                val data = runCatching { tvProvider(video.id, sts) }.getOrNull()
+                if (data != null) downloads = attachSizes(tvDownloads(video.id, data))
+            }
+        }
+        // Calidades que no salieron por el cliente TV: descargarlas desde el HLS (último recurso).
+        val hlsUrl = cached?.hlsUrl.orEmpty()
+        if (includeDownloadSizes && hlsUrl.isNotBlank()) {
+            val covered = downloads.map { it.height }.toSet()
+            downloads = (downloads + heights.filter { it !in covered }.map { height ->
+                DownloadStreamOption(
+                    id = "hls:$height",
+                    label = "Video ${height}p",
+                    height = height,
+                    uri = hlsUrl,
+                    mimeType = MimeTypes.APPLICATION_M3U8,
+                    extension = "mp4"
+                )
+            }).sortedByDescending { it.height }
+        }
+        val allHeights = (heights + downloads.map { it.height }).filter { it > 0 }.distinct().sortedDescending()
+        if (allHeights.isEmpty() && downloads.isEmpty()) return null
+        return StreamOptions(
+            qualities = allHeights.map { StreamQualityOption(it, "${it}p") },
+            downloads = downloads,
+            isLive = video.isLive
+        )
+    }
+
+    @Volatile
+    var sessionTvProvider: (suspend (videoId: String, signatureTimestamp: Int?) -> org.json.JSONObject?)? = null
+
+    /** Mientras YouTube bloquee la vía anónima, ir directo con la sesión (ahorra tiempo). */
+    @Volatile
+    private var anonymousBlockedUntilMs: Long = 0L
+
+    private fun isBotBlock(error: Throwable): Boolean {
+        var current: Throwable? = error
+        while (current != null) {
+            val text = (current.message.orEmpty() + " " + current.javaClass.simpleName).lowercase()
+            if ("bot" in text || "sign in to confirm" in text || "signinconfirm" in text ||
+                "login_required" in text || "page needs to be reloaded" in text
+            ) return true
+            current = current.cause
+        }
+        return false
+    }
+
+    private suspend fun sessionFallback(video: VideoItem, dataSaver: Boolean, preferredHeight: Int?): ResolvedMedia? {
+        val playerProvider = sessionPlayerProvider ?: return null
+        sessionCache[video.id]?.takeIf { it.expiresAtMs > System.currentTimeMillis() && it.hlsUrl.isNotBlank() }?.let {
+            return ResolvedMedia(it.hlsUrl, MimeTypes.APPLICATION_M3U8)
+        }
+        ensureInitialized()
+        val sts = runCatching {
+            org.schabi.newpipe.extractor.services.youtube.YoutubeJavaScriptPlayerManager.getSignatureTimestamp(video.id)
+        }.getOrNull()
+        var lastError: Throwable? = null
+        // 1) Como Safari con tu cuenta: HLS con audio y video juntos (todas las calidades del video).
+        runCatching { playerProvider(video.id, sts) }
+            .onSuccess { json ->
+                val url = json?.optJSONObject("streamingData")?.optString("hlsManifestUrl").orEmpty()
+                if (json != null && url.isNotBlank()) {
+                    val spec = json.optJSONObject("storyboards")
+                        ?.optJSONObject("playerStoryboardSpecRenderer")
+                        ?.optString("spec").orEmpty()
+                    val length = json.optJSONObject("videoDetails")?.optString("lengthSeconds")?.toLongOrNull() ?: 0L
+                    sessionCache[video.id] = SessionData(
+                        hlsUrl = url,
+                        storyboard = if (spec.isBlank()) null else runCatching { parseStoryboardSpec(spec, length) }.getOrNull(),
+                        expiresAtMs = System.currentTimeMillis() + 4 * 60 * 60_000L
+                    )
+                    return ResolvedMedia(url, MimeTypes.APPLICATION_M3U8)
+                }
+            }
+            .onFailure { lastError = it }
+        // 2) Cliente de TV con firma descifrada.
+        val tvProvider = sessionTvProvider
+        if (tvProvider != null) {
+            runCatching { tvProvider(video.id, sts) }
+                .onSuccess { data -> if (data != null) tvMedia(video.id, data, dataSaver, preferredHeight)?.let { return it } }
+                .onFailure { lastError = it }
+        }
+        lastError?.let { error ->
+            // Si la sesión también dice por qué no se puede ver (privado, edad...), mostrar eso.
+            if (error.message.orEmpty().startsWith("Got error")) throw error
+        }
+        return null
+    }
+
+    private fun nsig(videoId: String, url: String): String = runCatching {
+        org.schabi.newpipe.extractor.services.youtube.YoutubeJavaScriptPlayerManager
+            .getUrlWithThrottlingParameterDeobfuscated(videoId, url)
+    }.getOrDefault(url)
+
+    private fun tvFormatUrl(videoId: String, format: org.json.JSONObject): String? {
+        format.optString("url").takeIf { it.isNotBlank() }?.let { return nsig(videoId, it) }
+        val cipher = format.optString("signatureCipher").ifBlank { format.optString("cipher") }
+        if (cipher.isBlank()) return null
+        val params = cipher.split("&").mapNotNull { part ->
+            val index = part.indexOf('=')
+            if (index <= 0) null else part.substring(0, index) to java.net.URLDecoder.decode(part.substring(index + 1), "UTF-8")
+        }.toMap()
+        val baseUrl = params["url"] ?: return null
+        val obfuscated = params["s"] ?: return nsig(videoId, baseUrl)
+        val name = params["sp"] ?: "signature"
+        val signature = runCatching {
+            org.schabi.newpipe.extractor.services.youtube.YoutubeJavaScriptPlayerManager
+                .deobfuscateSignature(videoId, obfuscated)
+        }.getOrNull() ?: return null
+        return nsig(videoId, baseUrl + "&" + name + "=" + java.net.URLEncoder.encode(signature, "UTF-8"))
+    }
+
+    private fun tvMedia(videoId: String, data: org.json.JSONObject, dataSaver: Boolean, preferredHeight: Int?): ResolvedMedia? {
+        fun list(key: String): List<org.json.JSONObject> {
+            val array = data.optJSONArray(key) ?: return emptyList()
+            return (0 until array.length()).mapNotNull { array.optJSONObject(it) }
+                .filter { it.optJSONArray("drmFamilies") == null }
+        }
+        val target = preferredHeight ?: if (dataSaver) 360 else 720
+        val adaptive = list("adaptiveFormats")
+        val videos = adaptive.filter {
+            val mime = it.optString("mimeType")
+            mime.startsWith("video/mp4") && mime.contains("avc1") && it.optInt("height") in 1..target
+        }.sortedByDescending { it.optInt("height") * 1000 + it.optInt("fps") }
+        val audios = adaptive.filter { it.optString("mimeType").startsWith("audio/mp4") }
+            .sortedByDescending { it.optInt("bitrate") }
+        val videoFormat = videos.firstOrNull()
+        val audioFormat = audios.firstOrNull()
+        if (videoFormat != null && audioFormat != null) {
+            val videoUrl = tvFormatUrl(videoId, videoFormat)
+            val audioUrl = tvFormatUrl(videoId, audioFormat)
+            if (videoUrl != null && audioUrl != null) {
+                return ResolvedMedia(videoUrl, MimeTypes.VIDEO_MP4, audioUrl, MimeTypes.AUDIO_MP4)
+            }
+        }
+        val muxed = list("formats").sortedByDescending { it.optInt("height") }.firstOrNull() ?: return null
+        return tvFormatUrl(videoId, muxed)?.let { ResolvedMedia(it, MimeTypes.VIDEO_MP4) }
+    }
+
     /** Pista de audio elegida por video (por ejemplo el doblaje al español). */
     private val preferredAudioTracks = ConcurrentHashMap<String, String>()
 
@@ -165,7 +453,14 @@ internal object StreamResolver {
     suspend fun extras(video: VideoItem): PlaybackExtras {
         if (video.mediaKind != MediaKind.YOUTUBE || video.id.isBlank()) return PlaybackExtras()
         return withContext(Dispatchers.IO) {
-            val info = runCatching { streamInfo(video.id) }.getOrNull() ?: return@withContext PlaybackExtras()
+            val info = runCatching { streamInfo(video.id) }.getOrNull()
+            if (info == null) {
+                val chapters = runCatching { sessionChaptersProvider?.invoke(video.id) }.getOrNull().orEmpty()
+                return@withContext PlaybackExtras(
+                    chapters = chapters,
+                    storyboard = sessionCache[video.id]?.storyboard
+                )
+            }
             val chapters = runCatching {
                 info.streamSegments.orEmpty()
                     .map { VideoChapter(it.title.orEmpty().trim(), it.startTimeSeconds * 1000L, it.previewUrl.orEmpty()) }
@@ -240,8 +535,22 @@ internal object StreamResolver {
             resolvedCache[key]?.takeIf { it.expiresAtMs > now }?.let { return it.media }
         }
 
+        if (forceFresh && safeAttempt >= 2) sessionCache.remove(video.id)
         val media = withContext(Dispatchers.IO) {
-            val info = streamInfo(video.id, forceRefresh = forceFresh)
+            val sessionFirst = isAnonymousBlocked() || preferSession(video.id, safeAttempt)
+            if (sessionFirst && !hasPreferredDub(video.id)) {
+                runCatching { sessionFallback(video, dataSaver, preferredHeight) }.getOrNull()
+                    ?.let { return@withContext it }
+            }
+            val info = try {
+                streamInfo(video.id, forceRefresh = forceFresh)
+            } catch (error: Exception) {
+                if (error is kotlinx.coroutines.CancellationException) throw error
+                // YouTube bloqueó la vía anónima: reproducir con la sesión de YouTube.
+                if (isBotBlock(error)) anonymousBlockedUntilMs = System.currentTimeMillis() + 10 * 60_000L
+                sessionFallback(video, dataSaver, preferredHeight)?.let { return@withContext it }
+                throw error
+            }
             cacheQualities(video.id, info)
 
             if (video.isLive && info.hlsUrl.isNotBlank()) {
@@ -369,7 +678,14 @@ internal object StreamResolver {
         resolvedCache[key]?.takeIf { it.expiresAtMs > now }?.let { return it.media }
 
         val media = withContext(Dispatchers.IO) {
-            val info = streamInfo(video.id)
+            val info = try {
+                streamInfo(video.id)
+            } catch (error: Exception) {
+                if (error is kotlinx.coroutines.CancellationException) throw error
+                if (isBotBlock(error)) anonymousBlockedUntilMs = System.currentTimeMillis() + 10 * 60_000L
+                sessionFallback(video, dataSaver = true, preferredHeight = null)?.let { return@withContext it }
+                throw error
+            }
             cacheQualities(video.id, info)
             val audio = chooseBestAudio(
                 audioCandidates(info)
@@ -413,7 +729,14 @@ internal object StreamResolver {
         }
 
         return withContext(Dispatchers.IO) {
-            val info = streamInfo(video.id)
+            val info = try {
+                streamInfo(video.id)
+            } catch (error: Exception) {
+                if (error is kotlinx.coroutines.CancellationException) throw error
+                if (isBotBlock(error)) anonymousBlockedUntilMs = System.currentTimeMillis() + 10 * 60_000L
+                sessionOptions(video, includeDownloadSizes)?.let { return@withContext it }
+                throw error
+            }
             val qualities = qualitiesFromInfo(info)
             qualityCache[video.id] = CachedQualities(
                 qualities = qualities,
@@ -516,6 +839,21 @@ internal object StreamResolver {
     ) {
         // Resolve likely next videos before they are tapped. Use exactly the same quality key
         // as normal playback so the result is consumed directly from resolvedCache.
+        // Con YouTube bloqueando la vía anónima no se insiste por ahí (cada intento suma al
+        // bloqueo): se precarga con tu sesión, así el siguiente video/Short arranca al instante.
+        if (System.currentTimeMillis() < anonymousBlockedUntilMs) {
+            if (sessionPlayerProvider == null) return
+            videos.asSequence()
+                .filter { it.mediaKind == MediaKind.YOUTUBE && it.id.isNotBlank() }
+                .distinctBy { it.id }
+                .take(PRELOAD_COUNT)
+                .forEach { video ->
+                    val cached = sessionCache[video.id]
+                        ?.takeIf { it.expiresAtMs > System.currentTimeMillis() && it.hlsUrl.isNotBlank() }
+                    if (cached == null) runCatching { sessionFallback(video, dataSaver, preferredHeight) }
+                }
+            return
+        }
         videos.asSequence()
             .filter { it.mediaKind == MediaKind.YOUTUBE && it.id.isNotBlank() }
             .distinctBy { it.id }
@@ -536,6 +874,10 @@ internal object StreamResolver {
         val now = System.currentTimeMillis()
         if (!forceRefresh) {
             infoCache[videoId]?.takeIf { it.expiresAtMs > now }?.let { return it.info }
+        }
+        // YouTube está bloqueando la vía anónima: no insistir (cada intento tarda y empeora el bloqueo).
+        if (!forceRefresh && now < anonymousBlockedUntilMs) {
+            throw IllegalStateException("Sign in to confirm you're not a bot (bloqueo temporal de YouTube)")
         }
 
         // If a home-feed preload and a tap request the same video at the same time, only run

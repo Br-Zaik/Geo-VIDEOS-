@@ -107,6 +107,18 @@ class FloatingPlayerService : Service() {
         getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
     }
 
+    // Pantalla apagada: la ventana no se ve, así que solo suena el audio (ahorra batería).
+    private var screenReceiverRegistered = false
+    private val screenReceiver = object : android.content.BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            if (!::connection.isInitialized) return
+            when (intent?.action) {
+                Intent.ACTION_SCREEN_OFF -> connection.setScreenOff(true)
+                Intent.ACTION_SCREEN_ON -> connection.setScreenOff(false)
+            }
+        }
+    }
+
     private val controllerListener = object : Player.Listener {
         override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
             val item = mediaItem ?: return
@@ -126,6 +138,7 @@ class FloatingPlayerService : Service() {
     }
 
     override fun onCreate() {
+        running = true
         super.onCreate()
         windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
         windowLarge = preferences.getBoolean(KEY_LARGE, false)
@@ -148,6 +161,20 @@ class FloatingPlayerService : Service() {
             startForeground(NOTIFICATION_ID, buildNotification())
             observePlayer()
         }
+        if (!screenReceiverRegistered) {
+            screenReceiverRegistered = runCatching {
+                ContextCompat.registerReceiver(
+                    this,
+                    screenReceiver,
+                    android.content.IntentFilter().apply {
+                        addAction(Intent.ACTION_SCREEN_OFF)
+                        addAction(Intent.ACTION_SCREEN_ON)
+                    },
+                    ContextCompat.RECEIVER_NOT_EXPORTED
+                )
+                true
+            }.getOrDefault(false)
+        }
         showOrRefreshOverlay()
         loadQualityOptions()
         return START_NOT_STICKY
@@ -156,6 +183,13 @@ class FloatingPlayerService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onDestroy() {
+        running = false
+        lastStartRequestAtMs = 0L
+        if (screenReceiverRegistered) {
+            runCatching { unregisterReceiver(screenReceiver) }
+            screenReceiverRegistered = false
+        }
+        if (::connection.isInitialized) connection.onFloatingWindowClosed()
         qualityLoadingJob?.cancel()
         handler.removeCallbacksAndMessages(null)
         activeController?.removeListener(controllerListener)
@@ -180,6 +214,8 @@ class FloatingPlayerService : Service() {
         }
         scope.launch {
             connection.coreState.collect { state ->
+                // Pantalla encendida solo mientras el video avanza (en pausa se apaga sola).
+                overlayRoot?.keepScreenOn = state.isPlaying
                 playButton?.setImageResource(
                     if (state.isPlaying) android.R.drawable.ic_media_pause
                     else android.R.drawable.ic_media_play
@@ -230,8 +266,7 @@ class FloatingPlayerService : Service() {
                 @Suppress("DEPRECATION")
                 WindowManager.LayoutParams.TYPE_PHONE
             },
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.TOP or Gravity.START
@@ -245,6 +280,8 @@ class FloatingPlayerService : Service() {
             background = roundedBackground(Color.BLACK, 10f)
             clipToOutline = true
             elevation = dp(12).toFloat()
+            // Si ya está sonando, la pantalla no se apaga mientras se ve la ventana.
+            keepScreenOn = connection.coreState.value.isPlaying
         }
         overlayRoot = root
 
@@ -1013,6 +1050,19 @@ class FloatingPlayerService : Service() {
     }
 
     companion object {
+        /** La ventana flotante está abierta (necesita la imagen aunque la app esté atrás). */
+        @Volatile
+        @JvmStatic
+        var running: Boolean = false
+
+        /** Momento del último pedido de abrir la ventana (el servicio arranca un instante después). */
+        @Volatile
+        private var lastStartRequestAtMs: Long = 0L
+
+        /** Abierta o a punto de abrirse: así no se apaga la imagen justo al salir de la app. */
+        fun isActiveOrStarting(): Boolean =
+            running || (lastStartRequestAtMs > 0L && SystemClock.elapsedRealtime() - lastStartRequestAtMs < 4_000L)
+
         private const val ACTION_SHOW = "com.geovideos.app.action.SHOW_FLOATING_PLAYER"
         private const val ACTION_CLOSE = "com.geovideos.app.action.CLOSE_FLOATING_PLAYER"
         private const val EXTRA_VIDEO_ID = "video_id"
@@ -1063,7 +1113,9 @@ class FloatingPlayerService : Service() {
                 putExtra(EXTRA_DURATION, video.durationMs)
                 putExtra(EXTRA_DATA_SAVER, dataSaver)
             }
-            ContextCompat.startForegroundService(context, intent)
+            lastStartRequestAtMs = SystemClock.elapsedRealtime()
+            runCatching { ContextCompat.startForegroundService(context, intent) }
+                .onFailure { lastStartRequestAtMs = 0L }
         }
 
         fun stop(context: Context) {

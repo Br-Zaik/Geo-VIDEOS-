@@ -402,9 +402,25 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
     val uiState: StateFlow<GeoVideosUiState> = _uiState.asStateFlow()
 
     init {
+        // Reproducción con tu sesión cuando YouTube bloquea la vía anónima.
+        com.geovideos.app.playback.StreamResolver.sessionPlayerProvider = { id, sts ->
+            if (!youtubeSession.hasStoredSession()) null else innerTube.sessionPlayer(id, sts)
+        }
+        com.geovideos.app.playback.StreamResolver.sessionChaptersProvider = { id ->
+            if (!youtubeSession.hasStoredSession()) emptyList() else innerTube.chapters(id).map { (title, startMs, thumb) ->
+                com.geovideos.app.playback.VideoChapter(title, startMs, thumb)
+            }
+        }
+        com.geovideos.app.playback.StreamResolver.sessionTvProvider = { id, sts ->
+            if (!youtubeSession.hasStoredSession()) null else innerTube.sessionTvStreams(id, sts)
+        }
         hydrateCachedState()
-        // Un solo inicio de sesión: si la sesión de YouTube está guardada, entrar directo.
-        if (youtubeSession.hasStoredSession()) connectWithYouTubeSession(interactive = false)
+        // Un solo inicio de sesión: si la sesión de YouTube está guardada, entrar directo
+        // y pedir el inicio de YouTube YA (antes era al final de toda la sincronización).
+        if (youtubeSession.hasStoredSession()) {
+            connectWithYouTubeSession(interactive = false)
+            refreshYouTubeSession()
+        }
     }
 
     private fun hydrateCachedState() {
@@ -426,13 +442,13 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
                 val currentAccountEmail = state.profile?.email.orEmpty().trim()
                 if (currentAccountEmail.equals(hydratedAccountEmail, ignoreCase = true)) {
                     state.copy(
-                        personalized = personalized,
+                        personalized = if (youtubeHomeActive) state.personalized else personalized,
                         popular = popular,
                         lastSyncMs = lastSyncMs,
                         // Si la migración eliminó un feed genérico antiguo, mantener skeleton
                         // mientras se hidratan las señales reales de la cuenta; no mostrar un
                         // estado vacío falso entre ambas lecturas de disco.
-                        loading = personalized.isEmpty() && state.profile != null
+                        loading = if (youtubeHomeActive) state.loading else personalized.isEmpty() && state.profile != null
                     )
                 } else {
                     // An account switch completed while disk hydration was running. Do not
@@ -499,7 +515,7 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
                     val cachedAccountFeed = state.personalized.filter(::isNormalHomeVideo)
                     val cachedAccountShorts = shorts.filter(::looksLikeShort).take(40)
                     state.copy(
-                        personalized = cachedAccountFeed,
+                        personalized = if (youtubeHomeActive) state.personalized else cachedAccountFeed,
                         shorts = state.shorts.ifEmpty { cachedAccountShorts },
                         subscriptions = subscriptions,
                         playlists = playlists,
@@ -513,7 +529,7 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
                         localLikedVideos = localLikedVideos,
                         downloads = downloads,
                         searchHistory = searchHistory,
-                        loading = cachedAccountFeed.isEmpty() && cachedAccountShorts.isEmpty()
+                        loading = if (youtubeHomeActive) state.loading else cachedAccountFeed.isEmpty() && cachedAccountShorts.isEmpty()
                     )
                 } else {
                     // Local-only data is account-independent in Geo Videos and is safe to
@@ -1622,7 +1638,7 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
                     }
                 }
                 if (youtubeSession.hasStoredSession() && (!initialLoad || !youtubeHomeActive)) {
-                    refreshYouTubeSession()
+                    refreshYouTubeSession(force = !initialLoad)
                 }
             } catch (cancelled: CancellationException) {
                 throw cancelled
@@ -4101,7 +4117,7 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
                 }
             } else {
                 _uiState.update { it.copy(selectedHomeChip = "", homeChipLoading = false) }
-                refreshYouTubeSession()
+                refreshYouTubeSession(force = true)
             }
             return
         }
@@ -4185,8 +4201,17 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
-    private fun refreshYouTubeSession() {
+    private var lastSessionRefreshAt = 0L
+
+    private fun refreshYouTubeSession(force: Boolean = false) {
         if (!youtubeSession.hasStoredSession()) return
+        val now = System.currentTimeMillis()
+        if (!force) {
+            // No reiniciar una carga que ya va en camino (antes se cancelaba y volvía a empezar).
+            if (youtubeSessionJob?.isActive == true) return
+            if (now - lastSessionRefreshAt < 45_000L && _uiState.value.homeFeed.isNotEmpty()) return
+        }
+        lastSessionRefreshAt = now
         refreshUnseenNotifications()
         youtubeSessionJob?.cancel()
         youtubeSessionJob = viewModelScope.launch {
@@ -4198,6 +4223,28 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
                     val historyDeferred = async { runCatching { innerTube.history() } }
                     val laterDeferred = async { runCatching { innerTube.watchLater() } }
                     val home = homeDeferred.await()
+                    // Mostrar el inicio apenas llega, sin esperar historial ni Ver más tarde.
+                    home.getOrNull()?.let { firstPage ->
+                        val firstVideos = firstPage.videos.filter(::isNormalHomeVideo)
+                        if (firstVideos.isNotEmpty() || firstPage.feed.isNotEmpty()) {
+                            youtubeHomeActive = true
+                            youtubeHomeContinuation = firstPage.continuation
+                            savedAllHome = null
+                            _uiState.update { state ->
+                                state.copy(
+                                    homeFeed = firstPage.feed.ifEmpty { state.homeFeed },
+                                    homeMixes = firstPage.mixes.ifEmpty { state.homeMixes },
+                                    personalized = firstVideos.ifEmpty { state.personalized }.take(MAX_YOUTUBE_ITEMS),
+                                    homeChips = firstPage.chips
+                                        .filterNot { chip -> chip.title.equals("Todos", true) || chip.title.equals("All", true) }
+                                        .ifEmpty { state.homeChips },
+                                    selectedHomeChip = "",
+                                    canLoadMoreForYou = firstPage.continuation.isNotBlank(),
+                                    loading = false
+                                )
+                            }
+                        }
+                    }
                     val history = historyDeferred.await()
                     val later = laterDeferred.await()
                     ensureActive()

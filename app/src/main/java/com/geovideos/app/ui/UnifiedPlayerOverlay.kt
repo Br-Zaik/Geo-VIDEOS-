@@ -142,6 +142,7 @@ import androidx.compose.material.icons.rounded.PlaylistAdd
 import androidx.compose.material.icons.rounded.PlaylistAddCheck
 import androidx.compose.material.icons.rounded.RecordVoiceOver
 import androidx.compose.material.icons.rounded.RepeatOne
+import androidx.compose.material.icons.rounded.PictureInPictureAlt
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.Share
 import androidx.compose.material.icons.rounded.SkipNext
@@ -248,6 +249,7 @@ internal fun UnifiedPlayerOverlay(
     val preferredQuality by playerConnection.preferredQualityHeight.collectAsStateWithLifecycle()
     val audioOnly by playerConnection.audioOnlyMode.collectAsStateWithLifecycle()
     val floatingSurfaceGeneration by FloatingPlayerService.surfaceGeneration.collectAsStateWithLifecycle()
+    val autoFloating by playerConnection.autoFloatingOnLeave.collectAsStateWithLifecycle()
 
     var fullscreen by rememberSaveable(video.id) { mutableStateOf(false) }
     var playerControlsVisible by remember(video.id) { mutableStateOf(true) }
@@ -306,6 +308,13 @@ internal fun UnifiedPlayerOverlay(
     // Se desactiva el auto-PiP del sistema para evitar dos ventanas distintas al salir.
     LaunchedEffect(mainActivity, video.id) {
         mainActivity?.setVideoPictureInPictureEnabled(false)
+    }
+    // La primera vez que se ve un video se ofrece (una sola vez) el permiso de ventana emergente.
+    LaunchedEffect(mainActivity, playback.isPlaying) {
+        if (playback.isPlaying && !isInPictureInPictureMode) {
+            delay(3_000L)
+            mainActivity?.offerFloatingPermission()
+        }
     }
     DisposableEffect(mainActivity, video.id) {
         onDispose { mainActivity?.setVideoPictureInPictureEnabled(false) }
@@ -701,14 +710,22 @@ internal fun UnifiedPlayerOverlay(
         )
 
         if (!fullscreen && showExpandedSurface) {
+            // Oscurece el inicio que va apareciendo arriba mientras se baja el video.
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .graphicsLayer { alpha = ((1f - p) * 0.7f).coerceIn(0f, 0.7f) }
+                    .background(Color.Black)
+            )
             Surface(
                 modifier = Modifier
                     .fillMaxSize()
                     .graphicsLayer {
-                        // Como YouTube: al bajar el video, la información se desvanece rápido
-                        // y deja ver el feed detrás (sin bloque negro ni panel a medias).
-                        alpha = (1f - p * 2.4f).coerceIn(0f, 1f)
-                        translationY = screenHeightPx * p * 0.45f
+                        // Como YouTube: la página baja pegada al video y SIN transparencia
+                        // (nada de textos encima del feed); solo al final se desvanece.
+                        val videoBottom = playerTranslateY + fullPlayerHeightPx * playerScaleY
+                        translationY = (videoBottom - fullPlayerHeightPx).coerceAtLeast(0f)
+                        alpha = ((1f - p) / 0.25f).coerceIn(0f, 1f)
                     },
                 color = MaterialTheme.colorScheme.background
             ) {
@@ -765,9 +782,7 @@ internal fun UnifiedPlayerOverlay(
                             onMessage("No se pudo abrir la ventana emergente.")
                         } else if (mainActivity.openFloatingPlayer(video, dataSaver)) {
                             settle(1f, fast = true)
-                            onMessage("Ventana emergente activa. Toca el video para ver controles, muevela o cambia su tamano.")
-                        } else {
-                            onMessage("Activa Mostrar sobre otras apps. Al regresar, la ventana se abrirá automáticamente.")
+                            onMessage("Ventana emergente activa. Toca el video para ver controles, muévela o cambia su tamaño.")
                         }
                     },
                     onOpenChannel = onOpenChannel,
@@ -1447,6 +1462,7 @@ internal fun UnifiedPlayerOverlay(
                     selectedSpeed = selectedSpeed,
                     autoplay = autoplay,
                     repeatOne = extras.repeatOne,
+                    autoFloating = autoFloating,
                     doubleTapSeconds = doubleTapSeconds,
                     qualities = streamOptions?.qualities.orEmpty(),
                     audioTracks = playbackExtras.audioTracks,
@@ -1465,6 +1481,16 @@ internal fun UnifiedPlayerOverlay(
                     },
                     onOpenPage = { target -> playerSettingsPage = target },
                     onAutoplayChange = { enabled -> onAutoplayChange(enabled) },
+                    onAutoFloatingChange = { enabled ->
+                        playerConnection.setAutoFloatingOnLeave(enabled)
+                        if (enabled) {
+                            if (mainActivity?.canDrawFloatingPlayer() == true) {
+                                onMessage("Listo: al salir de la app, el video seguirá en una ventana emergente.")
+                            } else {
+                                mainActivity?.offerFloatingPermission(force = true)
+                            }
+                        }
+                    },
                     onRepeatOneChange = { enabled ->
                         extras.onRepeatOneChange(enabled)
                         playerConnection.setRepeat(enabled)
@@ -2040,6 +2066,7 @@ private fun PlayerSettingsOverlay(
     selectedSpeed: Float,
     autoplay: Boolean,
     repeatOne: Boolean,
+    autoFloating: Boolean,
     doubleTapSeconds: Int,
     qualities: List<com.geovideos.app.playback.StreamQualityOption>,
     audioTracks: List<AudioTrackOption>,
@@ -2052,6 +2079,7 @@ private fun PlayerSettingsOverlay(
     onBack: () -> Unit,
     onOpenPage: (PlayerSettingsPage) -> Unit,
     onAutoplayChange: (Boolean) -> Unit,
+    onAutoFloatingChange: (Boolean) -> Unit,
     onRepeatOneChange: (Boolean) -> Unit,
     onSelectQuality: (Int?) -> Unit,
     onSelectSpeed: (Float) -> Unit,
@@ -2143,6 +2171,7 @@ private fun PlayerSettingsOverlay(
                     }
                     PlayerSettingsToggleRow(Icons.Rounded.RepeatOne, "Repetir video", repeatOne, onRepeatOneChange)
                     PlayerSettingsToggleRow(Icons.Rounded.SlowMotionVideo, "Reproducción automática", autoplay, onAutoplayChange)
+                    PlayerSettingsToggleRow(Icons.Rounded.PictureInPictureAlt, "Ventana emergente al salir", autoFloating, onAutoFloatingChange)
                 }
 
                 PlayerSettingsPage.QUALITY -> when {
