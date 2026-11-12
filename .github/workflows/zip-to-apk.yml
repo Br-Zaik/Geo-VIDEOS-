@@ -196,7 +196,6 @@ jobs:
           name: ${{ steps.zip.outputs.version || 'Geo-Videos' }}-APK-${{ github.run_number }}
           path: ${{ runner.temp }}/Geo-Videos.apk
           if-no-files-found: error
-          retention-days: 30
           compression-level: 0
 
       - name: Generar un solo ZIP del proyecto actual
@@ -255,3 +254,34 @@ jobs:
           done
           echo '::error::No se pudo guardar el proyecto en GitHub después de 3 intentos.'
           exit 1
+
+      - name: Conservar APK por version en GitHub Releases
+        if: steps.zip.outputs.has_zip == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ZIP_FILE: ${{ steps.zip.outputs.file }}
+          ZIP_VERSION: ${{ steps.zip.outputs.version }}
+        run: |
+          set -euo pipefail
+          if [ -z "$ZIP_VERSION" ]; then
+            echo '::error::Falta el nombre de la version del ZIP.'
+            exit 1
+          fi
+          APK_PERMANENTE="$RUNNER_TEMP/$ZIP_VERSION.apk"
+          cp -- "$RUNNER_TEMP/Geo-Videos.apk" "$APK_PERMANENTE"
+          test -s "$APK_PERMANENTE"
+
+          TAG="geo-videos-$ZIP_VERSION-run-$GITHUB_RUN_NUMBER"
+          COMMIT="$(git rev-parse HEAD)"
+          gh release create "$TAG" "$APK_PERMANENTE" \
+            --target "$COMMIT" \
+            --title "$ZIP_VERSION" \
+            --notes "APK compilada desde $ZIP_FILE. Version conservada en GitHub Releases, independiente de la caducidad de los artefactos de Actions."
+
+          {
+            echo "### APK de $ZIP_FILE guardada en Releases"
+            echo ""
+            echo "Descarga permanente (mientras se conserve este Release):"
+            echo "https://github.com/$GITHUB_REPOSITORY/releases/tag/$TAG"
+          } >> "$GITHUB_STEP_SUMMARY"
