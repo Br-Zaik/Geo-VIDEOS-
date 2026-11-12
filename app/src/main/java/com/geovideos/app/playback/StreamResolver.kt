@@ -14,6 +14,7 @@ import org.schabi.newpipe.extractor.NewPipe
 import org.schabi.newpipe.extractor.localization.ContentCountry
 import org.schabi.newpipe.extractor.localization.Localization
 import org.schabi.newpipe.extractor.stream.AudioStream
+import org.schabi.newpipe.extractor.stream.AudioTrackType
 import org.schabi.newpipe.extractor.stream.StreamInfo
 import org.schabi.newpipe.extractor.stream.VideoStream
 import java.net.HttpURLConnection
@@ -52,6 +53,52 @@ internal data class DownloadStreamOption(
     val requiresMux: Boolean get() = !audioUri.isNullOrBlank()
 }
 
+/** Un capítulo del video (sale de la descripción o de los marcadores de YouTube). */
+internal data class VideoChapter(
+    val title: String,
+    val startMs: Long,
+    val thumbnailUrl: String = ""
+)
+
+/** Hoja de miniaturas que YouTube usa para la vista previa al arrastrar la barra. */
+internal data class StoryboardInfo(
+    val urls: List<String>,
+    val frameWidth: Int,
+    val frameHeight: Int,
+    val perPageX: Int,
+    val perPageY: Int,
+    val totalCount: Int,
+    val durationPerFrameMs: Int
+) {
+    /** URL de la hoja y esquina superior izquierda del cuadro para esa posición. */
+    fun frameAt(positionMs: Long): Triple<String, Int, Int>? {
+        if (urls.isEmpty() || perPageX <= 0 || perPageY <= 0 || durationPerFrameMs <= 0) return null
+        val perPage = perPageX * perPageY
+        val frame = (positionMs.coerceAtLeast(0L) / durationPerFrameMs).toInt()
+            .coerceIn(0, (totalCount - 1).coerceAtLeast(0))
+        val page = (frame / perPage).coerceIn(0, urls.size - 1)
+        val inPage = frame % perPage
+        val column = inPage % perPageX
+        val row = inPage / perPageX
+        return Triple(urls[page], column * frameWidth, row * frameHeight)
+    }
+}
+
+/** Pista de audio (original o doblada). */
+internal data class AudioTrackOption(
+    val id: String,
+    val label: String,
+    val isOriginal: Boolean
+)
+
+/** Lo que el reproductor necesita además del video: capítulos, vista previa y pistas de audio. */
+internal data class PlaybackExtras(
+    val chapters: List<VideoChapter> = emptyList(),
+    val storyboard: StoryboardInfo? = null,
+    val audioTracks: List<AudioTrackOption> = emptyList(),
+    val selectedAudioTrackId: String? = null
+)
+
 internal data class StreamOptions(
     val qualities: List<StreamQualityOption> = emptyList(),
     val downloads: List<DownloadStreamOption> = emptyList(),
@@ -85,6 +132,94 @@ internal object StreamResolver {
     private val infoLocks = ConcurrentHashMap<String, Mutex>()
     private val contentLengthCache = ConcurrentHashMap<String, Pair<Long, Long>>()
 
+    /** Pista de audio elegida por video (por ejemplo el doblaje al español). */
+    private val preferredAudioTracks = ConcurrentHashMap<String, String>()
+
+    fun setPreferredAudioTrack(videoId: String, trackId: String?) {
+        if (videoId.isBlank()) return
+        if (trackId.isNullOrBlank()) preferredAudioTracks.remove(videoId) else preferredAudioTracks[videoId] = trackId
+        invalidatePlayback(videoId, includeInfo = false)
+    }
+
+    /**
+     * Audios que se pueden usar: la pista elegida o, si no se eligió ninguna, la ORIGINAL.
+     * Antes se tomaba el audio de mayor calidad y a veces salía un doblaje automático.
+     */
+    private fun audioCandidates(info: StreamInfo): List<AudioStream> {
+        val usable = info.audioStreams.filter { it.isUrl && it.content.isNotBlank() }
+        val preferred = preferredAudioTracks[info.id]
+        if (!preferred.isNullOrBlank()) {
+            usable.filter { it.audioTrackId == preferred }.takeIf { it.isNotEmpty() }?.let { return it }
+        }
+        val original = usable.filter { it.audioTrackType == AudioTrackType.ORIGINAL }
+        if (original.isNotEmpty()) return original
+        val notDubbed = usable.filter {
+            it.audioTrackType != AudioTrackType.DUBBED && it.audioTrackType != AudioTrackType.DESCRIPTIVE
+        }
+        return notDubbed.ifEmpty { usable }
+    }
+
+    private fun hasPreferredDub(videoId: String): Boolean = !preferredAudioTracks[videoId].isNullOrBlank()
+
+    /** Capítulos, vista previa y pistas de audio (usa la información ya extraída). */
+    suspend fun extras(video: VideoItem): PlaybackExtras {
+        if (video.mediaKind != MediaKind.YOUTUBE || video.id.isBlank()) return PlaybackExtras()
+        return withContext(Dispatchers.IO) {
+            val info = runCatching { streamInfo(video.id) }.getOrNull() ?: return@withContext PlaybackExtras()
+            val chapters = runCatching {
+                info.streamSegments.orEmpty()
+                    .map { VideoChapter(it.title.orEmpty().trim(), it.startTimeSeconds * 1000L, it.previewUrl.orEmpty()) }
+                    .filter { it.title.isNotBlank() }
+                    .sortedBy { it.startMs }
+                    .distinctBy { it.startMs }
+            }.getOrDefault(emptyList())
+            val storyboard = runCatching {
+                val frames = info.previewFrames.orEmpty().filter { it.urls.isNotEmpty() && it.frameWidth > 0 }
+                // La de más resolución que no sea enorme (como la burbuja de YouTube).
+                val chosen = frames.filter { it.frameWidth <= 320 }.maxByOrNull { it.frameWidth }
+                    ?: frames.minByOrNull { it.frameWidth }
+                chosen?.let {
+                    StoryboardInfo(
+                        urls = it.urls,
+                        frameWidth = it.frameWidth,
+                        frameHeight = it.frameHeight,
+                        perPageX = it.framesPerPageX,
+                        perPageY = it.framesPerPageY,
+                        totalCount = it.totalCount,
+                        durationPerFrameMs = it.durationPerFrame
+                    )
+                }
+            }.getOrNull()
+            val tracks = runCatching {
+                info.audioStreams
+                    .filter { it.isUrl && !it.audioTrackId.isNullOrBlank() }
+                    .distinctBy { it.audioTrackId }
+                    .map { stream ->
+                        val original = stream.audioTrackType == AudioTrackType.ORIGINAL
+                        val name = stream.audioTrackName?.takeIf { it.isNotBlank() }
+                            ?: stream.audioLocale?.getDisplayName(java.util.Locale("es"))?.replaceFirstChar { it.uppercase() }
+                            ?: stream.audioTrackId.orEmpty()
+                        AudioTrackOption(
+                            id = stream.audioTrackId.orEmpty(),
+                            label = when (stream.audioTrackType) {
+                                AudioTrackType.ORIGINAL -> "$name (original)"
+                                AudioTrackType.DESCRIPTIVE -> "$name (descriptivo)"
+                                else -> name
+                            },
+                            isOriginal = original
+                        )
+                    }
+                    .sortedWith(compareByDescending<AudioTrackOption> { it.isOriginal }.thenBy { it.label })
+            }.getOrDefault(emptyList())
+            PlaybackExtras(
+                chapters = chapters,
+                storyboard = storyboard,
+                audioTracks = if (tracks.size > 1) tracks else emptyList(),
+                selectedAudioTrackId = preferredAudioTracks[video.id] ?: tracks.firstOrNull { it.isOriginal }?.id
+            )
+        }
+    }
+
     suspend fun resolve(
         video: VideoItem,
         dataSaver: Boolean,
@@ -117,7 +252,7 @@ internal object StreamResolver {
             // posteriores priorizan que el video arranque con otro formato compatible.
             if (safeAttempt == 0) {
                 preferredHeight?.takeIf { it > 0 }?.let { exactHeight ->
-                    val exactProgressive = selectExactProgressive(info.videoStreams, exactHeight)
+                    val exactProgressive = if (hasPreferredDub(video.id)) null else selectExactProgressive(info.videoStreams, exactHeight)
                     if (exactProgressive != null) {
                         return@withContext ResolvedMedia(
                             uri = exactProgressive.content,
@@ -128,7 +263,7 @@ internal object StreamResolver {
                     val adaptiveVideo = selectExactAdaptive(info, exactHeight)
                     if (adaptiveVideo != null) {
                         val family = containerFamily(adaptiveVideo.format?.mimeType)
-                        val audioStreams = info.audioStreams.filter { it.isUrl && it.content.isNotBlank() }
+                        val audioStreams = audioCandidates(info)
                         val audio = chooseAudio(audioStreams, family) ?: chooseBestAudio(audioStreams)
                         if (audio != null) {
                             return@withContext ResolvedMedia(
@@ -162,6 +297,7 @@ internal object StreamResolver {
                     // 360p. Si se pidió más calidad, usar video y audio adaptativos como hace
                     // YouTube; así los videos y Shorts ya no se ven borrosos.
                     val progressiveHeight = primaryProgressive?.height ?: 0
+                    if (adaptive != null && hasPreferredDub(video.id)) return@withContext adaptive
                     if (!dataSaver && adaptive != null && progressiveHeight < targetHeight) {
                         return@withContext adaptive
                     }
@@ -236,7 +372,7 @@ internal object StreamResolver {
             val info = streamInfo(video.id)
             cacheQualities(video.id, info)
             val audio = chooseBestAudio(
-                info.audioStreams.filter { it.isUrl && it.content.isNotBlank() }
+                audioCandidates(info)
             ) ?: error("No se encontró una pista de audio compatible para este video.")
             ResolvedMedia(
                 uri = audio.content,
@@ -296,8 +432,7 @@ internal object StreamResolver {
             }
                 .filter { it.isUrl && it.content.isNotBlank() && it.height > 0 }
                 .distinctBy { "${it.height}:${it.content}" }
-            val audioStreams = info.audioStreams
-                .filter { it.isUrl && it.content.isNotBlank() }
+            val audioStreams = audioCandidates(info)
 
             val allHeights = (progressive.asSequence() + adaptiveVideo.asSequence())
                 .map { it.height }
@@ -518,7 +653,7 @@ internal object StreamResolver {
             ?: videos.minByOrNull { abs(it.height - targetHeight) }?.height
             ?: return null
         val video = chooseAdaptiveVideo(videos.filter { it.height == bestHeight }) ?: return null
-        val audioStreams = info.audioStreams.filter { it.isUrl && it.content.isNotBlank() }
+        val audioStreams = audioCandidates(info)
         val family = containerFamily(video.format?.mimeType)
         val audio = chooseAudio(audioStreams, family) ?: chooseBestAudio(audioStreams) ?: return null
         return ResolvedMedia(

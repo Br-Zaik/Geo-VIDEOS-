@@ -4,14 +4,21 @@ import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.geovideos.app.data.ChannelItem
+import com.geovideos.app.data.CommentItem
 import com.geovideos.app.data.GeoVideosRepository
 import com.geovideos.app.data.GoogleProfile
+import com.geovideos.app.data.HomeFeedEntry
 import com.geovideos.app.data.MediaKind
 import com.geovideos.app.data.NotificationItem
 import com.geovideos.app.data.PlaylistItem
 import com.geovideos.app.data.VideoItem
 import com.geovideos.app.data.VideoDetails
 import com.geovideos.app.data.YouTubeSessionStore
+import com.geovideos.app.network.HomeChip
+import com.geovideos.app.network.SearchEntry
+import com.geovideos.app.network.ChannelPost
+import com.geovideos.app.network.ChannelShelf
+import com.geovideos.app.network.ChannelTabInfo
 import com.geovideos.app.network.InnerTubeClient
 import com.geovideos.app.network.YouTubeSessionExpiredException
 import com.geovideos.app.network.VideoPage
@@ -99,6 +106,18 @@ data class GeoVideosUiState(
     val localLikedVideos: List<VideoItem> = emptyList(),
     val downloads: List<VideoItem> = emptyList(),
     val searchHistory: List<String> = emptyList(),
+    /** Búsqueda como YouTube: resultados mezclados en su orden, filtro, sugerencias y "Mostrando resultados de". */
+    val searchEntries: List<SearchEntry> = emptyList(),
+    val searchFilter: Int = 0,
+    val searchSuggestions: List<String> = emptyList(),
+    val searchCorrected: String = "",
+    val searchQuery: String = "",
+    val searchCanLoadMore: Boolean = false,
+    /** Número rojo de la campana y estado de la bandeja. */
+    val notificationsUnseen: Int = 0,
+    val notificationsLoading: Boolean = false,
+    val notificationsLoadingMore: Boolean = false,
+    val notificationsCanLoadMore: Boolean = false,
     val selectedVideo: VideoItem? = null,
     val playerExpanded: Boolean = false,
     val playerDetails: VideoDetails? = null,
@@ -130,11 +149,69 @@ data class GeoVideosUiState(
     val historyCanLoadMore: Boolean = false,
     val watchLaterLoadingMore: Boolean = false,
     val watchLaterCanLoadMore: Boolean = false,
+    val homeMixes: List<VideoItem> = emptyList(),
+    /** Inicio de YouTube en su orden exacto (videos, Shorts y Mixes). */
+    val homeFeed: List<HomeFeedEntry> = emptyList(),
+    /** Cola / Mix activo (panel como el de YouTube). */
+    val queue: List<VideoItem> = emptyList(),
+    val queueTitle: String = "",
+    val queueSubtitle: String = "",
+    val queuePlaylistId: String = "",
+    /** 0 = no repetir, 1 = repetir lista, 2 = repetir este video. */
+    val queueRepeat: Int = 0,
+    val queueShuffle: Boolean = false,
+    val queueOrder: List<String> = emptyList(),
+    val queueLoadingMore: Boolean = false,
+    val queueOpen: Boolean = false,
+    /** Filtros del inicio que manda YouTube ("Todos" = token vacío). */
+    val homeChips: List<HomeChip> = emptyList(),
+    val selectedHomeChip: String = "",
+    val homeChipLoading: Boolean = false,
+    /** Filtros de los relacionados en la página del video. */
+    val relatedChips: List<HomeChip> = emptyList(),
+    val selectedRelatedChip: String = "",
+    /** Hoja de comentarios. */
+    val commentsOpen: Boolean = false,
+    val commentsVideoId: String = "",
+    val commentsList: List<CommentItem> = emptyList(),
+    val commentsLoading: Boolean = false,
+    val commentsLoadingMore: Boolean = false,
+    val commentsCanLoadMore: Boolean = false,
+    val commentsTotalText: String = "",
+    val commentsSort: Int = 0,
+    val commentsSortAvailable: Boolean = false,
+    val commentReplies: Map<String, List<CommentItem>> = emptyMap(),
+    val commentRepliesLoading: Set<String> = emptySet(),
+    val commentRepliesCanLoadMore: Set<String> = emptySet(),
     val subsFeedVideos: List<VideoItem> = emptyList(),
     val subsFeedShorts: List<VideoItem> = emptyList(),
     val subsFeedLoading: Boolean = false,
     val subsFeedLoadingMore: Boolean = false,
     val subsFeedCanLoadMore: Boolean = false,
+    /** Barra de canales de Suscripciones (orden, punto azul y en vivo, de la guía de YouTube). */
+    val subsGuide: List<ChannelItem> = emptyList(),
+    /** Canal elegido en la barra: el feed muestra solo ese canal. */
+    val subsChannelFilter: ChannelItem? = null,
+    val subsChannelVideos: List<VideoItem> = emptyList(),
+    val subsChannelShorts: List<VideoItem> = emptyList(),
+    val subsChannelLoading: Boolean = false,
+    /** Página del canal como YouTube: pestañas reales, estanterías y orden. */
+    val channelTabs: List<ChannelTabInfo> = emptyList(),
+    val channelShelves: List<ChannelShelf> = emptyList(),
+    val channelFeatured: VideoItem? = null,
+    val channelTabIndex: Int = 0,
+    val channelTabVideos: List<VideoItem> = emptyList(),
+    val channelTabShorts: List<VideoItem> = emptyList(),
+    val channelTabPlaylists: List<PlaylistItem> = emptyList(),
+    val channelTabPosts: List<ChannelPost> = emptyList(),
+    val channelTabChips: List<HomeChip> = emptyList(),
+    val channelTabSelectedChip: String = "",
+    val channelTabLoading: Boolean = false,
+    val channelTabLoadingMore: Boolean = false,
+    val channelTabCanLoadMore: Boolean = false,
+    /** Hoja de la campana (Todas / Personalizadas / Ninguna). */
+    val bellSheetChannel: ChannelItem? = null,
+    val bellSheetLoading: Boolean = false,
     val message: String? = null
 ) {
     /** Historial visible: el real de YouTube + lo visto recién en Geo Videos. */
@@ -166,6 +243,47 @@ data class GeoVideosUiState(
 
     fun isLoadingMore(category: HomeCategory): Boolean = loadingMoreCategory == category
 
+    val queueActive: Boolean get() = queue.size > 1
+
+    val queueIndex: Int get() = selectedVideo?.let { current -> queue.indexOfFirst { it.id == current.id } } ?: -1
+
+    /** Orden real de reproducción (aleatorio si está activado). */
+    private fun playOrder(): List<String> =
+        if (queueShuffle && queueOrder.size == queue.size) queueOrder else queue.map { it.id }
+
+    /** Los siguientes videos de la cola, en el orden en que sonarán. */
+    fun upcomingQueue(limit: Int = 4): List<VideoItem> {
+        if (!queueActive) return emptyList()
+        val current = selectedVideo?.id ?: return emptyList()
+        val order = playOrder()
+        val start = order.indexOf(current)
+        if (start < 0) return emptyList()
+        val byId = queue.associateBy { it.id }
+        val ids = buildList {
+            var i = start + 1
+            while (size < limit) {
+                if (i >= order.size) {
+                    if (queueRepeat != 1) break
+                    i = 0
+                }
+                if (order[i] == current) break
+                add(order[i])
+                i++
+            }
+        }
+        return ids.mapNotNull { byId[it] }
+    }
+
+    fun previousInQueue(): VideoItem? {
+        if (!queueActive) return null
+        val current = selectedVideo?.id ?: return null
+        val order = playOrder()
+        val index = order.indexOf(current)
+        if (index < 0) return null
+        val id = order.getOrNull(index - 1) ?: if (queueRepeat == 1) order.lastOrNull() else null
+        return id?.let { target -> queue.firstOrNull { it.id == target } }
+    }
+
     fun canLoadMore(category: HomeCategory): Boolean = when (category) {
         HomeCategory.FOR_YOU -> canLoadMoreForYou
         HomeCategory.LIVE -> canLoadMoreLive
@@ -186,12 +304,43 @@ private data class AccountSyncResult(
     val uploadsPlaylistId: String
 )
 
+/** Filtros de búsqueda de YouTube y sus parámetros. */
+internal val SEARCH_FILTERS: List<Pair<String, String>> = listOf(
+    "Todos" to "",
+    "Videos" to "EgIQAQ%3D%3D",
+    "Shorts" to "EgIQCQ%3D%3D",
+    "En vivo" to "EgJAAQ%3D%3D",
+    "Canales" to "EgIQAg%3D%3D",
+    "Listas" to "EgIQAw%3D%3D",
+    "Subidos hoy" to "EgIIAg%3D%3D",
+    "Esta semana" to "EgIIAw%3D%3D",
+    "Más vistos" to "CAM%3D"
+)
+
 class GeoVideosViewModel(application: Application) : AndroidViewModel(application) {
     private val repository = GeoVideosRepository(application)
     private val youtubeSession = YouTubeSessionStore(application)
     private val innerTube = InnerTubeClient { youtubeSession.load() }
     private val api = YouTubeApi(innerTube)
     private var subsFeedContinuation: String = ""
+    private var commentsNextToken: String = ""
+    private var channelTabContinuation: String = ""
+    private var channelTabJob: Job? = null
+    private var commentsSortTokens: List<String> = emptyList()
+    private var commentsJob: Job? = null
+    private val repliesNextTokens = HashMap<String, String>()
+    private var homeChipJob: Job? = null
+    private var savedAllHome: SavedHome? = null
+
+    /** Copia del inicio "Todos" para volver a él sin recargar. */
+    private data class SavedHome(
+        val feed: List<HomeFeedEntry>,
+        val personalized: List<VideoItem>,
+        val mixes: List<VideoItem>,
+        val continuation: String
+    )
+    private var shortsSequenceContinuation: String = ""
+    private var shortsSequenceActive: Boolean = false
     private var youtubeHomeActive: Boolean = false
     private var youtubeHomeContinuation: String = ""
     private var youtubeHistoryContinuation: String = ""
@@ -221,6 +370,9 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
     private var relatedNextToken: String = ""
     private var relatedVideoId: String = ""
     private var lastSearchQuery: String = ""
+    private var suggestionsJob: Job? = null
+    private var searchJob: Job? = null
+    private var notificationsContinuation: String = ""
     private var subscriptionOffset: Int = 0
     private var subscriptionRefreshCursor: Int = 0
     private var pendingSubscriptionToggle: ChannelItem? = null
@@ -1563,6 +1715,11 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     private fun reloadShortsForSection(force: Boolean = false) {
+        // Con sesión: el feed real de Shorts de YouTube (como la app oficial).
+        if (youtubeSession.hasStoredSession() && _uiState.value.shorts.isNotEmpty()) {
+            loadYouTubeShortsSequence(reset = true)
+            return
+        }
         val token = accessToken ?: return
         val state = _uiState.value
         if (!force && (state.shortsLoadingMore || state.refreshing)) return
@@ -1645,6 +1802,10 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     fun loadMoreShorts() {
+        if (shortsSequenceActive && youtubeSession.hasStoredSession()) {
+            loadYouTubeShortsSequence(reset = false)
+            return
+        }
         val token = accessToken ?: return
         val state = _uiState.value
         if (state.shortsLoadingMore || state.refreshing || !state.shortsCanLoadMore || shortsNextToken.isBlank()) return
@@ -1981,7 +2142,16 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
         relatedNextToken = ""
         relatedVideoId = playable.id
         _uiState.update {
+            val keepsQueue = it.queue.any { item -> item.id == playable.id } ||
+                (playable.isMix && playable.mixPlaylistId.isNotBlank() && playable.mixPlaylistId == it.queuePlaylistId)
             it.copy(
+                queue = if (keepsQueue) it.queue else emptyList(),
+                queueTitle = if (keepsQueue) it.queueTitle else "",
+                queueSubtitle = if (keepsQueue) it.queueSubtitle else "",
+                queuePlaylistId = if (keepsQueue) it.queuePlaylistId else "",
+                queueOrder = if (keepsQueue) it.queueOrder else emptyList(),
+                queueShuffle = if (keepsQueue) it.queueShuffle else false,
+                queueOpen = if (keepsQueue) it.queueOpen else false,
                 selectedVideo = playable,
                 playerExpanded = true,
                 history = optimisticHistory,
@@ -2001,6 +2171,7 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     fun previewShort(video: VideoItem) {
+        enrichShortsAround(video.id)
         val playable = video.copy(resumePositionMs = 0L)
         val stateNow = _uiState.value
         val watched = playable.copy(watchedAtMs = System.currentTimeMillis())
@@ -2034,7 +2205,18 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
     fun playNext() {
         val state = _uiState.value
         val current = state.selectedVideo ?: return
-        val next = state.relatedVideos.firstOrNull { it.id != current.id }
+        if (state.queueActive && state.queueIndex >= 0) {
+            val queued = state.upcomingQueue(1).firstOrNull()
+            if (queued != null) {
+                openPlayer(queued)
+                maybeLoadMoreQueue()
+                return
+            }
+        }
+        // En un Mix se sigue el orden de la lista; en un video normal, el primer relacionado.
+        val index = state.relatedVideos.indexOfFirst { it.id == current.id }
+        val next = (if (index >= 0) state.relatedVideos.getOrNull(index + 1) else null)
+            ?: state.relatedVideos.firstOrNull { it.id != current.id }
             ?: localRelated(current).firstOrNull()
         if (next != null) {
             play(next)
@@ -2093,6 +2275,13 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
         relatedVideoId = ""
         _uiState.update {
             it.copy(
+                queue = emptyList(),
+                queueTitle = "",
+                queueSubtitle = "",
+                queuePlaylistId = "",
+                queueOrder = emptyList(),
+                queueShuffle = false,
+                queueOpen = false,
                 selectedVideo = null,
                 playerExpanded = false,
                 playerDetails = null,
@@ -2131,7 +2320,9 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
             if (it.selectedVideo?.id != video.id) it else it.copy(
                 relatedVideos = fallback.take(6),
                 relatedLoading = true,
-                relatedCanLoadMore = true
+                relatedCanLoadMore = true,
+                relatedChips = emptyList(),
+                selectedRelatedChip = ""
             )
         }
         viewModelScope.launch {
@@ -2141,21 +2332,31 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
             if (_uiState.value.selectedVideo?.id != video.id || relatedVideoId != video.id) return@launch
             supervisorScope {
                 val detailsDeferred = async { runCatching { api.videoDetails(token, video) }.getOrNull() }
+                val isRealMix = video.isMix && video.mixPlaylistId.isNotBlank()
+                // Mix real de YouTube: su lista va al panel de cola; abajo siguen los relacionados.
+                val mixDeferred = async {
+                    if (isRealMix) runCatching { api.mixPanel(token, video) }.getOrNull() else null
+                }
                 val relatedDeferred = async {
                     runCatching { api.relatedVideosPage(token, video, pageToken = "") }.getOrNull()
                 }
                 val details = detailsDeferred.await()
+                val mixPanel = mixDeferred.await()
                 val relatedPage = relatedDeferred.await()
                 if (_uiState.value.selectedVideo?.id != video.id || relatedVideoId != video.id) return@supervisorScope
 
                 relatedNextToken = relatedPage?.nextPageToken.orEmpty()
-                val related = filterRelatedCandidates(
-                    current = video,
-                    candidates = mergeUniqueVideos(
-                        relatedPage?.items.orEmpty().filterNot { it.id == video.id },
-                        fallback
-                    )
-                ).take(16)
+                val mixItems = mixPanel?.videos.orEmpty()
+                if (isRealMix && mixItems.isNotEmpty()) mergeIntoQueue(video.mixPlaylistId, mixPanel!!)
+                val related = run {
+                    filterRelatedCandidates(
+                        current = video,
+                        candidates = mergeUniqueVideos(
+                            relatedPage?.items.orEmpty().filterNot { it.id == video.id },
+                            fallback
+                        )
+                    ).take(24)
+                }
                 _uiState.update {
                     if (it.selectedVideo?.id != video.id) it else it.copy(
                         playerDetails = details ?: VideoDetails(
@@ -2165,9 +2366,28 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
                             description = video.description
                         ),
                         playerDetailsLoading = false,
+                        // La tarjeta de un Mix trae el título del Mix; mostrar el del video real.
+                        selectedVideo = if (isRealMix) {
+                            val item = mixItems.firstOrNull { candidate -> candidate.id == video.id }
+                            val selected = it.selectedVideo
+                            if (item != null && selected != null) {
+                                selected.copy(
+                                    title = item.title,
+                                    channelTitle = item.channelTitle,
+                                    channelId = item.channelId.ifBlank { selected.channelId },
+                                    durationMs = maxOf(item.durationMs, selected.durationMs)
+                                )
+                            } else {
+                                selected
+                            }
+                        } else {
+                            it.selectedVideo
+                        },
                         relatedVideos = related,
                         relatedLoading = false,
-                        relatedCanLoadMore = relatedNextToken.isNotBlank()
+                        relatedCanLoadMore = relatedNextToken.isNotBlank(),
+                        relatedChips = relatedPage?.chips.orEmpty(),
+                        selectedRelatedChip = relatedPage?.chips?.firstOrNull()?.token.orEmpty()
                     )
                 }
             }
@@ -2203,7 +2423,7 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
                         candidates = (it.relatedVideos + page.items)
                             .filterNot { candidate -> candidate.id == video.id }
                             .distinctBy { candidate -> candidate.id }
-                    ).take(20),
+                    ).take(MAX_YOUTUBE_ITEMS),
                     relatedLoadingMore = false,
                     relatedCanLoadMore = relatedNextToken.isNotBlank()
                 )
@@ -2422,6 +2642,18 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
                         message = if (currentlySubscribed) "Suscripción eliminada en YouTube." else "Suscripción guardada en YouTube."
                     )
                 }
+                if (!currentlySubscribed) {
+                    val bell = runCatching { api.channelBell(token, channel.id) }.getOrNull()
+                    if (bell != null) {
+                        _uiState.update { state ->
+                            fun ChannelItem.withBell() = if (id == channel.id) copy(bellState = bell.first, bellParams = bell.second) else this
+                            state.copy(
+                                subscriptions = state.subscriptions.map { it.withBell() },
+                                selectedChannel = state.selectedChannel?.withBell()
+                            )
+                        }
+                    }
+                }
             }.onFailure(::handleYouTubeWriteFailure)
         }
     }
@@ -2435,75 +2667,196 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
-    fun search(query: String) {
+    fun search(query: String) = runSearch(query, filterIndex = 0)
+
+    /** Cambia el filtro (Videos, Shorts, En vivo, Canales, Listas, Hoy, Esta semana, Más vistos). */
+    fun setSearchFilter(index: Int) {
+        if (lastSearchQuery.isBlank() || index == _uiState.value.searchFilter) return
+        runSearch(lastSearchQuery, index)
+    }
+
+    private fun runSearch(query: String, filterIndex: Int) {
         val clean = query.trim()
         if (clean.isBlank()) return
-        val token = accessToken
+        val token = accessToken ?: if (_uiState.value.youtubeSessionConnected) YouTubeApi.SESSION_TOKEN else null
         if (token.isNullOrBlank()) {
-            _uiState.update { it.copy(message = "Renueva el acceso de Google para buscar en YouTube.") }
+            _uiState.update { it.copy(message = "Inicia sesión con YouTube para buscar.") }
             return
         }
         val history = repository.addSearch(clean)
         lastSearchQuery = clean
         searchNextToken = ""
+        suggestionsJob?.cancel()
+        searchJob?.cancel()
+        val params = SEARCH_FILTERS.getOrNull(filterIndex)?.second.orEmpty()
         _uiState.update {
             it.copy(
                 loading = true,
                 searchHistory = history,
+                searchQuery = clean,
+                searchFilter = filterIndex,
+                searchSuggestions = emptyList(),
+                searchEntries = emptyList(),
+                searchCorrected = "",
                 searchResults = emptyList(),
                 searchChannels = emptyList(),
                 searchPlaylists = emptyList(),
-                searchLoadingMore = false
+                searchLoadingMore = false,
+                searchCanLoadMore = false
             )
         }
-        viewModelScope.launch {
+        searchJob = viewModelScope.launch {
             try {
-                val page = api.searchAllPage(token, clean, maxResults = 30)
-                searchNextToken = page.nextPageToken
-                val results = enrichVideosWithCache(token, page.videos)
+                val results = api.searchResults(token, clean, params)
+                searchNextToken = results.continuation
                 _uiState.update {
-                    it.copy(
+                    if (it.searchQuery != clean || it.searchFilter != filterIndex) it else it.copy(
                         loading = false,
-                        searchResults = results,
-                        searchChannels = page.channels,
-                        searchPlaylists = page.playlists,
+                        searchEntries = results.entries,
+                        searchCorrected = results.correctedQuery,
+                        searchResults = results.page.videos + results.page.shorts,
+                        searchChannels = results.page.channels,
+                        searchPlaylists = results.page.playlists,
                         searchLoadingMore = false,
+                        searchCanLoadMore = results.continuation.isNotBlank(),
                         section = MainSection.SEARCH
                     )
                 }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
             } catch (error: YouTubeApiException) {
                 handleApiError(error)
             } catch (error: Exception) {
-                _uiState.update { it.copy(loading = false, message = error.message ?: "Error al buscar en YouTube.") }
+                _uiState.update { it.copy(loading = false, message = "No se pudo buscar en YouTube.") }
             }
         }
     }
 
     fun loadMoreSearch() {
-        val token = accessToken ?: return
+        val token = accessToken ?: YouTubeApi.SESSION_TOKEN
         val state = _uiState.value
-        if (state.searchLoadingMore || lastSearchQuery.isBlank() || searchNextToken.isBlank()) return
+        if (state.searchLoadingMore || state.loading || lastSearchQuery.isBlank() || searchNextToken.isBlank()) return
+        val query = lastSearchQuery
+        val filter = state.searchFilter
+        val pageToken = searchNextToken
         _uiState.update { it.copy(searchLoadingMore = true) }
         viewModelScope.launch {
             try {
-                val page = api.searchAllPage(
-                    token = token,
-                    query = lastSearchQuery,
-                    pageToken = searchNextToken,
-                    maxResults = 30
-                )
-                searchNextToken = page.nextPageToken
-                val enriched = enrichVideosWithCache(token, page.videos)
+                val results = api.searchResults(token, query, "", continuation = pageToken)
+                searchNextToken = results.continuation
                 _uiState.update {
-                    it.copy(
-                        searchResults = mergeUniqueVideos(it.searchResults, enriched),
-                        searchChannels = (it.searchChannels + page.channels).distinctBy { channel -> channel.id },
-                        searchPlaylists = (it.searchPlaylists + page.playlists).distinctBy { playlist -> playlist.id },
-                        searchLoadingMore = false
-                    )
+                    if (it.searchQuery != query || it.searchFilter != filter) it else {
+                        val known = it.searchEntries.mapTo(HashSet()) { entry -> searchEntryKey(entry) }
+                        it.copy(
+                            searchEntries = it.searchEntries + results.entries.filter { entry -> searchEntryKey(entry) !in known },
+                            searchResults = mergeUniqueVideos(it.searchResults, results.page.videos + results.page.shorts),
+                            searchChannels = (it.searchChannels + results.page.channels).distinctBy { channel -> channel.id },
+                            searchPlaylists = (it.searchPlaylists + results.page.playlists).distinctBy { playlist -> playlist.id },
+                            searchLoadingMore = false,
+                            searchCanLoadMore = results.continuation.isNotBlank()
+                        )
+                    }
                 }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
             } catch (error: Exception) {
                 _uiState.update { it.copy(searchLoadingMore = false, message = "No se cargaron más resultados de YouTube.") }
+            }
+        }
+    }
+
+    private fun searchEntryKey(entry: SearchEntry): String = when (entry) {
+        is SearchEntry.Video -> "v:" + entry.video.id
+        is SearchEntry.Channel -> "c:" + entry.channel.id
+        is SearchEntry.Playlist -> "p:" + entry.playlist.id
+        is SearchEntry.Shorts -> "s:" + entry.shorts.firstOrNull()?.id.orEmpty()
+        is SearchEntry.Shelf -> "h:" + entry.title + entry.videos.firstOrNull()?.id.orEmpty()
+    }
+
+    /** Sugerencias mientras se escribe (como el cuadro de búsqueda de YouTube). */
+    fun updateSearchSuggestions(query: String) {
+        suggestionsJob?.cancel()
+        val clean = query.trim()
+        if (clean.isBlank()) {
+            _uiState.update { it.copy(searchSuggestions = emptyList()) }
+            return
+        }
+        val token = accessToken ?: YouTubeApi.SESSION_TOKEN
+        suggestionsJob = viewModelScope.launch {
+            delay(180L)
+            val list = runCatching { api.searchSuggestions(token, clean) }.getOrNull() ?: return@launch
+            _uiState.update { it.copy(searchSuggestions = list) }
+        }
+    }
+
+    fun removeSearchHistory(query: String) {
+        val history = repository.removeSearch(query)
+        _uiState.update { it.copy(searchHistory = history) }
+    }
+
+    fun clearSearchResults() {
+        searchJob?.cancel()
+        lastSearchQuery = ""
+        searchNextToken = ""
+        _uiState.update {
+            it.copy(
+                loading = false,
+                searchQuery = "",
+                searchEntries = emptyList(),
+                searchResults = emptyList(),
+                searchChannels = emptyList(),
+                searchPlaylists = emptyList(),
+                searchCorrected = "",
+                searchFilter = 0,
+                searchCanLoadMore = false
+            )
+        }
+    }
+
+    // ------------------------------------------------------------ Notificaciones
+
+    fun refreshUnseenNotifications() {
+        if (!youtubeSession.hasStoredSession()) return
+        val token = accessToken ?: YouTubeApi.SESSION_TOKEN
+        viewModelScope.launch {
+            val count = runCatching { api.unseenNotifications(token) }.getOrNull() ?: return@launch
+            _uiState.update { it.copy(notificationsUnseen = count) }
+        }
+    }
+
+    /** Al abrir la campana: bandeja nueva y el número rojo vuelve a cero. */
+    fun refreshNotifications() {
+        if (!youtubeSession.hasStoredSession() || _uiState.value.notificationsLoading) return
+        val token = accessToken ?: YouTubeApi.SESSION_TOKEN
+        _uiState.update { it.copy(notificationsLoading = true, notificationsUnseen = 0) }
+        viewModelScope.launch {
+            val page = runCatching { api.notificationsPage(token) }.getOrNull()
+            notificationsContinuation = page?.continuation.orEmpty()
+            _uiState.update {
+                it.copy(
+                    notifications = page?.items ?: it.notifications,
+                    notificationsLoading = false,
+                    notificationsCanLoadMore = notificationsContinuation.isNotBlank()
+                )
+            }
+        }
+    }
+
+    fun loadMoreNotifications() {
+        val state = _uiState.value
+        if (state.notificationsLoading || state.notificationsLoadingMore || notificationsContinuation.isBlank()) return
+        val token = accessToken ?: YouTubeApi.SESSION_TOKEN
+        val pageToken = notificationsContinuation
+        _uiState.update { it.copy(notificationsLoadingMore = true) }
+        viewModelScope.launch {
+            val page = runCatching { api.notificationsPage(token, pageToken) }.getOrNull()
+            notificationsContinuation = page?.continuation?.takeIf { it != pageToken }.orEmpty()
+            _uiState.update {
+                it.copy(
+                    notifications = (it.notifications + page?.items.orEmpty()).distinctBy { item -> item.id },
+                    notificationsLoadingMore = false,
+                    notificationsCanLoadMore = notificationsContinuation.isNotBlank()
+                )
             }
         }
     }
@@ -2556,72 +2909,356 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     fun openChannel(channel: ChannelItem) {
-        val token = accessToken
+        val token = accessToken ?: if (_uiState.value.youtubeSessionConnected) YouTubeApi.SESSION_TOKEN else null
         if (token.isNullOrBlank()) {
-            _uiState.update { it.copy(message = "Renueva el acceso de Google para abrir el canal.") }
+            _uiState.update { it.copy(message = "Inicia sesión con YouTube para abrir el canal.") }
             return
         }
-        val subscribed = _uiState.value.subscriptions.any { it.id == channel.id }
-        val initialChannel = channel.copy(isSubscribed = subscribed)
+        val known = _uiState.value.subscriptions.firstOrNull { it.id == channel.id }
+        val subscribed = known != null
+        val initialChannel = channel.copy(
+            isSubscribed = subscribed,
+            bellState = if (channel.bellState >= 0) channel.bellState else known?.bellState ?: -1,
+            bellParams = channel.bellParams.ifEmpty { known?.bellParams.orEmpty() }
+        )
+        channelTabJob?.cancel()
+        channelTabContinuation = ""
         _uiState.update {
             it.copy(
                 loading = true,
                 selectedChannelTitle = channel.title,
                 selectedChannel = initialChannel,
                 channelVideos = emptyList(),
-                channelPlaylists = emptyList()
+                channelPlaylists = emptyList(),
+                channelTabs = emptyList(),
+                channelShelves = emptyList(),
+                channelFeatured = null,
+                channelTabIndex = 0,
+                channelTabVideos = emptyList(),
+                channelTabShorts = emptyList(),
+                channelTabPlaylists = emptyList(),
+                channelTabPosts = emptyList(),
+                channelTabChips = emptyList(),
+                channelTabSelectedChip = "",
+                channelTabLoading = false,
+                channelTabCanLoadMore = false
             )
         }
         viewModelScope.launch {
             try {
-                supervisorScope {
-                    val infoDeferred = async { runCatching { api.channelInfo(token, channel.id) }.getOrNull() }
-                    val videosDeferred = async { runCatching { api.channelVideos(token, channel.id) }.getOrDefault(emptyList()) }
-                    val playlistsDeferred = async { runCatching { api.channelPlaylists(token, channel.id) }.getOrDefault(emptyList()) }
-                    val info = infoDeferred.await()?.copy(isSubscribed = subscribed) ?: initialChannel
-                    val rawVideos = videosDeferred.await()
-                    val videos = enrichVideosWithCache(token, rawVideos)
-                    val playlists = playlistsDeferred.await()
-                    _uiState.update { current ->
-                        if (current.selectedChannel?.id != channel.id) current else current.copy(
-                            loading = false,
-                            selectedChannelTitle = info.title,
-                            selectedChannel = info,
-                            channelVideos = videos,
-                            channelPlaylists = playlists
-                        )
-                    }
+                val page = api.channelPage(token, channel.id)
+                val info = page.channel.let { loaded ->
+                    loaded.copy(
+                        // La página dice si está suscrito; si no lo dice, usar la lista local.
+                        isSubscribed = loaded.isSubscribed || subscribed,
+                        thumbnailUrl = loaded.thumbnailUrl.ifBlank { initialChannel.thumbnailUrl },
+                        bellState = if (loaded.bellState >= 0) loaded.bellState else initialChannel.bellState,
+                        bellParams = loaded.bellParams.ifEmpty { initialChannel.bellParams }
+                    )
                 }
+                val tabs = page.tabs.ifEmpty { defaultChannelTabs() }
+                val homeIndex = tabs.indexOfFirst { it.selected }.coerceAtLeast(0)
+                val shelfVideos = page.shelves.flatMap { it.videos }.distinctBy { it.id }
+                val shelfPlaylists = page.shelves.flatMap { it.playlists }.distinctBy { it.id }
+                _uiState.update { current ->
+                    if (current.selectedChannel?.id != channel.id) current else current.copy(
+                        loading = false,
+                        selectedChannelTitle = info.title,
+                        selectedChannel = info,
+                        channelTabs = tabs,
+                        channelShelves = page.shelves,
+                        channelFeatured = page.featured,
+                        channelTabIndex = homeIndex,
+                        channelVideos = shelfVideos,
+                        channelPlaylists = shelfPlaylists
+                    )
+                }
+                // Sin estanterías (canal sin Inicio): abrir directamente la pestaña Videos.
+                if (page.shelves.isEmpty() && page.featured == null) {
+                    val videosIndex = tabs.indexOfFirst { it.title.contains("Video", true) }
+                    if (videosIndex >= 0) selectChannelTab(videosIndex)
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (expired: YouTubeSessionExpiredException) {
+                handleYouTubeSessionExpired(expired)
             } catch (error: Exception) {
                 _uiState.update { current ->
                     if (current.selectedChannel?.id != channel.id) current else current.copy(
                         loading = false,
-                        message = error.message ?: "No se pudo abrir el canal."
+                        channelTabs = defaultChannelTabs(),
+                        message = "No se pudo abrir el canal completo."
+                    )
+                }
+                selectChannelTab(1)
+            }
+        }
+    }
+
+    private fun defaultChannelTabs(): List<ChannelTabInfo> = listOf(
+        ChannelTabInfo("Inicio", "", true),
+        ChannelTabInfo("Videos", CHANNEL_VIDEOS_PARAMS, false),
+        ChannelTabInfo("Shorts", CHANNEL_SHORTS_PARAMS, false),
+        ChannelTabInfo("Listas", CHANNEL_PLAYLISTS_PARAMS, false)
+    )
+
+    /** Cambia de pestaña del canal (Inicio usa las estanterías ya cargadas). */
+    fun selectChannelTab(index: Int) {
+        val state = _uiState.value
+        val channel = state.selectedChannel ?: return
+        val tab = state.channelTabs.getOrNull(index) ?: return
+        val token = accessToken ?: YouTubeApi.SESSION_TOKEN
+        channelTabJob?.cancel()
+        channelTabContinuation = ""
+        val isHome = tab.selected && (state.channelShelves.isNotEmpty() || state.channelFeatured != null)
+        _uiState.update {
+            it.copy(
+                channelTabIndex = index,
+                channelTabVideos = emptyList(),
+                channelTabShorts = emptyList(),
+                channelTabPlaylists = emptyList(),
+                channelTabPosts = emptyList(),
+                channelTabChips = emptyList(),
+                channelTabSelectedChip = "",
+                channelTabLoading = !isHome,
+                channelTabCanLoadMore = false
+            )
+        }
+        if (isHome) return
+        channelTabJob = viewModelScope.launch {
+            val page = runCatching { api.channelTab(token, channel.id, tab.params) }.getOrNull()
+            applyChannelTabPage(channel.id, index, page, replace = true)
+        }
+    }
+
+    /** Orden de la pestaña: "Más recientes", "Populares", "Más antiguos". */
+    fun selectChannelChip(chip: HomeChip) {
+        val state = _uiState.value
+        val channel = state.selectedChannel ?: return
+        if (chip.token == state.channelTabSelectedChip) return
+        val index = state.channelTabIndex
+        val token = accessToken ?: YouTubeApi.SESSION_TOKEN
+        channelTabJob?.cancel()
+        _uiState.update { it.copy(channelTabSelectedChip = chip.token, channelTabLoading = true) }
+        channelTabJob = viewModelScope.launch {
+            val page = runCatching { api.channelTab(token, channel.id, "", continuation = chip.token) }.getOrNull()
+            applyChannelTabPage(channel.id, index, page, replace = true, keepChips = true)
+        }
+    }
+
+    fun loadMoreChannelTab() {
+        val state = _uiState.value
+        val channel = state.selectedChannel ?: return
+        if (state.channelTabLoading || state.channelTabLoadingMore || channelTabContinuation.isBlank()) return
+        val index = state.channelTabIndex
+        val pageToken = channelTabContinuation
+        val token = accessToken ?: YouTubeApi.SESSION_TOKEN
+        _uiState.update { it.copy(channelTabLoadingMore = true) }
+        channelTabJob = viewModelScope.launch {
+            val page = runCatching { api.channelTab(token, channel.id, "", continuation = pageToken) }.getOrNull()
+            applyChannelTabPage(channel.id, index, page, replace = false, keepChips = true)
+        }
+    }
+
+    private fun applyChannelTabPage(
+        channelId: String,
+        index: Int,
+        page: com.geovideos.app.network.ChannelTabPage?,
+        replace: Boolean,
+        keepChips: Boolean = false
+    ) {
+        val state = _uiState.value
+        if (state.selectedChannel?.id != channelId || state.channelTabIndex != index) return
+        if (page == null) {
+            _uiState.update {
+                it.copy(
+                    channelTabLoading = false,
+                    channelTabLoadingMore = false,
+                    channelTabCanLoadMore = false,
+                    message = if (replace) "No se pudo cargar esta pestaña." else it.message
+                )
+            }
+            return
+        }
+        channelTabContinuation = page.continuation
+        _uiState.update {
+            it.copy(
+                channelTabVideos = if (replace) page.videos else mergeUniqueVideos(it.channelTabVideos, page.videos).take(MAX_YOUTUBE_ITEMS),
+                channelTabShorts = if (replace) page.shorts else mergeUniqueVideos(it.channelTabShorts, page.shorts).take(MAX_YOUTUBE_ITEMS),
+                channelTabPlaylists = if (replace) page.playlists else (it.channelTabPlaylists + page.playlists).distinctBy { p -> p.id },
+                channelTabPosts = if (replace) page.posts else (it.channelTabPosts + page.posts).distinctBy { p -> p.id },
+                channelTabChips = if (keepChips && it.channelTabChips.isNotEmpty()) it.channelTabChips else page.chips,
+                channelTabSelectedChip = if (keepChips) it.channelTabSelectedChip else page.chips.firstOrNull()?.token.orEmpty(),
+                channelTabLoading = false,
+                channelTabLoadingMore = false,
+                channelTabCanLoadMore = page.continuation.isNotBlank()
+            )
+        }
+    }
+
+    fun closeChannel() {
+        channelTabJob?.cancel()
+        _uiState.update {
+            it.copy(
+                selectedChannelTitle = "",
+                selectedChannel = null,
+                channelVideos = emptyList(),
+                channelPlaylists = emptyList(),
+                channelTabs = emptyList(),
+                channelShelves = emptyList(),
+                channelFeatured = null,
+                channelTabVideos = emptyList(),
+                channelTabShorts = emptyList(),
+                channelTabPlaylists = emptyList(),
+                channelTabPosts = emptyList(),
+                channelTabChips = emptyList()
+            )
+        }
+    }
+
+    // ------------------------------------------------------------ Campana
+
+    fun openBellSheet(channel: ChannelItem) {
+        val state = _uiState.value
+        val known = listOfNotNull(
+            channel.takeIf { it.bellParams.isNotEmpty() },
+            state.selectedChannel?.takeIf { it.id == channel.id && it.bellParams.isNotEmpty() },
+            state.subscriptions.firstOrNull { it.id == channel.id && it.bellParams.isNotEmpty() }
+        ).firstOrNull()
+        _uiState.update { it.copy(bellSheetChannel = known ?: channel, bellSheetLoading = known == null) }
+        if (known != null) return
+        val token = accessToken ?: YouTubeApi.SESSION_TOKEN
+        viewModelScope.launch {
+            val bell = runCatching { api.channelBell(token, channel.id) }.getOrNull()
+            _uiState.update {
+                val sheet = it.bellSheetChannel
+                if (sheet?.id != channel.id) it else it.copy(
+                    bellSheetChannel = if (bell == null) sheet else sheet.copy(bellState = bell.first, bellParams = bell.second),
+                    bellSheetLoading = false
+                )
+            }
+        }
+    }
+
+    fun closeBellSheet() {
+        _uiState.update { it.copy(bellSheetChannel = null, bellSheetLoading = false) }
+    }
+
+    /** 0 = Todas, 1 = Personalizadas, 2 = Ninguna. */
+    fun setBell(index: Int) {
+        val channel = _uiState.value.bellSheetChannel ?: return
+        val params = channel.bellParams.getOrNull(index).orEmpty()
+        if (params.isBlank()) {
+            _uiState.update { it.copy(message = "YouTube no dejó cambiar la campana de este canal ahora.") }
+            return
+        }
+        val token = accessToken ?: YouTubeApi.SESSION_TOKEN
+        _uiState.update { it.copy(bellSheetChannel = null) }
+        viewModelScope.launch {
+            runCatching { api.setBell(token, params) }
+                .onSuccess {
+                    fun ChannelItem.withBell() = if (id == channel.id) copy(bellState = index) else this
+                    _uiState.update { state ->
+                        state.copy(
+                            subscriptions = state.subscriptions.map { it.withBell() },
+                            subsGuide = state.subsGuide.map { it.withBell() },
+                            selectedChannel = state.selectedChannel?.withBell(),
+                            message = when (index) {
+                                0 -> "Recibirás todas las notificaciones de ${channel.title}"
+                                1 -> "Notificaciones personalizadas de ${channel.title}"
+                                else -> "No recibirás notificaciones de ${channel.title}"
+                            }
+                        )
+                    }
+                }
+                .onFailure { _uiState.update { it.copy(message = "No se pudo cambiar la campana.") } }
+        }
+    }
+
+    // ------------------------------------------------------------ Suscripciones: barra y filtro por canal
+
+    private fun loadSubscriptionGuide() {
+        if (!youtubeSession.hasStoredSession()) return
+        val token = accessToken ?: YouTubeApi.SESSION_TOKEN
+        viewModelScope.launch {
+            val guide = runCatching { api.subscriptionGuide(token) }.getOrNull().orEmpty()
+            if (guide.isEmpty()) return@launch
+            _uiState.update { state ->
+                val byId = state.subscriptions.associateBy { it.id }
+                state.copy(
+                    subsGuide = guide.map { entry ->
+                        val saved = byId[entry.id]
+                        if (saved == null) entry else entry.copy(
+                            thumbnailUrl = entry.thumbnailUrl.ifBlank { saved.thumbnailUrl },
+                            bellState = saved.bellState,
+                            bellParams = saved.bellParams,
+                            subscriberCount = saved.subscriberCount,
+                            handle = saved.handle
+                        )
+                    }
+                )
+            }
+        }
+    }
+
+    /** Toca un canal de la barra: muestra solo ese canal; tocarlo otra vez vuelve a Todos. */
+    fun selectSubsChannel(channel: ChannelItem?) {
+        val state = _uiState.value
+        if (channel == null || state.subsChannelFilter?.id == channel.id) {
+            _uiState.update { it.copy(subsChannelFilter = null, subsChannelVideos = emptyList(), subsChannelShorts = emptyList(), subsChannelLoading = false) }
+            return
+        }
+        val token = accessToken ?: YouTubeApi.SESSION_TOKEN
+        _uiState.update {
+            it.copy(
+                subsChannelFilter = channel,
+                subsChannelLoading = true,
+                subsChannelVideos = it.subsFeedVideos.filter { v -> v.channelId == channel.id },
+                subsChannelShorts = emptyList(),
+                // Ya lo viste: se apaga el punto azul.
+                subsGuide = it.subsGuide.map { c -> if (c.id == channel.id) c.copy(hasNewContent = false) else c }
+            )
+        }
+        viewModelScope.launch {
+            supervisorScope {
+                val videos = async { runCatching { api.channelTab(token, channel.id, CHANNEL_VIDEOS_PARAMS) }.getOrNull() }
+                val shorts = async { runCatching { api.channelTab(token, channel.id, CHANNEL_SHORTS_PARAMS) }.getOrNull() }
+                val videoPage = videos.await()
+                val shortPage = shorts.await()
+                _uiState.update {
+                    if (it.subsChannelFilter?.id != channel.id) it else it.copy(
+                        subsChannelVideos = videoPage?.videos?.map { v ->
+                            v.copy(
+                                channelTitle = v.channelTitle.ifBlank { channel.title },
+                                channelThumbnailUrl = v.channelThumbnailUrl.ifBlank { channel.thumbnailUrl }
+                            )
+                        } ?: it.subsChannelVideos,
+                        subsChannelShorts = shortPage?.shorts.orEmpty().ifEmpty { shortPage?.videos.orEmpty() },
+                        subsChannelLoading = false
                     )
                 }
             }
         }
     }
 
-    fun closeChannel() {
-        _uiState.update {
-            it.copy(
-                selectedChannelTitle = "",
-                selectedChannel = null,
-                channelVideos = emptyList(),
-                channelPlaylists = emptyList()
-            )
-        }
-    }
-
     fun removeHistory(videoId: String) {
+        val remoteToken = _uiState.value.youtubeHistory.firstOrNull { it.id == videoId }?.notInterestedToken.orEmpty()
         val history = repository.removeFromHistory(videoId)
         _uiState.update {
             it.copy(
                 history = history,
                 youtubeHistory = it.youtubeHistory.filterNot { video -> video.id == videoId },
-                message = "Video eliminado del historial."
+                message = if (remoteToken.isBlank()) "Video eliminado del historial." else "Quitando del historial de YouTube…"
             )
+        }
+        if (remoteToken.isNotBlank() && _uiState.value.youtubeSessionConnected) {
+            val token = accessToken ?: YouTubeApi.SESSION_TOKEN
+            viewModelScope.launch {
+                val ok = runCatching { api.sendFeedback(token, remoteToken) }.isSuccess
+                _uiState.update {
+                    it.copy(message = if (ok) "Quitado del historial de YouTube." else "Se quitó aquí, pero YouTube no respondió.")
+                }
+            }
         }
     }
 
@@ -2629,7 +3266,7 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
         if (videoId.isBlank() || _uiState.value.selectedVideo?.id == videoId) return
         val state = _uiState.value
         val video = sequenceOf(
-            state.relatedVideos, state.personalized, state.popular, state.music, state.gaming,
+            state.queue, state.relatedVideos, state.personalized, state.popular, state.music, state.gaming,
             state.live, state.history, state.watchLater, state.liked, state.localLikedVideos
         ).flatten().firstOrNull { it.id == videoId } ?: return
         val playable = video.copy(resumePositionMs = 0L)
@@ -2651,6 +3288,7 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
         }
         trackYouTubeWatch(playable)
         loadPlayerContext(playable)
+        maybeLoadMoreQueue()
     }
 
     fun registerDownload(title: String, url: String, downloadId: Long) {
@@ -3116,6 +3754,7 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
         if (!youtubeSession.hasStoredSession() || state.subsFeedLoading) return
         if (!force && state.subsFeedVideos.isNotEmpty()) return
         _uiState.update { it.copy(subsFeedLoading = true) }
+        loadSubscriptionGuide()
         viewModelScope.launch {
             try {
                 val page = innerTube.subscriptionsFeed()
@@ -3166,8 +3805,389 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
+    // ------------------------------------------------------------ Cola / Mix
+
+    /** Une la lista que manda YouTube con la cola actual (sin repetir y en orden). */
+    private fun mergeIntoQueue(playlistId: String, panel: com.geovideos.app.network.MixPanel) {
+        _uiState.update { state ->
+            val samePlaylist = state.queuePlaylistId == playlistId && state.queue.isNotEmpty()
+            val merged = if (samePlaylist) {
+                val known = state.queue.mapTo(HashSet()) { it.id }
+                state.queue + panel.videos.filterNot { it.id in known }
+            } else {
+                panel.videos
+            }.distinctBy { it.id }.take(MAX_QUEUE_ITEMS)
+            val newIds = merged.map { it.id }
+            val order = when {
+                !state.queueShuffle -> emptyList()
+                samePlaylist -> state.queueOrder + newIds.filterNot { it in state.queueOrder }.shuffled()
+                else -> newIds.shuffled()
+            }
+            state.copy(
+                queue = merged,
+                queuePlaylistId = playlistId,
+                queueTitle = panel.title.ifBlank { state.queueTitle.ifBlank { "Mix" } },
+                queueSubtitle = panel.owner.ifBlank { state.queueSubtitle },
+                queueOrder = order,
+                queueLoadingMore = false
+            )
+        }
+    }
+
+    fun openQueue() {
+        if (_uiState.value.queueActive) _uiState.update { it.copy(queueOpen = true) }
+    }
+
+    fun closeQueue() {
+        _uiState.update { it.copy(queueOpen = false) }
+    }
+
+    fun playFromQueue(video: VideoItem) {
+        val state = _uiState.value
+        if (state.queue.none { it.id == video.id }) return
+        openPlayer(video)
+        maybeLoadMoreQueue()
+    }
+
+    /** Repetir: no → lista → este video → no (como el botón de YouTube). */
+    fun cycleQueueRepeat() {
+        _uiState.update {
+            val next = (it.queueRepeat + 1) % 3
+            it.copy(
+                queueRepeat = next,
+                message = when (next) {
+                    1 -> "Se repetirá la lista"
+                    2 -> "Se repetirá este video"
+                    else -> "Repetición desactivada"
+                }
+            )
+        }
+    }
+
+    fun setRepeatOne(enabled: Boolean) {
+        _uiState.update { it.copy(queueRepeat = if (enabled) 2 else if (it.queueRepeat == 2) 0 else it.queueRepeat) }
+    }
+
+    fun toggleQueueShuffle() {
+        _uiState.update { state ->
+            val enable = !state.queueShuffle
+            val current = state.selectedVideo?.id
+            val order = if (enable) {
+                val rest = state.queue.map { it.id }.filterNot { it == current }.shuffled()
+                listOfNotNull(current?.takeIf { id -> state.queue.any { it.id == id } }) + rest
+            } else {
+                emptyList()
+            }
+            state.copy(
+                queueShuffle = enable,
+                queueOrder = order,
+                message = if (enable) "Orden aleatorio activado" else "Orden aleatorio desactivado"
+            )
+        }
+    }
+
+    /** Carga continua: cerca del final del Mix, pedir más videos a YouTube. */
+    fun maybeLoadMoreQueue(force: Boolean = false) {
+        val state = _uiState.value
+        if (!state.queueActive || state.queueLoadingMore || state.queuePlaylistId.isBlank()) return
+        if (!state.queuePlaylistId.startsWith("RD")) return
+        val index = state.queueIndex
+        if (state.queue.size >= MAX_QUEUE_ITEMS) return
+        if (!force && (index < 0 || index < state.queue.size - 4)) return
+        val last = state.queue.last()
+        val token = accessToken ?: YouTubeApi.SESSION_TOKEN
+        val playlistId = state.queuePlaylistId
+        _uiState.update { it.copy(queueLoadingMore = true) }
+        viewModelScope.launch {
+            val panel = runCatching { api.mixPanel(token, last.copy(mixPlaylistId = playlistId)) }.getOrNull()
+            if (_uiState.value.queuePlaylistId != playlistId) return@launch
+            if (panel == null || panel.videos.isEmpty()) {
+                _uiState.update { it.copy(queueLoadingMore = false) }
+            } else {
+                mergeIntoQueue(playlistId, panel)
+            }
+        }
+    }
+
+    fun playPreviousInQueue(): Boolean {
+        val previous = _uiState.value.previousInQueue() ?: return false
+        openPlayer(previous)
+        return true
+    }
+
+    // ------------------------------------------------------------ Filtros de relacionados
+
+    fun selectRelatedChip(chip: HomeChip) {
+        val state = _uiState.value
+        val video = state.selectedVideo ?: return
+        if (chip.token == state.selectedRelatedChip || chip.token.isBlank()) return
+        val token = accessToken ?: YouTubeApi.SESSION_TOKEN
+        _uiState.update { it.copy(selectedRelatedChip = chip.token, relatedLoading = true) }
+        viewModelScope.launch {
+            val page = runCatching { api.relatedChipPage(token, video, chip.token) }.getOrNull()
+            if (_uiState.value.selectedVideo?.id != video.id || _uiState.value.selectedRelatedChip != chip.token) return@launch
+            if (page == null || page.items.isEmpty()) {
+                _uiState.update { it.copy(relatedLoading = false, message = "No se pudo cargar ese filtro.") }
+                return@launch
+            }
+            relatedNextToken = page.nextPageToken
+            _uiState.update {
+                it.copy(
+                    relatedVideos = page.items.filterNot { candidate -> candidate.id == video.id }
+                        .distinctBy { candidate -> candidate.id },
+                    relatedLoading = false,
+                    relatedCanLoadMore = page.nextPageToken.isNotBlank()
+                )
+            }
+        }
+    }
+
+    // ------------------------------------------------------------ Comentarios
+
+    fun openComments(video: VideoItem) {
+        if (video.mediaKind != MediaKind.YOUTUBE) return
+        val state = _uiState.value
+        if (state.commentsVideoId == video.id && state.commentsList.isNotEmpty()) {
+            _uiState.update { it.copy(commentsOpen = true) }
+            return
+        }
+        commentsNextToken = ""
+        commentsSortTokens = emptyList()
+        repliesNextTokens.clear()
+        _uiState.update {
+            it.copy(
+                commentsOpen = true,
+                commentsVideoId = video.id,
+                commentsList = emptyList(),
+                commentsLoading = true,
+                commentsCanLoadMore = false,
+                commentsTotalText = "",
+                commentsSort = 0,
+                commentsSortAvailable = false,
+                commentReplies = emptyMap(),
+                commentRepliesLoading = emptySet(),
+                commentRepliesCanLoadMore = emptySet()
+            )
+        }
+        val token = accessToken ?: YouTubeApi.SESSION_TOKEN
+        commentsJob?.cancel()
+        commentsJob = viewModelScope.launch {
+            val page = runCatching { api.commentsFirstPage(token, video.id) }.getOrNull()
+            if (_uiState.value.commentsVideoId != video.id) return@launch
+            applyCommentsPage(page, replace = true, sortIndex = 0)
+        }
+    }
+
+    fun closeComments() {
+        _uiState.update { it.copy(commentsOpen = false) }
+    }
+
+    fun setCommentsSort(index: Int) {
+        val state = _uiState.value
+        val sortToken = commentsSortTokens.getOrNull(index) ?: return
+        if (index == state.commentsSort || state.commentsLoading) return
+        val videoId = state.commentsVideoId
+        val token = accessToken ?: YouTubeApi.SESSION_TOKEN
+        repliesNextTokens.clear()
+        _uiState.update {
+            it.copy(
+                commentsSort = index,
+                commentsLoading = true,
+                commentsList = emptyList(),
+                commentReplies = emptyMap(),
+                commentRepliesCanLoadMore = emptySet()
+            )
+        }
+        commentsJob?.cancel()
+        commentsJob = viewModelScope.launch {
+            val page = runCatching { api.commentsPage(token, sortToken) }.getOrNull()
+            if (_uiState.value.commentsVideoId != videoId) return@launch
+            applyCommentsPage(page, replace = true, sortIndex = index)
+        }
+    }
+
+    fun loadMoreComments() {
+        val state = _uiState.value
+        if (state.commentsLoading || state.commentsLoadingMore || commentsNextToken.isBlank()) return
+        val videoId = state.commentsVideoId
+        val pageToken = commentsNextToken
+        val token = accessToken ?: YouTubeApi.SESSION_TOKEN
+        _uiState.update { it.copy(commentsLoadingMore = true) }
+        commentsJob = viewModelScope.launch {
+            val page = runCatching { api.commentsPage(token, pageToken) }.getOrNull()
+            if (_uiState.value.commentsVideoId != videoId) return@launch
+            applyCommentsPage(page, replace = false, sortIndex = _uiState.value.commentsSort)
+        }
+    }
+
+    private fun applyCommentsPage(page: com.geovideos.app.data.CommentsPage?, replace: Boolean, sortIndex: Int) {
+        if (page == null) {
+            _uiState.update {
+                it.copy(
+                    commentsLoading = false,
+                    commentsLoadingMore = false,
+                    commentsCanLoadMore = false,
+                    message = if (it.commentsList.isEmpty()) "No se pudieron cargar los comentarios." else it.message
+                )
+            }
+            return
+        }
+        commentsNextToken = page.nextToken
+        if (page.sortTokens.size >= 2) commentsSortTokens = page.sortTokens
+        _uiState.update {
+            it.copy(
+                commentsList = if (replace) page.comments else (it.commentsList + page.comments).distinctBy { c -> c.id },
+                commentsLoading = false,
+                commentsLoadingMore = false,
+                commentsCanLoadMore = page.nextToken.isNotBlank(),
+                commentsTotalText = page.totalText.ifBlank { it.commentsTotalText },
+                commentsSort = sortIndex,
+                commentsSortAvailable = commentsSortTokens.size >= 2
+            )
+        }
+    }
+
+    fun loadReplies(comment: CommentItem) {
+        val state = _uiState.value
+        if (comment.id in state.commentRepliesLoading) return
+        val pageToken = repliesNextTokens[comment.id] ?: comment.repliesToken
+        if (pageToken.isBlank()) return
+        val videoId = state.commentsVideoId
+        val token = accessToken ?: YouTubeApi.SESSION_TOKEN
+        _uiState.update { it.copy(commentRepliesLoading = it.commentRepliesLoading + comment.id) }
+        viewModelScope.launch {
+            val page = runCatching { api.commentsPage(token, pageToken) }.getOrNull()
+            if (_uiState.value.commentsVideoId != videoId) return@launch
+            val nextToken = page?.nextToken.orEmpty()
+            if (nextToken.isNotBlank()) repliesNextTokens[comment.id] = nextToken else repliesNextTokens.remove(comment.id)
+            _uiState.update {
+                val old = it.commentReplies[comment.id].orEmpty()
+                it.copy(
+                    commentReplies = it.commentReplies + (comment.id to (old + page?.comments.orEmpty()).distinctBy { c -> c.id }),
+                    commentRepliesLoading = it.commentRepliesLoading - comment.id,
+                    commentRepliesCanLoadMore = if (nextToken.isNotBlank()) {
+                        it.commentRepliesCanLoadMore + comment.id
+                    } else {
+                        it.commentRepliesCanLoadMore - comment.id
+                    },
+                    message = if (page == null) "No se pudieron cargar las respuestas." else it.message
+                )
+            }
+        }
+    }
+
+    // ------------------------------------------------------------ Filtros del inicio
+
+    /** null o token vacío = "Todos". */
+    fun selectHomeChip(chip: HomeChip?) {
+        val state = _uiState.value
+        val chipToken = chip?.token.orEmpty()
+        if (chipToken == state.selectedHomeChip) return
+        homeChipJob?.cancel()
+        if (chipToken.isBlank()) {
+            val saved = savedAllHome
+            savedAllHome = null
+            if (saved != null) {
+                youtubeHomeContinuation = saved.continuation
+                _uiState.update {
+                    it.copy(
+                        selectedHomeChip = "",
+                        homeChipLoading = false,
+                        homeFeed = saved.feed,
+                        personalized = saved.personalized,
+                        homeMixes = saved.mixes,
+                        canLoadMoreForYou = saved.continuation.isNotBlank()
+                    )
+                }
+            } else {
+                _uiState.update { it.copy(selectedHomeChip = "", homeChipLoading = false) }
+                refreshYouTubeSession()
+            }
+            return
+        }
+        if (state.selectedHomeChip.isBlank()) {
+            savedAllHome = SavedHome(state.homeFeed, state.personalized, state.homeMixes, youtubeHomeContinuation)
+        }
+        _uiState.update { it.copy(selectedHomeChip = chipToken, homeChipLoading = true) }
+        homeChipJob = viewModelScope.launch {
+            try {
+                val page = innerTube.browsePage("", continuation = chipToken)
+                if (_uiState.value.selectedHomeChip != chipToken) return@launch
+                youtubeHomeContinuation = page.continuation
+                _uiState.update {
+                    it.copy(
+                        homeChipLoading = false,
+                        homeFeed = page.feed,
+                        personalized = page.videos.filter(::isNormalHomeVideo).take(MAX_YOUTUBE_ITEMS),
+                        homeMixes = page.mixes,
+                        canLoadMoreForYou = page.continuation.isNotBlank()
+                    )
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (expired: YouTubeSessionExpiredException) {
+                handleYouTubeSessionExpired(expired)
+            } catch (error: Exception) {
+                _uiState.update { it.copy(homeChipLoading = false, message = "No se pudo cargar ese filtro.") }
+            }
+        }
+    }
+
+    // ------------------------------------------------------------ Menú ⋮ (No me interesa)
+
+    fun notInterested(video: VideoItem) {
+        removeFromHome { it.id == video.id }
+        sendFeedbackToken(video.notInterestedToken, "Video quitado. YouTube lo tendrá en cuenta.")
+    }
+
+    fun dontRecommendChannel(video: VideoItem) {
+        val channelId = video.channelId
+        val channelTitle = video.channelTitle
+        removeFromHome { candidate ->
+            candidate.id == video.id ||
+                (channelId.isNotBlank() && candidate.channelId == channelId) ||
+                (channelId.isBlank() && channelTitle.isNotBlank() && candidate.channelTitle == channelTitle)
+        }
+        sendFeedbackToken(video.dontRecommendToken, "No te recomendaremos este canal.")
+    }
+
+    private fun removeFromHome(matches: (VideoItem) -> Boolean) {
+        _uiState.update { state ->
+            state.copy(
+                homeFeed = state.homeFeed.mapNotNull { entry ->
+                    when (entry) {
+                        is HomeFeedEntry.Video -> entry.takeUnless { matches(it.video) }
+                        is HomeFeedEntry.Mix -> entry.takeUnless { matches(it.mix) }
+                        is HomeFeedEntry.Shorts -> entry.shorts.filterNot(matches)
+                            .takeIf { it.isNotEmpty() }
+                            ?.let { HomeFeedEntry.Shorts(it) }
+                    }
+                },
+                personalized = state.personalized.filterNot(matches),
+                homeMixes = state.homeMixes.filterNot(matches),
+                relatedVideos = state.relatedVideos.filterNot(matches)
+            )
+        }
+        savedAllHome = savedAllHome?.let { saved ->
+            saved.copy(personalized = saved.personalized.filterNot(matches))
+        }
+    }
+
+    private fun sendFeedbackToken(feedbackToken: String, okMessage: String) {
+        val token = accessToken ?: YouTubeApi.SESSION_TOKEN
+        if (feedbackToken.isBlank() || !_uiState.value.youtubeSessionConnected) {
+            _uiState.update { it.copy(message = "Quitado de esta lista.") }
+            return
+        }
+        viewModelScope.launch {
+            val ok = runCatching { api.sendFeedback(token, feedbackToken) }.isSuccess
+            _uiState.update { it.copy(message = if (ok) okMessage else "Quitado aquí, pero YouTube no respondió.") }
+        }
+    }
+
     private fun refreshYouTubeSession() {
         if (!youtubeSession.hasStoredSession()) return
+        refreshUnseenNotifications()
         youtubeSessionJob?.cancel()
         youtubeSessionJob = viewModelScope.launch {
             _uiState.update { it.copy(youtubeSessionBusy = true) }
@@ -3192,7 +4212,10 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
                     val homePage = home.getOrNull()
                     val historyPage = history.getOrNull()
                     val laterPage = later.getOrNull()
-                    if (homePage != null) youtubeHomeContinuation = homePage.continuation
+                    if (homePage != null) {
+                        youtubeHomeContinuation = homePage.continuation
+                        savedAllHome = null
+                    }
                     if (historyPage != null) youtubeHistoryContinuation = historyPage.continuation
                     if (laterPage != null) youtubeWatchLaterContinuation = laterPage.continuation
 
@@ -3208,6 +4231,14 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
                             youtubeHistoryFetchedAtMs = if (historyPage != null) fetchedAt else state.youtubeHistoryFetchedAtMs,
                             historyCanLoadMore = youtubeHistoryContinuation.isNotBlank(),
                             youtubeWatchLater = laterPage?.videos ?: state.youtubeWatchLater,
+                            homeMixes = if (homePage != null && homePage.mixes.isNotEmpty()) homePage.mixes else state.homeMixes,
+                            homeFeed = if (homePage != null && homePage.feed.isNotEmpty()) homePage.feed else state.homeFeed,
+                            homeChips = homePage?.chips
+                                ?.filterNot { chip -> chip.title.equals("Todos", true) || chip.title.equals("All", true) }
+                                ?.takeIf { it.isNotEmpty() }
+                                ?: state.homeChips,
+                            selectedHomeChip = if (homePage != null) "" else state.selectedHomeChip,
+                            homeChipLoading = false,
                             watchLaterCanLoadMore = youtubeWatchLaterContinuation.isNotBlank(),
                             personalized = if (homeVideos.isNotEmpty()) {
                                 homeVideos.take(MAX_YOUTUBE_ITEMS)
@@ -3277,6 +4308,8 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
                 } else {
                     mergeUniqueVideos(state.shorts, page.shorts).take(MAX_YOUTUBE_ITEMS)
                 },
+                homeMixes = mergeUniqueVideos(state.homeMixes, page.mixes).take(30),
+                homeFeed = appendHomeFeed(state.homeFeed, page.feed),
                 loadingMoreCategory = null,
                 canLoadMoreForYou = page.continuation.isNotBlank()
             )
@@ -3387,6 +4420,110 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
         viewModelScope.launch { runCatching { innerTube.reportProgress(video.id, positionMs, durationMs) } }
     }
 
+    private fun loadYouTubeShortsSequence(reset: Boolean) {
+        val state = _uiState.value
+        if (state.shortsLoadingMore) return
+        val seed = state.shorts.firstOrNull()?.id ?: return
+        if (!reset && shortsSequenceContinuation.isBlank()) return
+        _uiState.update { it.copy(shortsLoadingMore = true) }
+        viewModelScope.launch {
+            try {
+                val page = innerTube.shortsSequence(seed, if (reset) "" else shortsSequenceContinuation)
+                shortsSequenceContinuation = page.continuation
+                shortsSequenceActive = true
+                val firstDetails = enrichShortList(page.shorts.take(4))
+                val fresh = firstDetails + page.shorts.drop(4)
+                _uiState.update { s ->
+                    val merged = if (reset) {
+                        // El Short que se está viendo queda primero; luego la secuencia de YouTube.
+                        mergeUniqueVideos(s.shorts.take(1), fresh, s.shorts.drop(1))
+                    } else {
+                        mergeUniqueVideos(s.shorts, fresh)
+                    }
+                    s.copy(
+                        shorts = merged.take(MAX_YOUTUBE_ITEMS),
+                        shortsLoadingMore = false,
+                        shortsCanLoadMore = shortsSequenceContinuation.isNotBlank()
+                    )
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (expired: YouTubeSessionExpiredException) {
+                handleYouTubeSessionExpired(expired)
+            } catch (error: Exception) {
+                _uiState.update { it.copy(shortsLoadingMore = false) }
+            }
+        }
+    }
+
+    private suspend fun enrichShortList(list: List<VideoItem>): List<VideoItem> = supervisorScope {
+        list.map { item ->
+            async {
+                val details = runCatching { innerTube.shortDetails(item.id) }.getOrNull()
+                if (details == null) {
+                    item
+                } else {
+                    item.copy(
+                        title = details.title,
+                        channelTitle = details.channelTitle.ifBlank { item.channelTitle },
+                        channelId = details.channelId.ifBlank { item.channelId },
+                        channelThumbnailUrl = details.channelThumbnailUrl.ifBlank { item.channelThumbnailUrl },
+                        viewCountText = details.viewCountText.ifBlank { item.viewCountText },
+                        likeCountText = details.likeCountText,
+                        commentCountText = details.commentCountText,
+                        durationMs = if (details.durationMs > 0L) details.durationMs else item.durationMs,
+                        thumbnailUrl = item.thumbnailUrl.ifBlank { details.thumbnailUrl }
+                    )
+                }
+            }
+        }.awaitAll()
+    }
+
+    /** Completa título, canal y contadores del Short visible y de los 2 siguientes. */
+    private fun enrichShortsAround(videoId: String) {
+        if (!youtubeSession.hasStoredSession()) return
+        val shorts = _uiState.value.shorts
+        val index = shorts.indexOfFirst { it.id == videoId }
+        if (index < 0) return
+        val targets = shorts.drop(index).take(3).filter { it.likeCountText.isBlank() && it.commentCountText.isBlank() }
+        if (targets.isEmpty()) return
+        viewModelScope.launch {
+            val enriched = enrichShortList(targets).associateBy { it.id }
+            _uiState.update { s ->
+                s.copy(
+                    shorts = s.shorts.map { enriched[it.id] ?: it },
+                    selectedVideo = s.selectedVideo?.let { selected ->
+                        enriched[selected.id]?.let { e ->
+                            selected.copy(title = e.title, channelTitle = e.channelTitle, channelThumbnailUrl = e.channelThumbnailUrl)
+                        } ?: selected
+                    }
+                )
+            }
+        }
+    }
+
+    /** Agrega la página siguiente del inicio sin repetir videos, Shorts ni Mixes. */
+    private fun appendHomeFeed(existing: List<HomeFeedEntry>, next: List<HomeFeedEntry>): List<HomeFeedEntry> {
+        val seen = HashSet<String>()
+        existing.forEach { entry ->
+            when (entry) {
+                is HomeFeedEntry.Video -> seen.add(entry.video.id)
+                is HomeFeedEntry.Shorts -> entry.shorts.forEach { seen.add(it.id) }
+                is HomeFeedEntry.Mix -> seen.add("m:" + entry.mix.mixPlaylistId)
+            }
+        }
+        val added = next.mapNotNull { entry ->
+            when (entry) {
+                is HomeFeedEntry.Video -> entry.takeIf { seen.add(it.video.id) }
+                is HomeFeedEntry.Shorts -> entry.shorts.filter { seen.add(it.id) }
+                    .takeIf { it.isNotEmpty() }
+                    ?.let { HomeFeedEntry.Shorts(it) }
+                is HomeFeedEntry.Mix -> entry.takeIf { seen.add("m:" + it.mix.mixPlaylistId) }
+            }
+        }
+        return (existing + added).takeLast(MAX_YOUTUBE_ITEMS)
+    }
+
     /** Pone la foto del canal usando las suscripciones cuando la API no la trae. */
     private fun withChannelAvatars(videos: List<VideoItem>, channels: List<ChannelItem>): List<VideoItem> {
         if (channels.isEmpty() || videos.none { it.channelThumbnailUrl.isBlank() }) return videos
@@ -3415,5 +4552,9 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
         const val HOME_SHORTS_SHELF_SIZE = 14
         const val HOME_SHORTS_ROTATE_STEP = 7
         const val MAX_YOUTUBE_ITEMS = 400
+        const val MAX_QUEUE_ITEMS = 200
+        const val CHANNEL_VIDEOS_PARAMS = "EgZ2aWRlb3PyBgQKAjoA"
+        const val CHANNEL_SHORTS_PARAMS = "EgZzaG9ydHPyBgUKA5oBAA%3D%3D"
+        const val CHANNEL_PLAYLISTS_PARAMS = "EglwbGF5bGlzdHPyBgQKAkIA"
     }
 }

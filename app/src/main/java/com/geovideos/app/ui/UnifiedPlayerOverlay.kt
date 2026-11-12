@@ -10,6 +10,12 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.animate
+import androidx.compose.material.icons.filled.Replay
+import androidx.compose.material.icons.filled.KeyboardArrowRight
+import androidx.compose.material.icons.filled.KeyboardArrowLeft
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
@@ -62,6 +68,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
@@ -105,17 +112,60 @@ import com.geovideos.app.MainActivity
 import com.geovideos.app.data.ChannelItem
 import com.geovideos.app.data.VideoDetails
 import com.geovideos.app.data.VideoItem
+import com.geovideos.app.network.HomeChip
 import com.geovideos.app.playback.DownloadStreamOption
 import com.geovideos.app.playback.FloatingPlayerService
 import com.geovideos.app.playback.GeoPlayerConnection
 import com.geovideos.app.playback.StreamOptions
+import com.geovideos.app.playback.AudioTrackOption
+import com.geovideos.app.playback.PlaybackExtras
+import com.geovideos.app.playback.StoryboardInfo
+import com.geovideos.app.playback.VideoChapter
+import coil.imageLoader
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.material.icons.outlined.ChatBubbleOutline
+import androidx.compose.material.icons.outlined.ThumbDownOffAlt
+import androidx.compose.material.icons.outlined.ThumbUpOffAlt
+import androidx.compose.material.icons.rounded.ArrowBack
+import androidx.compose.material.icons.rounded.Check
+import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.FormatListNumbered
+import androidx.compose.material.icons.rounded.Fullscreen
+import androidx.compose.material.icons.rounded.FullscreenExit
+import androidx.compose.material.icons.rounded.KeyboardArrowDown
+import androidx.compose.material.icons.rounded.Lock
+import androidx.compose.material.icons.rounded.MoreHoriz
+import androidx.compose.material.icons.rounded.Pause
+import androidx.compose.material.icons.rounded.PlayArrow
+import androidx.compose.material.icons.rounded.PlaylistAdd
+import androidx.compose.material.icons.rounded.PlaylistAddCheck
+import androidx.compose.material.icons.rounded.RecordVoiceOver
+import androidx.compose.material.icons.rounded.RepeatOne
+import androidx.compose.material.icons.rounded.Settings
+import androidx.compose.material.icons.rounded.Share
+import androidx.compose.material.icons.rounded.SkipNext
+import androidx.compose.material.icons.rounded.SkipPrevious
+import androidx.compose.material.icons.rounded.SlowMotionVideo
+import androidx.compose.material.icons.rounded.Speed
+import androidx.compose.material.icons.rounded.ThumbDown
+import androidx.compose.material.icons.rounded.ThumbUp
+import androidx.compose.material.icons.rounded.TouchApp
+import androidx.compose.material.icons.rounded.Tune
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.unit.sp
 import com.geovideos.app.playback.enqueueResolvedMediaDownload
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlin.math.abs
 import kotlin.math.roundToInt
 
-private enum class PlayerSettingsPage { ROOT, QUALITY, SPEED }
+private enum class PlayerSettingsPage { ROOT, QUALITY, QUALITY_ADVANCED, SPEED, AUDIO, DOUBLE_TAP, CHAPTERS }
 
 /**
  * Reproductor unificado con gesto directo, inspirado en el comportamiento de YouTube/DayliTube.
@@ -125,6 +175,34 @@ private enum class PlayerSettingsPage { ROOT, QUALITY, SPEED }
  * - La velocidad del gesto decide el destino, evitando esperas y rebotes artificiales.
  * - Durante el arrastre no se recalculan sombras ni esquinas en cada fotograma.
  */
+internal data class PlayerExtras(
+    val isSubscribed: Boolean = false,
+    val relatedChips: List<HomeChip> = emptyList(),
+    val selectedRelatedChip: String = "",
+    val onSelectChip: (HomeChip) -> Unit = {},
+    val onToggleSubscribe: () -> Unit = {},
+    val onOpenComments: () -> Unit = {},
+    val queueActive: Boolean = false,
+    val queueTitle: String = "",
+    val queueSubtitle: String = "",
+    val queuePosition: Int = 0,
+    val queueCount: Int = 0,
+    val onOpenQueue: () -> Unit = {},
+    /** Siguiente / anterior conociendo la cola y los relacionados (null = usar el reproductor). */
+    val onNext: (() -> Unit)? = null,
+    val onPrevious: (() -> Boolean)? = null,
+    val repeatOne: Boolean = false,
+    val onRepeatOneChange: (Boolean) -> Unit = {}
+)
+
+private fun formatSeekLabel(ms: Long): String {
+    val total = ms / 1000L
+    val h = total / 3600L
+    val m = (total % 3600L) / 60L
+    val sec = total % 60L
+    return if (h > 0) "%d:%02d:%02d".format(h, m, sec) else "%d:%02d".format(m, sec)
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun UnifiedPlayerOverlay(
@@ -157,7 +235,8 @@ internal fun UnifiedPlayerOverlay(
     onOpenChannel: (ChannelItem) -> Unit,
     onSavePlayback: (VideoItem, Long, Long) -> Unit,
     onRegisterDownload: (String, String, Long) -> Unit,
-    onMessage: (String) -> Unit
+    onMessage: (String) -> Unit,
+    extras: PlayerExtras = PlayerExtras()
 ) {
     val context = LocalContext.current
     val activity = context.findActivityLite()
@@ -195,7 +274,27 @@ internal fun UnifiedPlayerOverlay(
     var lastSeekAtMs by remember(video.id) { mutableLongStateOf(0L) }
     var accumulatedSeekSeconds by remember(video.id) { mutableIntStateOf(0) }
     var zoomFeedback by remember(video.id) { mutableStateOf<String?>(null) }
+    // Mini reproductor 2025: se mueve a una esquina, cambia de tamaño (doble toque)
+    // y se esconde en un borde (pausando el video), como YouTube.
+    var miniRight by rememberSaveable { mutableStateOf(true) }
+    var miniBottom by rememberSaveable { mutableStateOf(true) }
+    var miniLarge by rememberSaveable { mutableStateOf(true) }
+    var miniHiddenSide by rememberSaveable { mutableIntStateOf(0) }
+    var miniDragX by remember { mutableFloatStateOf(0f) }
+    var miniDragY by remember { mutableFloatStateOf(0f) }
+    var miniControlsVisible by remember(video.id) { mutableStateOf(true) }
+    LaunchedEffect(miniControlsVisible, expanded) {
+        if (miniControlsVisible && !expanded) {
+            delay(3_000L)
+            miniControlsVisible = false
+        }
+    }
     var zoomFeedbackSerial by remember(video.id) { mutableIntStateOf(0) }
+    var controlsTouchSerial by remember(video.id) { mutableIntStateOf(0) }
+    val doubleTapSeconds by playerConnection.doubleTapSeekSeconds.collectAsStateWithLifecycle()
+    var playbackExtras by remember(video.id) { mutableStateOf(PlaybackExtras()) }
+    var extrasReloadSerial by remember(video.id) { mutableIntStateOf(0) }
+    val chapters = playbackExtras.chapters
 
     val description = details?.description.orEmpty().ifBlank { video.description }
     val channelAvatar = details?.channelThumbnailUrl.orEmpty().ifBlank { video.channelThumbnailUrl }
@@ -233,7 +332,14 @@ internal fun UnifiedPlayerOverlay(
         if (serial == zoomFeedbackSerial) zoomFeedback = null
     }
 
-    LaunchedEffect(playerControlsVisible, playback.isPlaying, showPlayerSettings, screenLocked, video.id) {
+    // Capítulos, storyboard y pistas de audio: cuando el video ya arrancó (la info está en caché).
+    LaunchedEffect(video.id, playback.playbackState == androidx.media3.common.Player.STATE_READY, extrasReloadSerial) {
+        if (playback.playbackState != androidx.media3.common.Player.STATE_READY) return@LaunchedEffect
+        if (playbackExtras.storyboard != null && extrasReloadSerial == 0) return@LaunchedEffect
+        runCatching { playerConnection.playbackExtras(video) }.getOrNull()?.let { playbackExtras = it }
+    }
+
+    LaunchedEffect(playerControlsVisible, playback.isPlaying, showPlayerSettings, screenLocked, video.id, controlsTouchSerial) {
         if (playerControlsVisible && playback.isPlaying && !showPlayerSettings && !screenLocked) {
             delay(3_200L)
             if (playback.isPlaying && !showPlayerSettings && !screenLocked) {
@@ -348,7 +454,8 @@ internal fun UnifiedPlayerOverlay(
     LaunchedEffect(showPlayerSettings, playerSettingsPage, showDownloadSheet, video.id, downloadTarget.id) {
         // Velocidad y ajustes generales son locales y deben abrir al instante. Solo resolver
         // streams cuando el usuario entra realmente a Calidad o a Descargas.
-        val needsQualityOptions = showPlayerSettings && playerSettingsPage == PlayerSettingsPage.QUALITY
+        val needsQualityOptions = showPlayerSettings &&
+            (playerSettingsPage == PlayerSettingsPage.QUALITY || playerSettingsPage == PlayerSettingsPage.QUALITY_ADVANCED)
         val dialogOpen = needsQualityOptions || showDownloadSheet
         val needsDownloadSizes = showDownloadSheet
         val optionsTarget = if (showDownloadSheet) downloadTarget else video
@@ -503,19 +610,29 @@ internal fun UnifiedPlayerOverlay(
             minOf(
                 with(density) { 300.dp.toPx() },
                 (screenWidthPx * 0.56f).coerceAtLeast(with(density) { 220.dp.toPx() })
-            )
+            ) * (if (miniLarge) 1f else 0.72f)
         }
         val miniHeightPx = if (compactMini) {
             with(density) { 62.dp.toPx() }
         } else {
             (miniWidthPx * 9f / 16f).coerceAtLeast(with(density) { 124.dp.toPx() })
         }
-        val miniLeftPx = if (compactMini) {
+        val miniTopClearancePx = with(density) { 96.dp.toPx() }
+        val miniHandlePx = with(density) { 30.dp.toPx() }
+        fun miniLeftFor(right: Boolean): Float = if (compactMini) {
             miniMarginPx
-        } else {
+        } else if (right) {
             (screenWidthPx - miniMarginPx - miniWidthPx).coerceAtLeast(miniMarginPx)
+        } else {
+            miniMarginPx
         }
-        val miniTopPx = (screenHeightPx - miniBottomClearancePx - miniHeightPx).coerceAtLeast(miniMarginPx)
+        fun miniTopFor(bottom: Boolean): Float = if (compactMini || bottom) {
+            (screenHeightPx - miniBottomClearancePx - miniHeightPx).coerceAtLeast(miniMarginPx)
+        } else {
+            miniTopClearancePx
+        }
+        val miniLeftPx = miniLeftFor(miniRight)
+        val miniTopPx = miniTopFor(miniBottom)
         val miniMediaWidthPx = if (compactMini) {
             (miniHeightPx * 16f / 9f).coerceAtMost(miniWidthPx * 0.34f)
         } else {
@@ -550,6 +667,13 @@ internal fun UnifiedPlayerOverlay(
             enabled = !fullscreen && !settling,
             onDragStarted = { _: Offset -> dragging = true },
             onDragStopped = { velocity: Float ->
+                if (transition < 0.05f && velocity <= -velocityThresholdPx * 0.6f) {
+                    // Deslizar hacia arriba en el video: pantalla completa.
+                    transition = 0f
+                    dragging = false
+                    fullscreen = true
+                    return@draggable
+                }
                 val target = when {
                     velocity >= velocityThresholdPx -> 1f
                     velocity <= -velocityThresholdPx -> 0f
@@ -560,15 +684,31 @@ internal fun UnifiedPlayerOverlay(
             }
         )
 
+        // En pantalla completa: deslizar hacia abajo para salir, como YouTube.
+        var fullscreenDragTotal by remember { mutableFloatStateOf(0f) }
+        val fullscreenExitThresholdPx = with(density) { 90.dp.toPx() }
+        val fullscreenExitModifier = Modifier.draggable(
+            state = rememberDraggableState { delta: Float -> fullscreenDragTotal += delta },
+            orientation = Orientation.Vertical,
+            enabled = fullscreen && !screenLocked,
+            onDragStarted = { _: Offset -> fullscreenDragTotal = 0f },
+            onDragStopped = { velocity: Float ->
+                if (fullscreenDragTotal > fullscreenExitThresholdPx || velocity > velocityThresholdPx * 0.6f) {
+                    fullscreen = false
+                }
+                fullscreenDragTotal = 0f
+            }
+        )
+
         if (!fullscreen && showExpandedSurface) {
             Surface(
                 modifier = Modifier
                     .fillMaxSize()
                     .graphicsLayer {
-                        alpha = 1f
-                        // El contenido inferior acompaña el gesto y revela el feed de fondo
-                        // progresivamente, sin transparencias ni saltos al soltar.
-                        translationY = screenHeightPx * p
+                        // Como YouTube: al bajar el video, la información se desvanece rápido
+                        // y deja ver el feed detrás (sin bloque negro ni panel a medias).
+                        alpha = (1f - p * 2.4f).coerceIn(0f, 1f)
+                        translationY = screenHeightPx * p * 0.45f
                     },
                 color = MaterialTheme.colorScheme.background
             ) {
@@ -587,8 +727,14 @@ internal fun UnifiedPlayerOverlay(
                         publishedAt = published,
                         qualityLabel = preferredQuality?.let { "${it}p" } ?: "Automático",
                         audioOnly = audioOnly,
-                        mixAvailable = video.isMix && related.isNotEmpty(),
-                        mixCount = if (video.isMix) related.size + 1 else 0
+                        mixAvailable = extras.queueActive,
+                        mixCount = extras.queueCount,
+                        queueTitle = extras.queueTitle,
+                        queueSubtitle = extras.queueSubtitle,
+                        queuePosition = extras.queuePosition,
+                        isSubscribed = extras.isSubscribed,
+                        relatedChips = extras.relatedChips,
+                        selectedRelatedChip = extras.selectedRelatedChip
                     ),
                     related = related,
                     relatedLoading = relatedLoading || detailsLoading,
@@ -628,7 +774,15 @@ internal fun UnifiedPlayerOverlay(
                     onPlayRelated = onPlayRelated,
                     onSaveRelated = onWatchLaterRelated,
                     onDownloadRelated = { relatedVideo -> openDownloadFor(relatedVideo) },
-                    onLoadMore = onLoadMoreRelated
+                    onLoadMore = onLoadMoreRelated,
+                    onSelectChip = extras.onSelectChip,
+                    onToggleSubscribe = extras.onToggleSubscribe,
+                    onOpenComments = extras.onOpenComments,
+                    onOpenQueue = extras.onOpenQueue,
+                    onSeek = { position ->
+                        playerConnection.seekTo(position)
+                        onMessage("Saltando a " + formatSeekLabel(position))
+                    }
                 )
             }
         }
@@ -636,14 +790,89 @@ internal fun UnifiedPlayerOverlay(
         val miniVisible = !fullscreen && !expanded && !dragging && !settling
         if (miniVisible) {
             val miniAlpha = 1f
+            val miniMoveModifier = Modifier
+                .pointerInput(miniHiddenSide, miniWidthPx, miniHeightPx, miniRight, miniBottom, screenWidthPx, screenHeightPx) {
+                    detectDragGestures(
+                        onDragStart = { miniControlsVisible = true },
+                        onDragCancel = {
+                            miniDragX = 0f
+                            miniDragY = 0f
+                        },
+                        onDragEnd = {
+                            val left = miniLeftPx + miniDragX
+                            val top = miniTopPx + miniDragY
+                            when {
+                                left + miniWidthPx * 0.55f > screenWidthPx -> {
+                                    miniHiddenSide = 1
+                                    playerConnection.pause()
+                                    miniDragX = 0f
+                                    miniDragY = 0f
+                                }
+                                left < -miniWidthPx * 0.55f -> {
+                                    miniHiddenSide = -1
+                                    playerConnection.pause()
+                                    miniDragX = 0f
+                                    miniDragY = 0f
+                                }
+                                else -> {
+                                    // Se "imanta" a la esquina más cercana con una animación corta.
+                                    val right = left + miniWidthPx / 2f > screenWidthPx / 2f
+                                    val bottom = top + miniHeightPx / 2f > screenHeightPx / 2f
+                                    miniDragX = left - miniLeftFor(right)
+                                    miniDragY = top - miniTopFor(bottom)
+                                    miniRight = right
+                                    miniBottom = bottom
+                                    val startX = miniDragX
+                                    val startY = miniDragY
+                                    scope.launch {
+                                        animate(startX, 0f, animationSpec = tween(220, easing = FastOutSlowInEasing)) { value: Float, _: Float ->
+                                            miniDragX = value
+                                        }
+                                    }
+                                    scope.launch {
+                                        animate(startY, 0f, animationSpec = tween(220, easing = FastOutSlowInEasing)) { value: Float, _: Float ->
+                                            miniDragY = value
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    ) { change, dragAmount ->
+                        change.consume()
+                        if (miniHiddenSide == 0) {
+                            miniDragX += dragAmount.x
+                            miniDragY += dragAmount.y
+                        }
+                    }
+                }
+                .pointerInput(miniHiddenSide) {
+                    detectTapGestures(
+                        onTap = {
+                            when {
+                                miniHiddenSide != 0 -> {
+                                    miniHiddenSide = 0
+                                    playerConnection.play()
+                                }
+                                !miniControlsVisible -> miniControlsVisible = true
+                                else -> settle(0f, fast = true)
+                            }
+                        },
+                        onDoubleTap = { if (miniHiddenSide == 0) miniLarge = !miniLarge }
+                    )
+                }
+            val miniOffsetX = when (miniHiddenSide) {
+                1 -> screenWidthPx - miniHandlePx
+                -1 -> miniHandlePx - miniWidthPx
+                else -> miniLeftPx + miniDragX
+            }
             Surface(
                 modifier = Modifier
-                    .offset { IntOffset(miniLeftPx.roundToInt(), miniTopPx.roundToInt()) }
+                    .offset { IntOffset(miniOffsetX.roundToInt(), (miniTopPx + miniDragY).roundToInt()) }
                     .width(with(density) { miniWidthPx.toDp() })
                     .height(with(density) { miniHeightPx.toDp() })
                     .zIndex(90f)
                     .graphicsLayer { alpha = miniAlpha }
-                    .then(dragModifier),
+                    .then(if (compactMini) dragModifier else Modifier),
                 shape = miniShape,
                 color = Color(0xFF17171B),
                 tonalElevation = 6.dp,
@@ -748,7 +977,6 @@ internal fun UnifiedPlayerOverlay(
                         modifier = Modifier
                             .fillMaxSize()
                             .background(Color.Black)
-                            .clickable(enabled = !dragging && !settling) { settle(0f, fast = true) }
                     ) {
                         LiteThumbnail(
                             url = video.thumbnailUrl,
@@ -776,34 +1004,77 @@ internal fun UnifiedPlayerOverlay(
                                 )
                             }
                         }
+                        // Capa transparente encima del video: mover, tocar y doble toque.
+                        Box(modifier = Modifier.fillMaxSize().then(miniMoveModifier))
 
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 6.dp, vertical = 4.dp),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
+                        if (miniHiddenSide != 0) {
+                            // Escondido en el borde: se ve solo una franja con una flecha.
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .background(Color.Black.copy(alpha = 0.55f)),
+                                contentAlignment = if (miniHiddenSide == 1) Alignment.CenterStart else Alignment.CenterEnd
+                            ) {
+                                Icon(
+                                    if (miniHiddenSide == 1) Icons.Default.KeyboardArrowLeft else Icons.Default.KeyboardArrowRight,
+                                    contentDescription = "Mostrar reproductor",
+                                    tint = Color.White,
+                                    modifier = Modifier.size(28.dp)
+                                )
+                            }
+                        } else {
+                            val ended = !playback.isPlaying && progressState.durationMs > 0L &&
+                                progressState.positionMs >= progressState.durationMs - 800L
+                            val controlsAlpha by animateFloatAsState(
+                                targetValue = if (miniControlsVisible || ended) 1f else 0f,
+                                animationSpec = tween(220),
+                                label = "miniControls"
+                            )
+                            // Play/pausa arriba a la izquierda (se desvanece) y X arriba a la derecha.
                             Surface(
-                                color = Color.Black.copy(alpha = 0.62f),
+                                modifier = Modifier
+                                    .align(Alignment.TopStart)
+                                    .padding(6.dp)
+                                    .graphicsLayer { alpha = controlsAlpha },
+                                color = Color.Black.copy(alpha = 0.55f),
                                 shape = CircleShape
                             ) {
                                 IconButton(
                                     onClick = {
-                                        if (playback.isPlaying) playerConnection.pause() else playerConnection.play()
+                                        if (ended) {
+                                            playerConnection.seekTo(0L)
+                                            playerConnection.play()
+                                        } else if (playback.isPlaying) {
+                                            playerConnection.pause()
+                                        } else {
+                                            playerConnection.play()
+                                        }
+                                        miniControlsVisible = true
                                     },
-                                    modifier = Modifier.size(34.dp)
+                                    enabled = controlsAlpha > 0.1f,
+                                    modifier = Modifier.size(36.dp)
                                 ) {
                                     Icon(
-                                        if (playback.isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
-                                        contentDescription = if (playback.isPlaying) "Pausar" else "Reproducir",
+                                        when {
+                                            ended -> Icons.Default.Replay
+                                            playback.isPlaying -> Icons.Default.Pause
+                                            else -> Icons.Default.PlayArrow
+                                        },
+                                        contentDescription = when {
+                                            ended -> "Repetir"
+                                            playback.isPlaying -> "Pausar"
+                                            else -> "Reproducir"
+                                        },
                                         tint = Color.White,
-                                        modifier = Modifier.size(18.dp)
+                                        modifier = Modifier.size(20.dp)
                                     )
                                 }
                             }
                             Surface(
-                                color = Color.Black.copy(alpha = 0.62f),
+                                modifier = Modifier
+                                    .align(Alignment.TopEnd)
+                                    .padding(6.dp),
+                                color = Color.Black.copy(alpha = 0.55f),
                                 shape = CircleShape
                             ) {
                                 IconButton(
@@ -811,41 +1082,34 @@ internal fun UnifiedPlayerOverlay(
                                         saveProgress()
                                         onClose()
                                     },
-                                    modifier = Modifier.size(34.dp)
+                                    modifier = Modifier.size(36.dp)
                                 ) {
                                     Icon(
                                         Icons.Default.Close,
                                         contentDescription = "Cerrar reproductor",
                                         tint = Color.White,
-                                        modifier = Modifier.size(18.dp)
+                                        modifier = Modifier.size(20.dp)
                                     )
                                 }
                             }
-                        }
-
-                        Surface(
-                            modifier = Modifier
-                                .align(Alignment.BottomStart)
-                                .padding(horizontal = 6.dp, vertical = 6.dp),
-                            color = Color.Black.copy(alpha = 0.58f),
-                            shape = RoundedCornerShape(8.dp)
-                        ) {
-                            Column(modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp)) {
-                                Text(
-                                    video.title,
-                                    color = Color.White,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                    style = MaterialTheme.typography.labelLarge,
-                                    fontWeight = FontWeight.SemiBold
-                                )
-                                Text(
-                                    video.channelTitle,
-                                    color = Color.White.copy(alpha = 0.72f),
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                    style = MaterialTheme.typography.labelSmall,
-                                    modifier = Modifier.padding(top = 1.dp)
+                            // Barra roja de progreso abajo.
+                            val fraction = if (progressState.durationMs > 0L) {
+                                (progressState.positionMs.toFloat() / progressState.durationMs.toFloat()).coerceIn(0f, 1f)
+                            } else {
+                                0f
+                            }
+                            Box(
+                                modifier = Modifier
+                                    .align(Alignment.BottomStart)
+                                    .fillMaxWidth()
+                                    .height(3.dp)
+                                    .background(Color.White.copy(alpha = 0.25f))
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth(fraction)
+                                        .height(3.dp)
+                                        .background(Color(0xFFFF0033))
                                 )
                             }
                         }
@@ -872,13 +1136,14 @@ internal fun UnifiedPlayerOverlay(
                     alpha = 1f
                     clip = p > 0.02f
                     shape = miniShape
+                    shadowElevation = 14.dp.toPx() * p
                 }
         }
 
         if (showExpandedSurface) Box(
             modifier = playerLayerModifier
                 .background(Color.Black)
-                .then(if (fullscreen) Modifier else dragModifier)
+                .then(if (fullscreen) fullscreenExitModifier else dragModifier)
         ) {
             LiteThumbnail(
                 url = video.thumbnailUrl,
@@ -886,7 +1151,7 @@ internal fun UnifiedPlayerOverlay(
                 modifier = Modifier.fillMaxSize(),
                 widthPx = 1280,
                 heightPx = 720,
-                contentScale = ContentScale.Fit
+                contentScale = if (!fullscreen && p > 0.02f) ContentScale.Crop else ContentScale.Fit
             )
 
             if (
@@ -903,7 +1168,9 @@ internal fun UnifiedPlayerOverlay(
                         // the old version. Keep only the video surface and draw Geo Videos'
                         // DayliTube-style controls in Compose on top of it.
                         useController = false,
-                        resizeMode = if (fullscreen) {
+                        // Mientras se baja al mini reproductor, el video llena su recuadro
+                        // (sin franjas negras), igual que YouTube.
+                        resizeMode = if (fullscreen || p > 0.02f) {
                             AspectRatioFrameLayout.RESIZE_MODE_ZOOM
                         } else {
                             AspectRatioFrameLayout.RESIZE_MODE_FIT
@@ -917,9 +1184,9 @@ internal fun UnifiedPlayerOverlay(
                             accumulatedSeekSeconds = if (
                                 direction == seekFeedbackDirection && now - lastSeekAtMs <= 1_100L
                             ) {
-                                accumulatedSeekSeconds + 10
+                                accumulatedSeekSeconds + doubleTapSeconds
                             } else {
-                                10
+                                doubleTapSeconds
                             }
                             seekFeedbackDirection = direction
                             lastSeekAtMs = now
@@ -934,10 +1201,38 @@ internal fun UnifiedPlayerOverlay(
                             zoomFeedback = "Zoom $percent%"
                             zoomFeedbackSerial += 1
                         },
+                        onHoldFeedback = { text ->
+                            zoomFeedback = text
+                            if (text != null) zoomFeedbackSerial += 1
+                        },
                         onSingleTap = {
                             if (!screenLocked && (fullscreen || (expanded && !dragging && !settling))) {
                                 playerControlsVisible = !playerControlsVisible
                             }
+                        },
+                        doubleTapSeekMs = doubleTapSeconds * 1000L,
+                        onTwoFingerSwipe = { direction ->
+                            // Dos dedos a los lados = capítulo siguiente / anterior (como YouTube).
+                            val position = progressState.positionMs
+                            if (chapters.isEmpty()) {
+                                zoomFeedback = "Este video no tiene capítulos"
+                            } else {
+                                val target = if (direction > 0) {
+                                    chapters.firstOrNull { it.startMs > position + 1_000L }
+                                } else {
+                                    val currentIndex = chapters.indexOfLast { it.startMs <= position }
+                                    val current = chapters.getOrNull(currentIndex)
+                                    if (current != null && position - current.startMs > 3_000L) current
+                                    else chapters.getOrNull((currentIndex - 1).coerceAtLeast(0))
+                                }
+                                if (target != null) {
+                                    playerConnection.seekTo(target.startMs)
+                                    zoomFeedback = (if (direction > 0) "⏭  " else "⏮  ") + target.title
+                                } else {
+                                    zoomFeedback = "Último capítulo"
+                                }
+                            }
+                            zoomFeedbackSerial += 1
                         },
                         gesturesEnabled = !screenLocked
                     )
@@ -954,11 +1249,15 @@ internal fun UnifiedPlayerOverlay(
                         isPlaying = playback.isPlaying,
                         positionMs = progressState.positionMs,
                         durationMs = progressState.durationMs,
-                        qualityLabel = preferredQuality?.let { "${it}p" }
-                            ?: playback.videoHeight.takeIf { it > 0 }?.let { "Automático (${it}p)" }
-                            ?: "Automático",
+                        bufferedPercentage = progressState.bufferedPercentage,
                         speed = selectedSpeed,
                         fullscreen = fullscreen,
+                        title = video.title,
+                        chapters = chapters,
+                        storyboard = playbackExtras.storyboard,
+                        isLiked = isLiked,
+                        isDisliked = isDisliked,
+                        isSaved = isWatchLater,
                         onMinimize = {
                             if (fullscreen) fullscreen = false else settle(1f, fast = true)
                         },
@@ -967,17 +1266,24 @@ internal fun UnifiedPlayerOverlay(
                             playerControlsVisible = true
                         },
                         onPrevious = {
-                            playerConnection.playPrevious()
+                            // Como YouTube: si ya pasaron 3 s, vuelve al inicio; si no, al anterior.
+                            if (progressState.positionMs > 3_000L) {
+                                playerConnection.seekTo(0L)
+                            } else if (extras.onPrevious?.invoke() != true) {
+                                playerConnection.playPrevious()
+                            }
                             playerControlsVisible = true
                         },
                         onNext = {
-                            related.firstOrNull { it.id != video.id }?.let(onPlayRelated)
-                                ?: playerConnection.playNext()
-                            playerControlsVisible = true
-                        },
-                        onQuality = {
-                            playerSettingsPage = PlayerSettingsPage.QUALITY
-                            showPlayerSettings = true
+                            val handler = extras.onNext
+                            if (handler != null) {
+                                handler()
+                            } else {
+                                val index = related.indexOfFirst { it.id == video.id }
+                                val nextVideo = (if (index >= 0) related.getOrNull(index + 1) else null)
+                                    ?: related.firstOrNull { it.id != video.id }
+                                nextVideo?.let(onPlayRelated) ?: playerConnection.playNext()
+                            }
                             playerControlsVisible = true
                         },
                         onSpeed = {
@@ -998,7 +1304,17 @@ internal fun UnifiedPlayerOverlay(
                             fullscreen = !fullscreen
                             playerControlsVisible = true
                         },
-                        onLock = if (fullscreen) ({ screenLocked = true }) else null
+                        onLock = if (fullscreen) ({ screenLocked = true }) else null,
+                        onChapters = {
+                            playerSettingsPage = PlayerSettingsPage.CHAPTERS
+                            showPlayerSettings = true
+                        },
+                        onLike = onLike,
+                        onDislike = onDislike,
+                        onComments = extras.onOpenComments,
+                        onSave = onWatchLater,
+                        onShare = { shareVideoLite(context, video) },
+                        onInteraction = { controlsTouchSerial += 1 }
                     )
                 }
 
@@ -1078,11 +1394,27 @@ internal fun UnifiedPlayerOverlay(
                             maxLines = 3,
                             overflow = TextOverflow.Ellipsis
                         )
-                        Button(
-                            onClick = { playerConnection.open(video, autoplay, dataSaver, repeat = false) },
-                            modifier = Modifier.padding(top = 12.dp)
+                        Row(
+                            modifier = Modifier.padding(top = 12.dp),
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
                         ) {
-                            Text("Reintentar")
+                            Button(onClick = { playerConnection.open(video, autoplay, dataSaver, repeat = false) }) {
+                                Text("Reintentar")
+                            }
+                            OutlinedButton(
+                                onClick = {
+                                    runCatching {
+                                        context.startActivity(
+                                            android.content.Intent(
+                                                android.content.Intent.ACTION_VIEW,
+                                                android.net.Uri.parse("https://www.youtube.com/watch?v=${video.id}")
+                                            )
+                                        )
+                                    }
+                                }
+                            ) {
+                                Text("Abrir en YouTube", color = Color.White)
+                            }
                         }
                     }
                 }
@@ -1111,17 +1443,31 @@ internal fun UnifiedPlayerOverlay(
                         ),
                     page = playerSettingsPage,
                     preferredQuality = preferredQuality,
+                    currentHeight = playback.videoHeight,
                     selectedSpeed = selectedSpeed,
                     autoplay = autoplay,
+                    repeatOne = extras.repeatOne,
+                    doubleTapSeconds = doubleTapSeconds,
                     qualities = streamOptions?.qualities.orEmpty(),
+                    audioTracks = playbackExtras.audioTracks,
+                    selectedAudioTrack = playbackExtras.selectedAudioTrackId,
+                    chapters = chapters,
+                    positionMs = progressState.positionMs,
                     loading = streamOptionsLoading,
                     error = streamOptionsError,
                     onClose = { showPlayerSettings = false },
-                    onBack = { playerSettingsPage = PlayerSettingsPage.ROOT },
-                    onOpenQuality = { playerSettingsPage = PlayerSettingsPage.QUALITY },
-                    onOpenSpeed = { playerSettingsPage = PlayerSettingsPage.SPEED },
-                    onAutoplayChange = { enabled ->
-                        onAutoplayChange(enabled)
+                    onBack = {
+                        playerSettingsPage = if (playerSettingsPage == PlayerSettingsPage.QUALITY_ADVANCED) {
+                            PlayerSettingsPage.QUALITY
+                        } else {
+                            PlayerSettingsPage.ROOT
+                        }
+                    },
+                    onOpenPage = { target -> playerSettingsPage = target },
+                    onAutoplayChange = { enabled -> onAutoplayChange(enabled) },
+                    onRepeatOneChange = { enabled ->
+                        extras.onRepeatOneChange(enabled)
+                        playerConnection.setRepeat(enabled)
                     },
                     onSelectQuality = { height ->
                         playerConnection.selectQuality(video, height, dataSaver)
@@ -1130,6 +1476,20 @@ internal fun UnifiedPlayerOverlay(
                     onSelectSpeed = { speed ->
                         selectedSpeed = speed
                         playerConnection.setSpeed(speed)
+                        showPlayerSettings = false
+                    },
+                    onSelectAudioTrack = { trackId ->
+                        playerConnection.selectAudioTrack(video, trackId, dataSaver)
+                        playbackExtras = playbackExtras.copy(selectedAudioTrackId = trackId)
+                        showPlayerSettings = false
+                        onMessage("Cambiando pista de audio…")
+                    },
+                    onSelectDoubleTap = { seconds ->
+                        playerConnection.setDoubleTapSeekSeconds(seconds)
+                        playerSettingsPage = PlayerSettingsPage.ROOT
+                    },
+                    onSeekChapter = { start ->
+                        playerConnection.seekTo(start)
                         showPlayerSettings = false
                     }
                 )
@@ -1230,215 +1590,409 @@ private fun DayliPlayerControls(
     isPlaying: Boolean,
     positionMs: Long,
     durationMs: Long,
-    qualityLabel: String,
+    bufferedPercentage: Int,
     speed: Float,
     fullscreen: Boolean,
+    title: String,
+    chapters: List<VideoChapter>,
+    storyboard: StoryboardInfo?,
+    isLiked: Boolean,
+    isDisliked: Boolean,
+    isSaved: Boolean,
     onMinimize: () -> Unit,
     onTogglePlayback: () -> Unit,
     onPrevious: () -> Unit,
     onNext: () -> Unit,
-    onQuality: () -> Unit,
     onSpeed: () -> Unit,
     onMore: () -> Unit,
     onSeek: (Long) -> Unit,
     onFullscreen: () -> Unit,
-    onLock: (() -> Unit)?
+    onLock: (() -> Unit)?,
+    onChapters: () -> Unit,
+    onLike: () -> Unit,
+    onDislike: () -> Unit,
+    onComments: () -> Unit,
+    onSave: () -> Unit,
+    onShare: () -> Unit,
+    onInteraction: () -> Unit
 ) {
     val safeDuration = durationMs.coerceAtLeast(0L)
     val safePosition = if (safeDuration > 0L) positionMs.coerceIn(0L, safeDuration) else 0L
-    val compactQuality = qualityLabel.replace("Automático", "Auto")
+    var scrubPosition by remember { mutableStateOf<Long?>(null) }
+    val shownPosition = scrubPosition ?: safePosition
+    val currentChapter = chapters.lastOrNull { it.startMs <= shownPosition }
 
-    Box(
-        modifier = modifier
-            .background(Color.Black.copy(alpha = 0.20f))
-            .padding(horizontal = 4.dp, vertical = 2.dp)
-    ) {
-        Row(
+    // Diseño 2025: sin oscurecer todo el video; solo degradados arriba y abajo.
+    Box(modifier = modifier) {
+        Box(
             modifier = Modifier
                 .align(Alignment.TopCenter)
-                .fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            IconButton(onClick = onMinimize, modifier = Modifier.size(36.dp)) {
-                Icon(
-                    Icons.Default.KeyboardArrowDown,
-                    contentDescription = if (fullscreen) "Salir de pantalla completa" else "Minimizar",
-                    tint = Color.White,
-                    modifier = Modifier.size(27.dp)
-                )
-            }
-            if (onLock != null) {
-                IconButton(onClick = onLock, modifier = Modifier.size(34.dp)) {
-                    Icon(
-                        Icons.Default.Lock,
-                        contentDescription = "Bloquear controles",
-                        tint = Color.White,
-                        modifier = Modifier.size(19.dp)
-                    )
-                }
-            }
-            Spacer(Modifier.weight(1f))
-            TextButton(
-                onClick = onQuality,
-                modifier = Modifier.height(34.dp),
-                contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 7.dp, vertical = 0.dp)
-            ) {
-                Text(
-                    compactQuality,
-                    color = Color.White,
-                    style = MaterialTheme.typography.labelLarge,
-                    fontWeight = FontWeight.SemiBold,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-            }
-            TextButton(
-                onClick = onSpeed,
-                modifier = Modifier.height(34.dp),
-                contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 7.dp, vertical = 0.dp)
-            ) {
-                Text(
-                    if (speed == speed.toInt().toFloat()) "${speed.toInt()}x" else "${speed}x",
-                    color = Color.White,
-                    style = MaterialTheme.typography.labelLarge,
-                    fontWeight = FontWeight.SemiBold
-                )
-            }
-            IconButton(onClick = onMore, modifier = Modifier.size(36.dp)) {
-                Icon(
-                    Icons.Default.MoreVert,
-                    contentDescription = "Más opciones",
-                    tint = Color.White,
-                    modifier = Modifier.size(24.dp)
-                )
-            }
-        }
-
-        Row(
-            modifier = Modifier.align(Alignment.Center),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(18.dp)
-        ) {
-            IconButton(onClick = onPrevious, modifier = Modifier.size(46.dp)) {
-                Icon(
-                    Icons.Default.SkipPrevious,
-                    contentDescription = "Anterior",
-                    tint = Color.White,
-                    modifier = Modifier.size(35.dp)
-                )
-            }
-            IconButton(onClick = onTogglePlayback, modifier = Modifier.size(56.dp)) {
-                Icon(
-                    if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
-                    contentDescription = if (isPlaying) "Pausar" else "Reproducir",
-                    tint = Color.White,
-                    modifier = Modifier.size(45.dp)
-                )
-            }
-            IconButton(onClick = onNext, modifier = Modifier.size(46.dp)) {
-                Icon(
-                    Icons.Default.SkipNext,
-                    contentDescription = "Siguiente",
-                    tint = Color.White,
-                    modifier = Modifier.size(35.dp)
-                )
-            }
-        }
-
-        Row(
+                .fillMaxWidth()
+                .height(if (fullscreen) 96.dp else 64.dp)
+                .background(Brush.verticalGradient(listOf(Color.Black.copy(alpha = 0.55f), Color.Transparent)))
+        )
+        Box(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
                 .fillMaxWidth()
-                .padding(horizontal = 5.dp, vertical = 1.dp),
+                .height(if (fullscreen) 170.dp else 76.dp)
+                .background(Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(alpha = 0.62f))))
+        )
+
+        Row(
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .fillMaxWidth()
+                .padding(horizontal = if (fullscreen) 12.dp else 4.dp, vertical = 2.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Text(
-                formatPlayerTime(safePosition),
-                color = Color.White,
-                style = MaterialTheme.typography.labelMedium,
-                modifier = Modifier.width(42.dp)
-            )
-            CompactPlayerSeekBar(
-                positionMs = safePosition,
-                durationMs = safeDuration,
-                enabled = safeDuration > 0L,
-                onSeek = onSeek,
-                modifier = Modifier.weight(1f)
-            )
-            Text(
-                formatPlayerTime(safeDuration),
-                color = Color.White,
-                style = MaterialTheme.typography.labelMedium,
-                modifier = Modifier.padding(start = 5.dp)
-            )
-            IconButton(onClick = onFullscreen, modifier = Modifier.size(34.dp)) {
+            IconButton(onClick = onMinimize, modifier = Modifier.size(40.dp)) {
                 Icon(
-                    if (fullscreen) Icons.Default.FullscreenExit else Icons.Default.Fullscreen,
-                    contentDescription = if (fullscreen) "Salir de pantalla completa" else "Pantalla completa",
+                    Icons.Rounded.KeyboardArrowDown,
+                    contentDescription = if (fullscreen) "Salir de pantalla completa" else "Minimizar",
                     tint = Color.White,
-                    modifier = Modifier.size(24.dp)
+                    modifier = Modifier.size(30.dp)
                 )
+            }
+            if (fullscreen) {
+                Text(
+                    title,
+                    color = Color.White,
+                    fontSize = 16.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f).padding(horizontal = 6.dp)
+                )
+            } else {
+                Spacer(Modifier.weight(1f))
+            }
+            if (onLock != null) {
+                IconButton(onClick = onLock, modifier = Modifier.size(40.dp)) {
+                    Icon(Icons.Rounded.Lock, contentDescription = "Bloquear pantalla", tint = Color.White, modifier = Modifier.size(21.dp))
+                }
+            }
+            if (speed != 1f) {
+                Text(
+                    if (speed == speed.toInt().toFloat()) "${speed.toInt()}x" else "${speed}x",
+                    color = Color.White,
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(50))
+                        .background(Color.Black.copy(alpha = 0.45f))
+                        .clickable(onClick = onSpeed)
+                        .padding(horizontal = 10.dp, vertical = 5.dp)
+                )
+            }
+            IconButton(onClick = onMore, modifier = Modifier.size(40.dp)) {
+                Icon(Icons.Rounded.Settings, contentDescription = "Ajustes", tint = Color.White, modifier = Modifier.size(23.dp))
+            }
+        }
+
+        // Botones centrales redondeados con fondo translúcido (no se oscurece al pausar).
+        Row(
+            modifier = Modifier.align(Alignment.Center),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(if (fullscreen) 52.dp else 30.dp)
+        ) {
+            RoundPlayerButton(size = 46.dp, onClick = onPrevious) {
+                Icon(Icons.Rounded.SkipPrevious, contentDescription = "Anterior", tint = Color.White, modifier = Modifier.size(30.dp))
+            }
+            RoundPlayerButton(size = if (fullscreen) 72.dp else 62.dp, onClick = onTogglePlayback) {
+                Icon(
+                    if (isPlaying) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
+                    contentDescription = if (isPlaying) "Pausar" else "Reproducir",
+                    tint = Color.White,
+                    modifier = Modifier.size(if (fullscreen) 46.dp else 40.dp)
+                )
+            }
+            RoundPlayerButton(size = 46.dp, onClick = onNext) {
+                Icon(Icons.Rounded.SkipNext, contentDescription = "Siguiente", tint = Color.White, modifier = Modifier.size(30.dp))
+            }
+        }
+
+        Column(
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .fillMaxWidth()
+                .padding(horizontal = if (fullscreen) 18.dp else 8.dp, vertical = if (fullscreen) 10.dp else 0.dp)
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                Text(
+                    "${formatPlayerTime(shownPosition)} / ${formatPlayerTime(safeDuration)}",
+                    color = Color.White,
+                    fontSize = 12.5.sp,
+                    fontWeight = FontWeight.Medium
+                )
+                if (currentChapter != null) {
+                    Text(
+                        "  •  ${currentChapter.title}  ›",
+                        color = Color.White,
+                        fontSize = 12.5.sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f).clickable(onClick = onChapters)
+                    )
+                } else {
+                    Spacer(Modifier.weight(1f))
+                }
+                IconButton(onClick = onFullscreen, modifier = Modifier.size(36.dp)) {
+                    Icon(
+                        if (fullscreen) Icons.Rounded.FullscreenExit else Icons.Rounded.Fullscreen,
+                        contentDescription = if (fullscreen) "Salir de pantalla completa" else "Pantalla completa",
+                        tint = Color.White,
+                        modifier = Modifier.size(26.dp)
+                    )
+                }
+            }
+            BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+                val barWidth = maxWidth
+                CompactPlayerSeekBar(
+                    positionMs = safePosition,
+                    durationMs = safeDuration,
+                    bufferedPercentage = bufferedPercentage,
+                    chapters = chapters,
+                    scrubPosition = scrubPosition,
+                    enabled = safeDuration > 0L,
+                    onScrub = { position ->
+                        scrubPosition = position
+                        onInteraction()
+                    },
+                    onSeek = { position ->
+                        scrubPosition = null
+                        onSeek(position)
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                )
+                val scrub = scrubPosition
+                if (scrub != null && safeDuration > 0L) {
+                    val bubbleWidth = if (fullscreen) 176.dp else 132.dp
+                    val fraction = (scrub.toFloat() / safeDuration.toFloat()).coerceIn(0f, 1f)
+                    val x = (barWidth * fraction - bubbleWidth / 2).coerceIn(0.dp, (barWidth - bubbleWidth).coerceAtLeast(0.dp))
+                    StoryboardBubble(
+                        storyboard = storyboard,
+                        positionMs = scrub,
+                        chapterTitle = chapters.lastOrNull { it.startMs <= scrub }?.title.orEmpty(),
+                        width = bubbleWidth,
+                        modifier = Modifier
+                            .offset(x = x, y = if (fullscreen) (-118).dp else (-96).dp)
+                    )
+                }
+            }
+            if (fullscreen) {
+                // Píldoras de acciones en horizontal (diseño 2025).
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 6.dp)
+                        .horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    FullscreenPill(if (isLiked) Icons.Rounded.ThumbUp else androidx.compose.material.icons.Icons.Outlined.ThumbUpOffAlt, "Me gusta", isLiked, onLike)
+                    FullscreenPill(if (isDisliked) Icons.Rounded.ThumbDown else androidx.compose.material.icons.Icons.Outlined.ThumbDownOffAlt, "No me gusta", isDisliked, onDislike)
+                    FullscreenPill(androidx.compose.material.icons.Icons.Outlined.ChatBubbleOutline, "Comentarios", false, onComments)
+                    FullscreenPill(if (isSaved) Icons.Rounded.PlaylistAddCheck else Icons.Rounded.PlaylistAdd, if (isSaved) "Guardado" else "Guardar", isSaved, onSave)
+                    FullscreenPill(Icons.Rounded.Share, "Compartir", false, onShare)
+                    FullscreenPill(Icons.Rounded.MoreHoriz, "Más", false, onMore)
+                }
             }
         }
     }
 }
 
 @Composable
+private fun RoundPlayerButton(size: androidx.compose.ui.unit.Dp, onClick: () -> Unit, content: @Composable () -> Unit) {
+    Box(
+        modifier = Modifier
+            .size(size)
+            .clip(CircleShape)
+            .background(Color.Black.copy(alpha = 0.38f))
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center
+    ) { content() }
+}
+
+@Composable
+private fun FullscreenPill(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    label: String,
+    active: Boolean,
+    onClick: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .height(36.dp)
+            .clip(RoundedCornerShape(50))
+            .background(if (active) Color.White.copy(alpha = 0.28f) else Color.Black.copy(alpha = 0.5f))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 14.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(icon, contentDescription = null, tint = Color.White, modifier = Modifier.size(18.dp))
+        Spacer(Modifier.width(6.dp))
+        Text(label, color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, maxLines = 1)
+    }
+}
+
+/** Burbuja con la miniatura del storyboard, el tiempo y el capítulo, como YouTube. */
+@Composable
+private fun StoryboardBubble(
+    storyboard: StoryboardInfo?,
+    positionMs: Long,
+    chapterTitle: String,
+    width: androidx.compose.ui.unit.Dp,
+    modifier: Modifier = Modifier
+) {
+    val context = LocalContext.current
+    val frame = storyboard?.frameAt(positionMs)
+    val url = frame?.first
+    val cache = remember(storyboard) { HashMap<String, ImageBitmap>() }
+    var sheet by remember(storyboard) { mutableStateOf<Pair<String, ImageBitmap>?>(null) }
+    LaunchedEffect(url) {
+        if (url == null) return@LaunchedEffect
+        cache[url]?.let { sheet = url to it; return@LaunchedEffect }
+        val bitmap = runCatching {
+            val request = coil.request.ImageRequest.Builder(context)
+                .data(url)
+                .allowHardware(false)
+                .size(coil.size.Size.ORIGINAL)
+                .build()
+            val result = context.imageLoader.execute(request)
+            ((result as? coil.request.SuccessResult)?.drawable as? android.graphics.drawable.BitmapDrawable)?.bitmap
+        }.getOrNull()
+        if (bitmap != null) {
+            val image = bitmap.asImageBitmap()
+            cache[url] = image
+            sheet = url to image
+        }
+    }
+    val ratio = if (storyboard != null && storyboard.frameWidth > 0) {
+        storyboard.frameHeight.toFloat() / storyboard.frameWidth.toFloat()
+    } else 9f / 16f
+    Column(modifier = modifier.width(width), horizontalAlignment = Alignment.CenterHorizontally) {
+        if (storyboard != null) {
+            Canvas(
+                modifier = Modifier
+                    .width(width)
+                    .height(width * ratio)
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(Color(0xFF202020))
+            ) {
+                val current = sheet
+                if (current != null && current.first == url && frame != null) {
+                    val image = current.second
+                    val fw = storyboard.frameWidth.coerceAtMost(image.width)
+                    val fh = storyboard.frameHeight.coerceAtMost(image.height)
+                    val left = frame.second.coerceIn(0, (image.width - fw).coerceAtLeast(0))
+                    val top = frame.third.coerceIn(0, (image.height - fh).coerceAtLeast(0))
+                    drawImage(
+                        image = image,
+                        srcOffset = IntOffset(left, top),
+                        srcSize = IntSize(fw, fh),
+                        dstSize = IntSize(size.width.toInt(), size.height.toInt())
+                    )
+                }
+            }
+        }
+        if (chapterTitle.isNotBlank()) {
+            Text(
+                chapterTitle,
+                color = Color.White,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.padding(top = 4.dp)
+            )
+        }
+        Text(
+            formatPlayerTime(positionMs),
+            color = Color.White,
+            fontSize = 13.sp,
+            fontWeight = FontWeight.Bold,
+            modifier = Modifier.padding(top = 2.dp)
+        )
+    }
+}
+
+/**
+ * Barra roja de YouTube: capítulos separados por pequeños huecos, parte cargada en gris,
+ * se engrosa al arrastrar y solo salta al soltar (así la vista previa no interrumpe el video).
+ */
+@Composable
 private fun CompactPlayerSeekBar(
     positionMs: Long,
     durationMs: Long,
+    bufferedPercentage: Int,
+    chapters: List<VideoChapter>,
+    scrubPosition: Long?,
     enabled: Boolean,
+    onScrub: (Long) -> Unit,
     onSeek: (Long) -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val activeColor = MaterialTheme.colorScheme.primary
-    val inactiveColor = Color.White.copy(alpha = 0.42f)
-    val fraction = if (durationMs > 0L) {
-        (positionMs.toFloat() / durationMs.toFloat()).coerceIn(0f, 1f)
-    } else 0f
+    val activeColor = Color(0xFFFF0033)
+    val bufferedColor = Color.White.copy(alpha = 0.55f)
+    val inactiveColor = Color.White.copy(alpha = 0.3f)
+    val shown = scrubPosition ?: positionMs
+    val fraction = if (durationMs > 0L) (shown.toFloat() / durationMs.toFloat()).coerceIn(0f, 1f) else 0f
+    val bufferedFraction = (bufferedPercentage.coerceIn(0, 100) / 100f).coerceAtLeast(fraction)
+    val currentOnScrub by rememberUpdatedState(onScrub)
+    val currentOnSeek by rememberUpdatedState(onSeek)
 
     Box(
         modifier = modifier
-            .height(28.dp)
+            .height(30.dp)
             .pointerInput(durationMs, enabled) {
                 if (!enabled || durationMs <= 0L) return@pointerInput
                 awaitEachGesture {
                     val down = awaitFirstDown()
-                    fun seekAt(x: Float) {
+                    fun positionAt(x: Float): Long {
                         val width = size.width.toFloat().coerceAtLeast(1f)
-                        val target = ((x / width).coerceIn(0f, 1f) * durationMs.toDouble()).toLong()
-                        onSeek(target)
+                        return ((x / width).coerceIn(0f, 1f) * durationMs.toDouble()).toLong()
                     }
-                    seekAt(down.position.x)
+                    var last = positionAt(down.position.x)
+                    currentOnScrub(last)
                     drag(down.id) { change ->
-                        seekAt(change.position.x)
+                        last = positionAt(change.position.x)
+                        currentOnScrub(last)
                         change.consume()
                     }
+                    currentOnSeek(last)
                 }
             },
         contentAlignment = Alignment.Center
     ) {
         Canvas(modifier = Modifier.fillMaxWidth().height(16.dp)) {
             val centerY = size.height / 2f
-            val inactiveStroke = 2.2.dp.toPx()
-            val activeStroke = 2.8.dp.toPx()
-            drawLine(
-                color = inactiveColor,
-                start = Offset(0f, centerY),
-                end = Offset(size.width, centerY),
-                strokeWidth = inactiveStroke
-            )
-            val activeX = size.width * fraction
-            drawLine(
-                color = activeColor,
-                start = Offset(0f, centerY),
-                end = Offset(activeX, centerY),
-                strokeWidth = activeStroke
-            )
+            val stroke = if (scrubPosition != null) 5.dp.toPx() else 3.dp.toPx()
+            val gap = 2.dp.toPx()
+            val width = size.width
+            val starts = chapters
+                .map { if (durationMs > 0L) (it.startMs.toFloat() / durationMs.toFloat()).coerceIn(0f, 1f) else 0f }
+                .filter { it > 0.001f && it < 0.999f }
+                .distinct()
+                .sorted()
+            val bounds = listOf(0f) + starts + listOf(1f)
+            for (i in 0 until bounds.size - 1) {
+                val segStart = bounds[i] * width + if (i == 0) 0f else gap / 2f
+                val segEnd = bounds[i + 1] * width - if (i == bounds.size - 2) 0f else gap / 2f
+                if (segEnd <= segStart) continue
+                fun part(color: Color, upTo: Float) {
+                    val end = minOf(segEnd, upTo * width)
+                    if (end > segStart) {
+                        drawLine(color, Offset(segStart, centerY), Offset(end, centerY), strokeWidth = stroke)
+                    }
+                }
+                part(inactiveColor, 1f)
+                part(bufferedColor, bufferedFraction)
+                part(activeColor, fraction)
+            }
             drawCircle(
                 color = activeColor,
-                radius = 5.dp.toPx(),
-                center = Offset(activeX, centerY)
+                radius = if (scrubPosition != null) 8.dp.toPx() else 6.dp.toPx(),
+                center = Offset(width * fraction, centerY)
             )
         }
     }
@@ -1482,23 +2036,46 @@ private fun PlayerSettingsOverlay(
     modifier: Modifier,
     page: PlayerSettingsPage,
     preferredQuality: Int?,
+    currentHeight: Int,
     selectedSpeed: Float,
     autoplay: Boolean,
+    repeatOne: Boolean,
+    doubleTapSeconds: Int,
     qualities: List<com.geovideos.app.playback.StreamQualityOption>,
+    audioTracks: List<AudioTrackOption>,
+    selectedAudioTrack: String?,
+    chapters: List<VideoChapter>,
+    positionMs: Long,
     loading: Boolean,
     error: String?,
     onClose: () -> Unit,
     onBack: () -> Unit,
-    onOpenQuality: () -> Unit,
-    onOpenSpeed: () -> Unit,
+    onOpenPage: (PlayerSettingsPage) -> Unit,
     onAutoplayChange: (Boolean) -> Unit,
+    onRepeatOneChange: (Boolean) -> Unit,
     onSelectQuality: (Int?) -> Unit,
-    onSelectSpeed: (Float) -> Unit
+    onSelectSpeed: (Float) -> Unit,
+    onSelectAudioTrack: (String) -> Unit,
+    onSelectDoubleTap: (Int) -> Unit,
+    onSeekChapter: (Long) -> Unit
 ) {
+    val heights = qualities.map { it.height }.distinct().sortedDescending()
+    val highest = heights.firstOrNull()
+    val saver = heights.filter { it <= 360 }.maxOrNull() ?: heights.lastOrNull()
+    val qualityMode = when {
+        preferredQuality == null -> "Automática"
+        preferredQuality == highest && highest != null -> "Mayor calidad de imagen"
+        preferredQuality == saver && saver != null -> "Ahorro de datos"
+        else -> "Avanzado"
+    }
+    val qualityValue = when (preferredQuality) {
+        null -> if (currentHeight > 0) "Automática (${currentHeight}p)" else "Automática"
+        else -> "${preferredQuality}p"
+    }
     Surface(
         modifier = modifier,
-        shape = RoundedCornerShape(12.dp),
-        color = Color(0xF21B1A1F),
+        shape = RoundedCornerShape(14.dp),
+        color = Color(0xF2212121),
         tonalElevation = 8.dp,
         shadowElevation = 12.dp
     ) {
@@ -1516,88 +2093,146 @@ private fun PlayerSettingsOverlay(
             ) {
                 if (page != PlayerSettingsPage.ROOT) {
                     IconButton(onClick = onBack, modifier = Modifier.size(40.dp)) {
-                        Icon(Icons.Default.ArrowBack, contentDescription = "Atrás", tint = Color.White)
+                        Icon(Icons.Rounded.ArrowBack, contentDescription = "Atrás", tint = Color.White)
                     }
                 } else {
-                    Icon(Icons.Default.Settings, contentDescription = null, tint = Color.White, modifier = Modifier.size(22.dp))
-                    Spacer(Modifier.width(10.dp))
+                    Spacer(Modifier.width(8.dp))
                 }
                 Text(
                     when (page) {
                         PlayerSettingsPage.ROOT -> "Ajustes"
-                        PlayerSettingsPage.QUALITY -> "Calidad"
-                        PlayerSettingsPage.SPEED -> "Velocidad"
+                        PlayerSettingsPage.QUALITY -> "Calidad del video"
+                        PlayerSettingsPage.QUALITY_ADVANCED -> "Avanzado"
+                        PlayerSettingsPage.SPEED -> "Velocidad de reproducción"
+                        PlayerSettingsPage.AUDIO -> "Pista de audio"
+                        PlayerSettingsPage.DOUBLE_TAP -> "Doble toque para buscar"
+                        PlayerSettingsPage.CHAPTERS -> "Capítulos"
                     },
                     color = Color.White,
                     fontWeight = FontWeight.Bold,
                     modifier = Modifier.weight(1f)
                 )
-                TextButton(onClick = onClose) { Text("Cerrar") }
+                IconButton(onClick = onClose, modifier = Modifier.size(40.dp)) {
+                    Icon(Icons.Rounded.Close, contentDescription = "Cerrar", tint = Color.White)
+                }
             }
             HorizontalDivider(color = Color.White.copy(alpha = 0.12f))
 
             when (page) {
                 PlayerSettingsPage.ROOT -> {
+                    PlayerSettingsMenuRow(Icons.Rounded.Tune, "Calidad", qualityValue) { onOpenPage(PlayerSettingsPage.QUALITY) }
                     PlayerSettingsMenuRow(
-                        title = "Calidad",
-                        value = preferredQuality?.let { "${it}p" } ?: "Automática",
-                        onClick = onOpenQuality
-                    )
-                    PlayerSettingsMenuRow(
-                        title = "Velocidad",
-                        value = if (selectedSpeed == 1f) "Normal" else "${selectedSpeed}x",
-                        onClick = onOpenSpeed
-                    )
-                    PlayerSettingsToggleRow(
-                        title = "Reproducción automática",
-                        checked = autoplay,
-                        onCheckedChange = onAutoplayChange
-                    )
+                        Icons.Rounded.Speed,
+                        "Velocidad",
+                        if (selectedSpeed == 1f) "Normal" else "${selectedSpeed}x"
+                    ) { onOpenPage(PlayerSettingsPage.SPEED) }
+                    if (audioTracks.isNotEmpty()) {
+                        PlayerSettingsMenuRow(
+                            Icons.Rounded.RecordVoiceOver,
+                            "Pista de audio",
+                            audioTracks.firstOrNull { it.id == selectedAudioTrack }?.label ?: "Original"
+                        ) { onOpenPage(PlayerSettingsPage.AUDIO) }
+                    }
+                    if (chapters.isNotEmpty()) {
+                        PlayerSettingsMenuRow(Icons.Rounded.FormatListNumbered, "Capítulos", "${chapters.size}") {
+                            onOpenPage(PlayerSettingsPage.CHAPTERS)
+                        }
+                    }
+                    PlayerSettingsMenuRow(Icons.Rounded.TouchApp, "Doble toque para buscar", "$doubleTapSeconds s") {
+                        onOpenPage(PlayerSettingsPage.DOUBLE_TAP)
+                    }
+                    PlayerSettingsToggleRow(Icons.Rounded.RepeatOne, "Repetir video", repeatOne, onRepeatOneChange)
+                    PlayerSettingsToggleRow(Icons.Rounded.SlowMotionVideo, "Reproducción automática", autoplay, onAutoplayChange)
                 }
 
                 PlayerSettingsPage.QUALITY -> when {
                     loading -> Box(
                         modifier = Modifier.fillMaxWidth().height(112.dp),
                         contentAlignment = Alignment.Center
-                    ) { CircularProgressIndicator() }
-                    error != null -> Text(
-                        error,
-                        color = MaterialTheme.colorScheme.error,
+                    ) { CircularProgressIndicator(color = Color.White) }
+                    error != null -> Text(error, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(16.dp))
+                    else -> {
+                        Text(
+                            "Calidad actual: " + qualityValue,
+                            color = Color.White.copy(alpha = 0.62f),
+                            fontSize = 12.sp,
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
+                        )
+                        InPlayerChoiceRow("Automática (recomendada)", "Se ajusta según tu conexión", qualityMode == "Automática") {
+                            onSelectQuality(null)
+                        }
+                        InPlayerChoiceRow("Mayor calidad de imagen", "Usa más datos" + (highest?.let { " · ${it}p" } ?: ""), qualityMode == "Mayor calidad de imagen") {
+                            highest?.let(onSelectQuality)
+                        }
+                        InPlayerChoiceRow("Ahorro de datos", "Menor calidad de imagen" + (saver?.let { " · ${it}p" } ?: ""), qualityMode == "Ahorro de datos") {
+                            saver?.let(onSelectQuality)
+                        }
+                        InPlayerChoiceRow(
+                            "Avanzado",
+                            if (qualityMode == "Avanzado") "Elegida: ${preferredQuality}p" else "Elige una resolución específica",
+                            qualityMode == "Avanzado",
+                            trailing = "›"
+                        ) { onOpenPage(PlayerSettingsPage.QUALITY_ADVANCED) }
+                    }
+                }
+
+                PlayerSettingsPage.QUALITY_ADVANCED -> when {
+                    loading -> Box(
+                        modifier = Modifier.fillMaxWidth().height(112.dp),
+                        contentAlignment = Alignment.Center
+                    ) { CircularProgressIndicator(color = Color.White) }
+                    heights.isEmpty() -> Text(
+                        "No se encontraron varias calidades para este video.",
+                        color = Color.White.copy(alpha = 0.72f),
                         modifier = Modifier.padding(16.dp)
                     )
-                    else -> {
+                    else -> heights.forEach { height ->
                         InPlayerChoiceRow(
-                            label = "Automática",
-                            subtitle = "Se adapta a la conexión",
-                            selected = preferredQuality == null,
-                            onClick = { onSelectQuality(null) }
-                        )
-                        qualities.forEach { option ->
-                            InPlayerChoiceRow(
-                                label = option.label,
-                                subtitle = if (option.height >= 720) "Alta definición" else "Ahorra datos",
-                                selected = preferredQuality == option.height,
-                                onClick = { onSelectQuality(option.height) }
-                            )
-                        }
-                        if (qualities.isEmpty()) {
-                            Text(
-                                "No se encontraron varias calidades para este video.",
-                                color = Color.White.copy(alpha = 0.72f),
-                                modifier = Modifier.padding(16.dp)
-                            )
-                        }
+                            label = if (height >= 720) "${height}p  HD" else "${height}p",
+                            subtitle = "",
+                            selected = preferredQuality == height
+                        ) { onSelectQuality(height) }
                     }
                 }
 
                 PlayerSettingsPage.SPEED -> {
-                    listOf(0.5f, 0.75f, 1f, 1.25f, 1.5f, 2f).forEach { speed ->
+                    listOf(0.25f, 0.5f, 0.75f, 1f, 1.25f, 1.5f, 1.75f, 2f).forEach { speed ->
                         InPlayerChoiceRow(
                             label = if (speed == 1f) "Normal" else "${speed}x",
                             subtitle = "",
-                            selected = selectedSpeed == speed,
-                            onClick = { onSelectSpeed(speed) }
-                        )
+                            selected = selectedSpeed == speed
+                        ) { onSelectSpeed(speed) }
+                    }
+                }
+
+                PlayerSettingsPage.AUDIO -> {
+                    audioTracks.forEach { track ->
+                        InPlayerChoiceRow(
+                            label = track.label,
+                            subtitle = if (track.isOriginal) "Idioma original del video" else "Doblaje",
+                            selected = track.id == selectedAudioTrack
+                        ) { onSelectAudioTrack(track.id) }
+                    }
+                }
+
+                PlayerSettingsPage.DOUBLE_TAP -> {
+                    listOf(5, 10, 15, 20, 30, 60).forEach { seconds ->
+                        InPlayerChoiceRow(
+                            label = "$seconds segundos",
+                            subtitle = if (seconds == 10) "Predeterminado" else "",
+                            selected = seconds == doubleTapSeconds
+                        ) { onSelectDoubleTap(seconds) }
+                    }
+                }
+
+                PlayerSettingsPage.CHAPTERS -> {
+                    val current = chapters.lastOrNull { it.startMs <= positionMs }
+                    chapters.forEach { chapter ->
+                        InPlayerChoiceRow(
+                            label = chapter.title,
+                            subtitle = formatPlayerTime(chapter.startMs),
+                            selected = chapter == current
+                        ) { onSeekChapter(chapter.startMs) }
                     }
                 }
             }
@@ -1607,6 +2242,7 @@ private fun PlayerSettingsOverlay(
 
 @Composable
 private fun PlayerSettingsToggleRow(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
     title: String,
     checked: Boolean,
     onCheckedChange: (Boolean) -> Unit
@@ -1615,22 +2251,19 @@ private fun PlayerSettingsToggleRow(
         modifier = Modifier
             .fillMaxWidth()
             .clickable { onCheckedChange(!checked) }
-            .padding(horizontal = 16.dp, vertical = 9.dp),
+            .padding(horizontal = 16.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
+        Icon(icon, contentDescription = null, tint = Color.White, modifier = Modifier.size(22.dp))
+        Spacer(Modifier.width(16.dp))
         Text(title, color = Color.White, modifier = Modifier.weight(1f))
-        Text(
-            if (checked) "ON" else "OFF",
-            color = Color.White.copy(alpha = 0.72f),
-            style = MaterialTheme.typography.bodySmall,
-            modifier = Modifier.padding(end = 8.dp)
-        )
         Switch(checked = checked, onCheckedChange = null)
     }
 }
 
 @Composable
 private fun PlayerSettingsMenuRow(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
     title: String,
     value: String,
     onClick: () -> Unit
@@ -1639,11 +2272,20 @@ private fun PlayerSettingsMenuRow(
         modifier = Modifier
             .fillMaxWidth()
             .clickable(onClick = onClick)
-            .padding(horizontal = 16.dp, vertical = 13.dp),
+            .padding(horizontal = 16.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
+        Icon(icon, contentDescription = null, tint = Color.White, modifier = Modifier.size(22.dp))
+        Spacer(Modifier.width(16.dp))
         Text(title, color = Color.White, modifier = Modifier.weight(1f))
-        Text(value, color = Color.White.copy(alpha = 0.72f))
+        Text(
+            value,
+            color = Color.White.copy(alpha = 0.62f),
+            fontSize = 13.sp,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.widthIn(max = 130.dp)
+        )
         Text("  ›", color = Color.White, fontWeight = FontWeight.Bold)
     }
 }
@@ -1653,6 +2295,7 @@ private fun InPlayerChoiceRow(
     label: String,
     subtitle: String,
     selected: Boolean,
+    trailing: String = "",
     onClick: () -> Unit
 ) {
     Row(
@@ -1662,13 +2305,16 @@ private fun InPlayerChoiceRow(
             .padding(horizontal = 16.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
+        Box(modifier = Modifier.width(28.dp)) {
+            if (selected) Icon(Icons.Rounded.Check, contentDescription = "Elegido", tint = Color.White, modifier = Modifier.size(20.dp))
+        }
         Column(modifier = Modifier.weight(1f)) {
-            Text(label, color = Color.White, fontWeight = FontWeight.SemiBold)
+            Text(label, color = Color.White, fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium)
             if (subtitle.isNotBlank()) {
                 Text(subtitle, color = Color.White.copy(alpha = 0.62f), style = MaterialTheme.typography.bodySmall)
             }
         }
-        if (selected) Text("✓", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
+        if (trailing.isNotBlank()) Text(trailing, color = Color.White, fontWeight = FontWeight.Bold)
     }
 }
 

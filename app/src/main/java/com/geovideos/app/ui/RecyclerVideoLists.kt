@@ -28,6 +28,7 @@ import com.geovideos.app.data.ChannelItem
 import com.geovideos.app.data.CommentItem
 import com.geovideos.app.data.VideoDetails
 import com.geovideos.app.data.VideoItem
+import com.geovideos.app.network.HomeChip
 import java.time.Instant
 import kotlin.math.max
 
@@ -43,6 +44,7 @@ private object NativePools {
     }
     val player = RecyclerView.RecycledViewPool().apply {
         setMaxRecycledViews(NativePlayerAdapter.TYPE_RELATED, 14)
+        setMaxRecycledViews(NativePlayerAdapter.TYPE_RELATED_FULL, 8)
     }
 }
 
@@ -139,7 +141,13 @@ internal data class PlayerHeaderData(
     val qualityLabel: String = "Calidad",
     val audioOnly: Boolean = false,
     val mixAvailable: Boolean = false,
-    val mixCount: Int = 0
+    val mixCount: Int = 0,
+    val isSubscribed: Boolean = false,
+    val queueTitle: String = "",
+    val queueSubtitle: String = "",
+    val queuePosition: Int = 0,
+    val relatedChips: List<HomeChip> = emptyList(),
+    val selectedRelatedChip: String = ""
 )
 
 @Composable
@@ -162,7 +170,12 @@ internal fun NativePlayerDetailsList(
     onPlayRelated: (VideoItem) -> Unit,
     onSaveRelated: (VideoItem) -> Unit,
     onDownloadRelated: (VideoItem) -> Unit,
-    onLoadMore: () -> Unit
+    onLoadMore: () -> Unit,
+    onSelectChip: (HomeChip) -> Unit = {},
+    onToggleSubscribe: () -> Unit = {},
+    onOpenComments: () -> Unit = {},
+    onSeek: (Long) -> Unit = {},
+    onOpenQueue: () -> Unit = {}
 ) {
     val adapter = remember {
         NativePlayerAdapter(
@@ -212,6 +225,11 @@ internal fun NativePlayerDetailsList(
                 onToggleAudioOnly, onPictureInPicture,
                 onOpenChannel, onPlayRelated, onSaveRelated, onDownloadRelated, onLoadMore
             )
+            current.onSelectChip = onSelectChip
+            current.onToggleSubscribe = onToggleSubscribe
+            current.onOpenComments = onOpenComments
+            current.onSeek = onSeek
+            current.onOpenQueue = onOpenQueue
             current.canLoadMore = relatedCanLoadMore
             current.loadingMore = relatedLoadingMore
             current.submitContent(header, related.distinctBy { it.id }, relatedLoading, relatedLoadingMore, relatedCanLoadMore)
@@ -661,8 +679,12 @@ private sealed interface PlayerRow {
     data class Header(val data: PlayerHeaderData) : PlayerRow { override val id = Long.MIN_VALUE + 301 }
     data class Mix(val current: VideoItem, val seed: VideoItem) : PlayerRow { override val id = Long.MIN_VALUE + 302 }
     data class Related(val item: VideoItem) : PlayerRow { override val id = item.id.hashCode().toLong() }
+    /** Tarjeta grande (como YouTube) para videos relacionados que no son de un Mix. */
+    data class RelatedFull(val item: VideoItem) : PlayerRow { override val id = ("full:" + item.id).hashCode().toLong() }
     data object Loading : PlayerRow { override val id = Long.MIN_VALUE + 303 }
     data object More : PlayerRow { override val id = Long.MIN_VALUE + 304 }
+    /** Filtros de relacionados ("Todos", "De este canal", "Relacionados"...). */
+    data class Chips(val chips: List<HomeChip>, val selected: String) : PlayerRow { override val id = Long.MIN_VALUE + 305 }
 }
 
 private object PlayerRowDiff : DiffUtil.ItemCallback<PlayerRow>() {
@@ -687,6 +709,11 @@ private class NativePlayerAdapter(
 ) : ListAdapter<PlayerRow, RecyclerView.ViewHolder>(PlayerRowDiff) {
     var canLoadMore = false
     var loadingMore = false
+    var onSelectChip: (HomeChip) -> Unit = {}
+    var onToggleSubscribe: () -> Unit = {}
+    var onOpenComments: () -> Unit = {}
+    var onSeek: (Long) -> Unit = {}
+    var onOpenQueue: () -> Unit = {}
     init { setHasStableIds(true) }
 
     fun updateCallbacks(
@@ -708,7 +735,12 @@ private class NativePlayerAdapter(
         this.canLoadMore = canLoadMore
         submitList(buildList {
             add(PlayerRow.Header(header))
-            related.forEach { add(PlayerRow.Related(it)) }
+            if (!header.video.isMix && header.relatedChips.size > 1) {
+                add(PlayerRow.Chips(header.relatedChips, header.selectedRelatedChip))
+            }
+            // La cola / Mix tiene su propio panel; abajo siempre van tarjetas grandes como YouTube.
+            val compact = false
+            related.forEach { add(if (compact) PlayerRow.Related(it) else PlayerRow.RelatedFull(it)) }
             if (loading || loadingMore) add(PlayerRow.Loading)
             else if (canLoadMore) add(PlayerRow.More)
         })
@@ -719,14 +751,18 @@ private class NativePlayerAdapter(
         is PlayerRow.Header -> TYPE_HEADER
         is PlayerRow.Mix -> TYPE_MIX
         is PlayerRow.Related -> TYPE_RELATED
+        is PlayerRow.RelatedFull -> TYPE_RELATED_FULL
         PlayerRow.Loading -> TYPE_LOADING
         PlayerRow.More -> TYPE_MORE
+        is PlayerRow.Chips -> TYPE_CHIPS
     }
     override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): RecyclerView.ViewHolder = when (viewType) {
         TYPE_HEADER -> PlayerHeaderHolder(parent.context)
         TYPE_MIX -> PlayerRelatedHolder(parent.context)
         TYPE_RELATED -> PlayerRelatedHolder(parent.context)
+        TYPE_RELATED_FULL -> FullVideoHolder(parent.context)
         TYPE_LOADING -> LoadingRowHolder(parent.context)
+        TYPE_CHIPS -> PlayerChipsHolder(parent.context)
         else -> MoreRowHolder(parent.context)
     }
     override fun onBindViewHolder(holder: RecyclerView.ViewHolder, position: Int) {
@@ -734,8 +770,13 @@ private class NativePlayerAdapter(
             is PlayerRow.Header -> (holder as PlayerHeaderHolder).bind(
                 row.data, onLike, onDislike, onWatchLater, onShare,
                 onQuality, onDownload, onToggleAudioOnly,
-                onPictureInPicture, onOpenChannel
+                onPictureInPicture, onOpenChannel,
+                onToggleSubscribe = { onToggleSubscribe() },
+                onOpenComments = { onOpenComments() },
+                onSeek = { ms -> onSeek(ms) },
+                onOpenQueue = { onOpenQueue() }
             )
+            is PlayerRow.Chips -> (holder as PlayerChipsHolder).bind(row.chips, row.selected) { chip -> onSelectChip(chip) }
             is PlayerRow.Mix -> (holder as PlayerRelatedHolder).bind(
                 row.seed.copy(
                     title = "Mix: ${row.current.title}",
@@ -752,9 +793,18 @@ private class NativePlayerAdapter(
                 onPlay = onPlayRelated,
                 onDownload = onDownloadRelated
             )
+            is PlayerRow.RelatedFull -> (holder as FullVideoHolder).bind(
+                row.item,
+                onPlay = onPlayRelated,
+                onSave = onSaveRelated
+            )
             PlayerRow.More -> (holder as MoreRowHolder).bind(onLoadMore)
             PlayerRow.Loading -> Unit
         }
+    }
+    override fun onViewRecycled(holder: RecyclerView.ViewHolder) {
+        super.onViewRecycled(holder)
+        if (holder is FullVideoHolder) holder.recycle()
     }
     companion object {
         const val TYPE_HEADER = 40
@@ -762,7 +812,71 @@ private class NativePlayerAdapter(
         const val TYPE_RELATED = 42
         const val TYPE_LOADING = 43
         const val TYPE_MORE = 44
+        const val TYPE_RELATED_FULL = 45
+        const val TYPE_CHIPS = 46
     }
+}
+
+/** Fila de filtros como YouTube: píldoras grises, la elegida en blanco. */
+private class PlayerChipsHolder(context: Context) : RecyclerView.ViewHolder(HorizontalScrollView(context)) {
+    private val row = LinearLayout(context).apply {
+        orientation = LinearLayout.HORIZONTAL
+        setPadding(dp(context, 12), dp(context, 6), dp(context, 12), dp(context, 8))
+    }
+
+    init {
+        (itemView as HorizontalScrollView).apply {
+            isHorizontalScrollBarEnabled = false
+            overScrollMode = View.OVER_SCROLL_NEVER
+            setBackgroundColor(Color.BLACK)
+            layoutParams = RecyclerView.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+            addView(row)
+        }
+    }
+
+    fun bind(chips: List<HomeChip>, selected: String, onSelect: (HomeChip) -> Unit) {
+        val context = itemView.context
+        row.removeAllViews()
+        chips.forEachIndexed { index, chip ->
+            val isSelected = chip.token == selected || (selected.isBlank() && index == 0)
+            row.addView(TextView(context).apply {
+                text = chip.title
+                gravity = Gravity.CENTER
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 13.5f)
+                setTypeface(typeface, android.graphics.Typeface.BOLD)
+                setTextColor(if (isSelected) Color.BLACK else Color.WHITE)
+                background = roundedDrawable(if (isSelected) Color.WHITE else 0xFF272727.toInt(), 8f, context)
+                setPadding(dp(context, 12), 0, dp(context, 12), 0)
+                isClickable = true
+                setOnClickListener { if (!isSelected) onSelect(chip) }
+            }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(context, 32)).apply {
+                marginEnd = dp(context, 8)
+            })
+        }
+    }
+}
+
+private val TIMESTAMP_REGEX = Regex("\\b(?:(\\d{1,2}):)?(\\d{1,2}):(\\d{2})\\b")
+
+/** Descripción como YouTube: enlaces y marcas de tiempo (1:23) que se pueden tocar. */
+private fun descriptionSpannable(text: String, onSeek: (Long) -> Unit): CharSequence {
+    val spannable = android.text.SpannableString(text)
+    runCatching { android.text.util.Linkify.addLinks(spannable, android.text.util.Linkify.WEB_URLS) }
+    TIMESTAMP_REGEX.findAll(text).forEach { match ->
+        val hours = match.groupValues[1].toLongOrNull() ?: 0L
+        val minutes = match.groupValues[2].toLongOrNull() ?: return@forEach
+        val seconds = match.groupValues[3].toLongOrNull() ?: return@forEach
+        if (seconds > 59) return@forEach
+        val ms = ((hours * 3600L) + (minutes * 60L) + seconds) * 1000L
+        spannable.setSpan(object : android.text.style.ClickableSpan() {
+            override fun onClick(widget: View) = onSeek(ms)
+            override fun updateDrawState(ds: android.text.TextPaint) {
+                ds.color = 0xFF3EA6FF.toInt()
+                ds.isUnderlineText = false
+            }
+        }, match.range.first, match.range.last + 1, android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+    }
+    return spannable
 }
 
 private class PlayerHeaderHolder(context: Context) : RecyclerView.ViewHolder(PlayerHeaderView(context)) {
@@ -777,7 +891,11 @@ private class PlayerHeaderHolder(context: Context) : RecyclerView.ViewHolder(Pla
         onDownload: () -> Unit,
         onToggleAudioOnly: () -> Unit,
         onPictureInPicture: () -> Unit,
-        onOpenChannel: (ChannelItem) -> Unit
+        onOpenChannel: (ChannelItem) -> Unit,
+        onToggleSubscribe: () -> Unit = {},
+        onOpenComments: () -> Unit = {},
+        onSeek: (Long) -> Unit = {},
+        onOpenQueue: () -> Unit = {}
     ) {
         val video = data.video
         view.title.text = video.title
@@ -810,30 +928,51 @@ private class PlayerHeaderHolder(context: Context) : RecyclerView.ViewHolder(Pla
         } else {
             "Comentarios"
         }
+        // Panel de cola plegado (como YouTube): título del Mix y posición; al tocar se abre.
         view.mixBanner.visibility = if (data.mixAvailable) View.VISIBLE else View.GONE
-        view.tabsRow.visibility = if (data.mixAvailable) View.GONE else View.VISIBLE
-        view.normalInfoContent.visibility = if (data.mixAvailable) View.GONE else View.VISIBLE
+        view.tabsRow.visibility = View.VISIBLE
+        view.normalInfoContent.visibility = View.VISIBLE
         view.mixBanner.text = if (data.mixAvailable) {
-            val mixTitle = video.title.removePrefix("Mix:").trim().take(42)
+            val mixTitle = data.queueTitle.ifBlank { "Mix" }.take(60)
             val total = data.mixCount.coerceAtLeast(1)
-            "☷  Mix: $mixTitle                         1/$total  ⌃"
+            val position = data.queuePosition.coerceIn(1, total)
+            buildString {
+                append(mixTitle)
+                append("\n")
+                if (data.queueSubtitle.isNotBlank()) append(data.queueSubtitle).append(" · ")
+                append("$position/$total   ·   Ver la cola ⌄")
+            }
         } else {
             ""
         }
-        view.description.text = data.description
+        view.mixBanner.setOnClickListener { onOpenQueue() }
+        view.description.text = descriptionSpannable(data.description, onSeek)
+        view.description.movementMethod = android.text.method.LinkMovementMethod.getInstance()
+        view.description.linksClickable = true
         view.descriptionToggle.visibility = if (data.description.isBlank()) View.GONE else View.VISIBLE
-        view.descriptionBox.visibility = View.GONE
-        view.descriptionToggle.text = "Descripción   Más"
-        view.descriptionToggle.setOnClickListener {
+        if (view.boundVideoId != video.id) {
+            view.boundVideoId = video.id
+            view.descriptionBox.visibility = View.GONE
+            view.showInfo()
+        }
+        val expandedNow = view.descriptionBox.visibility == View.VISIBLE
+        view.descriptionToggle.text = if (expandedNow) "Descripción   Menos" else "Descripción   Más"
+        val toggleDescription = View.OnClickListener {
+            if (data.description.isBlank()) return@OnClickListener
             val expanded = view.descriptionBox.visibility == View.VISIBLE
             view.descriptionBox.visibility = if (expanded) View.GONE else View.VISIBLE
             view.descriptionToggle.text = if (expanded) "Descripción   Más" else "Descripción   Menos"
         }
+        view.descriptionToggle.setOnClickListener(toggleDescription)
+        view.meta.setOnClickListener(toggleDescription)
+        view.title.setOnClickListener(toggleDescription)
         bindCommentPreview(view.commentsBox, data.details?.comments.orEmpty())
         view.infoTab.setOnClickListener { view.showInfo() }
-        view.commentsTab.setOnClickListener { view.showComments() }
+        // Como YouTube: los comentarios se abren en una hoja con orden, respuestas y "más".
+        view.commentsTab.setOnClickListener { onOpenComments() }
+        view.commentsBox.setOnClickListener { onOpenComments() }
+        view.commentsRow.setOnClickListener { onOpenComments() }
         view.commentsHint.setOnClickListener { view.showInfo() }
-        view.showInfo()
         view.like.setOnClickListener { onLike() }
         view.dislike.setOnClickListener { onDislike() }
         view.watchLater.setOnClickListener { onWatchLater() }
@@ -843,13 +982,22 @@ private class PlayerHeaderHolder(context: Context) : RecyclerView.ViewHolder(Pla
         view.music.setOnClickListener { onToggleAudioOnly() }
         view.window.setOnClickListener { onPictureInPicture() }
         view.channelButton.visibility = if (video.channelId.isBlank()) View.GONE else View.VISIBLE
-        view.channelButton.text = "VER CANAL"
+        // Píldora de YouTube: "Suscribirse" en blanco, "Suscrito" en gris con campana.
+        view.channelButton.text = if (data.isSubscribed) "\uD83D\uDD14  Suscrito  ⌄" else "Suscribirse"
+        view.channelButton.setTextColor(if (data.isSubscribed) Color.WHITE else Color.BLACK)
+        view.channelButton.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13.5f)
+        view.channelButton.background = roundedDrawable(
+            if (data.isSubscribed) 0xFF272727.toInt() else Color.WHITE,
+            18f,
+            view.context
+        )
+        view.channelButton.setPadding(dp(view.context, 14), 0, dp(view.context, 14), 0)
         val openChannel = View.OnClickListener {
             if (video.channelId.isNotBlank()) {
                 onOpenChannel(ChannelItem(video.channelId, video.channelTitle, data.channelAvatar))
             }
         }
-        view.channelButton.setOnClickListener(openChannel)
+        view.channelButton.setOnClickListener { onToggleSubscribe() }
         view.avatar.setOnClickListener(openChannel)
         view.channel.setOnClickListener(openChannel)
         view.subscribers.setOnClickListener(openChannel)
@@ -872,6 +1020,7 @@ private class PlayerHeaderView(context: Context) : LinearLayout(context) {
     val channel = TextView(context)
     val subscribers = TextView(context)
     val channelButton = TextView(context)
+    var boundVideoId: String = ""
     val like = PlayerActionView(context, com.geovideos.app.R.drawable.ic_short_like, "Me gusta")
     val dislike = PlayerActionView(context, com.geovideos.app.R.drawable.ic_short_dislike, "No me gusta")
     val watchLater = PlayerActionView(context, com.geovideos.app.R.drawable.ic_short_save, "Ver después")

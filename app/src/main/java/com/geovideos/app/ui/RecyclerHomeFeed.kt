@@ -27,6 +27,7 @@ import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.ListAdapter
 import androidx.recyclerview.widget.RecyclerView
 import com.bumptech.glide.Glide
+import com.geovideos.app.data.HomeFeedEntry
 import com.geovideos.app.data.VideoItem
 import kotlin.math.roundToInt
 
@@ -36,7 +37,8 @@ internal fun RecyclerHomeFeed(
     videos: List<VideoItem>,
     shorts: List<VideoItem>,
     showShortsShelf: Boolean,
-    mixVideo: VideoItem?,
+    orderedFeed: List<HomeFeedEntry>,
+    mixes: List<VideoItem>,
     loading: Boolean,
     refreshing: Boolean,
     loadingMore: Boolean,
@@ -48,7 +50,8 @@ internal fun RecyclerHomeFeed(
     onOpenShort: (VideoItem) -> Unit,
     onWatchLater: (VideoItem) -> Unit,
     scrollToTopSignal: Long,
-    onAtTopChanged: (Boolean) -> Unit
+    onAtTopChanged: (Boolean) -> Unit,
+    onVideoMenu: (VideoItem, String) -> Unit = { _, _ -> }
 ) {
     var recyclerViewRef by remember { mutableStateOf<RecyclerView?>(null) }
     val adapter = remember {
@@ -217,6 +220,7 @@ internal fun RecyclerHomeFeed(
             homeAdapter.onPlay = onPlay
             homeAdapter.onOpenShort = onOpenShort
             homeAdapter.onWatchLater = onWatchLater
+            homeAdapter.onVideoMenu = onVideoMenu
             homeAdapter.onLoadMore = onLoadMore
             homeAdapter.canLoadMore = canLoadMore
             homeAdapter.loadingMore = loadingMore
@@ -224,7 +228,8 @@ internal fun RecyclerHomeFeed(
                 videos = videos,
                 shorts = shorts,
                 showShortsShelf = showShortsShelf,
-                mixVideo = mixVideo,
+                orderedFeed = orderedFeed,
+                mixes = mixes,
                 watchLaterIds = watchLaterIds,
                 loading = loading,
                 refreshing = refreshing,
@@ -262,7 +267,12 @@ private sealed interface HomeFeedRow {
     }
 
     data class Mix(val video: VideoItem) : HomeFeedRow {
-        override val stableId: Long = Long.MIN_VALUE + 11
+        override val stableId: Long = ("mix:" + video.mixPlaylistId.ifBlank { video.id }).hashCode().toLong()
+    }
+
+    /** Bloque de Shorts en cuadrícula 2×2, como el inicio de YouTube. */
+    data class ShortsGrid(val videos: List<VideoItem>, val index: Int) : HomeFeedRow {
+        override val stableId: Long = Long.MIN_VALUE + 200 + index
     }
 
     data class Video(val video: VideoItem, val saved: Boolean) : HomeFeedRow {
@@ -299,6 +309,7 @@ private class HomeFeedAdapter(
     var onLoadMore: () -> Unit = {}
     var canLoadMore: Boolean = false
     var loadingMore: Boolean = false
+    var onVideoMenu: (VideoItem, String) -> Unit = { _, _ -> }
 
     init {
         setHasStableIds(true)
@@ -308,24 +319,61 @@ private class HomeFeedAdapter(
         videos: List<VideoItem>,
         shorts: List<VideoItem>,
         showShortsShelf: Boolean,
-        mixVideo: VideoItem?,
+        orderedFeed: List<HomeFeedEntry>,
+        mixes: List<VideoItem>,
         watchLaterIds: Set<String>,
         loading: Boolean,
         refreshing: Boolean,
         loadingMore: Boolean
     ) {
-        val hasContent = videos.isNotEmpty() || shorts.isNotEmpty() || mixVideo != null
-        val rows = buildList {
-            // Principal siempre reserva primero la zona de Shorts. En una cuenta recién
-            // conectada se ve el skeleton de esa fila mientras llegan Shorts reales, y debajo
-            // pueden aparecer ya los videos de suscripciones sin invertir el orden de la Home.
-            if (showShortsShelf) {
-                if (shorts.isNotEmpty()) add(HomeFeedRow.Shorts(shorts.take(14)))
-                else if (loading) add(HomeFeedRow.Skeleton(index = 0, shortsStyle = true))
+        val hasContent = videos.isNotEmpty() || shorts.isNotEmpty() || mixes.isNotEmpty()
+        // Feed variado como YouTube: un video, Shorts 2×2, videos, un Mix, más videos,
+        // otro bloque de Shorts… en lugar de una sola fila arriba.
+        val shortGroups = if (showShortsShelf) {
+            shorts.chunked(4).filter { it.size >= 2 }.take(8)
+        } else {
+            emptyList()
+        }
+        if (orderedFeed.isNotEmpty()) {
+            // Orden exacto de YouTube: no se reordena ni se intercala nada por cuenta propia.
+            var shelfIndex = 0
+            val ordered = buildList {
+                orderedFeed.forEach { entry ->
+                    when (entry) {
+                        is HomeFeedEntry.Video -> add(HomeFeedRow.Video(entry.video, entry.video.id in watchLaterIds))
+                        is HomeFeedEntry.Shorts -> if (entry.shorts.size >= 2) {
+                            add(HomeFeedRow.ShortsGrid(entry.shorts.take(4), shelfIndex))
+                            shelfIndex += 1
+                        }
+                        is HomeFeedEntry.Mix -> add(HomeFeedRow.Mix(entry.mix))
+                    }
+                }
+                if (loadingMore && !refreshing) add(HomeFeedRow.Loading)
             }
-            mixVideo?.let { add(HomeFeedRow.Mix(it)) }
-            videos.forEach { video ->
+            this.loadingMore = loadingMore
+            submitList(ordered)
+            return
+        }
+        val rows = buildList {
+            if (showShortsShelf && shorts.isEmpty() && loading) {
+                add(HomeFeedRow.Skeleton(index = 0, shortsStyle = true))
+            }
+            var groupIndex = 0
+            var mixIndex = 0
+            videos.forEachIndexed { index, video ->
                 add(HomeFeedRow.Video(video, video.id in watchLaterIds))
+                if ((index == 0 || index % 8 == 0) && groupIndex < shortGroups.size) {
+                    add(HomeFeedRow.ShortsGrid(shortGroups[groupIndex], groupIndex))
+                    groupIndex += 1
+                }
+                if (index % 6 == 3 && mixIndex < mixes.size) {
+                    add(HomeFeedRow.Mix(mixes[mixIndex]))
+                    mixIndex += 1
+                }
+            }
+            if (videos.isEmpty()) {
+                shortGroups.firstOrNull()?.let { add(HomeFeedRow.ShortsGrid(it, 0)) }
+                mixes.firstOrNull()?.let { add(HomeFeedRow.Mix(it)) }
             }
             when {
                 loadingMore && !refreshing -> add(HomeFeedRow.Loading)
@@ -345,6 +393,7 @@ private class HomeFeedAdapter(
 
     override fun getItemViewType(position: Int): Int = when (getItem(position)) {
         is HomeFeedRow.Shorts -> TYPE_SHORTS
+        is HomeFeedRow.ShortsGrid -> TYPE_SHORTS_GRID
         is HomeFeedRow.Mix -> TYPE_MIX
         is HomeFeedRow.Video -> TYPE_VIDEO
         is HomeFeedRow.Skeleton -> TYPE_SKELETON
@@ -354,6 +403,7 @@ private class HomeFeedAdapter(
 
     override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): RecyclerView.ViewHolder = when (viewType) {
         TYPE_SHORTS -> ShortsShelfHolder(parent.context, onOpenShort)
+        TYPE_SHORTS_GRID -> ShortsGridHolder(parent.context)
         TYPE_MIX -> MixHolder(parent.context, onPlay)
         TYPE_VIDEO -> VideoHolder(parent.context, onPlay, onWatchLater)
         TYPE_SKELETON -> SkeletonHolder(parent.context)
@@ -364,8 +414,13 @@ private class HomeFeedAdapter(
     override fun onBindViewHolder(holder: RecyclerView.ViewHolder, position: Int) {
         when (val row = getItem(position)) {
             is HomeFeedRow.Shorts -> (holder as ShortsShelfHolder).bind(row.videos, onOpenShort)
+            is HomeFeedRow.ShortsGrid -> (holder as ShortsGridHolder).bind(row.videos, onOpenShort)
             is HomeFeedRow.Mix -> (holder as MixHolder).bind(row.video, onPlay)
-            is HomeFeedRow.Video -> (holder as VideoHolder).bind(row.video, row.saved, onPlay, onWatchLater)
+            is HomeFeedRow.Video -> {
+                val videoHolder = holder as VideoHolder
+                videoHolder.bind(row.video, row.saved, onPlay, onWatchLater)
+                videoHolder.bindMenu(row.video, row.saved) { video, action -> onVideoMenu(video, action) }
+            }
             is HomeFeedRow.Skeleton -> (holder as SkeletonHolder).bind(row.shortsStyle)
             HomeFeedRow.Loading -> Unit
             HomeFeedRow.Empty -> Unit
@@ -378,6 +433,7 @@ private class HomeFeedAdapter(
             is VideoHolder -> holder.recycle()
             is MixHolder -> holder.recycle()
             is ShortsShelfHolder -> holder.recycle()
+            is ShortsGridHolder -> holder.recycle()
         }
     }
 
@@ -388,6 +444,7 @@ private class HomeFeedAdapter(
         const val TYPE_LOADING = 4
         const val TYPE_EMPTY = 5
         const val TYPE_SKELETON = 6
+        const val TYPE_SHORTS_GRID = 7
     }
 }
 
@@ -405,10 +462,15 @@ private class MixHolder(
         val mixVideo = video.copy(isMix = true)
         current = mixVideo
         card.setOnClickListener { onPlay(mixVideo) }
-        card.title.text = "Mix: ${video.title}"
-        card.subtitle.text = buildString {
-            append(video.channelTitle.ifBlank { "Selección automática" })
-            append(" y más")
+        val realMix = video.mixPlaylistId.isNotBlank()
+        card.title.text = if (realMix) video.title else "Mix: ${video.title}"
+        card.subtitle.text = if (realMix) {
+            video.channelTitle
+        } else {
+            buildString {
+                append(video.channelTitle.ifBlank { "Selección automática" })
+                append(" y más")
+            }
         }
         loadClearThumbnail(card.image, video.thumbnailUrl, 720, 405)
     }
@@ -443,7 +505,7 @@ private class VideoHolder(
         card.setOnClickListener { onPlay(video) }
         card.moreButton.setOnClickListener { onWatchLater(video) }
         card.titleView.text = video.title
-        card.channelView.text = buildString {
+        val metaText = buildString {
             append(video.channelTitle)
             if (video.viewCountText.isNotBlank()) {
                 if (isNotEmpty()) append(" · ")
@@ -455,6 +517,7 @@ private class VideoHolder(
                 append(published)
             }
         }
+        card.channelView.text = withNewBadge(metaText, video.isNew)
         card.moreButton.text = if (saved) "✓" else "⋮"
         card.liveBadge.visibility = if (video.isLive) View.VISIBLE else View.GONE
         card.durationBadge.text = formatRecyclerDuration(video.durationMs)
@@ -476,6 +539,31 @@ private class VideoHolder(
                 .error(avatarPlaceholder())
                 .circleCrop()
                 .into(card.avatar)
+        }
+    }
+
+    /** Menú ⋮ de YouTube: Ver más tarde, Compartir, No me interesa, No recomendar el canal. */
+    fun bindMenu(video: VideoItem, saved: Boolean, onAction: (VideoItem, String) -> Unit) {
+        card.moreButton.text = "⋮"
+        card.moreButton.setOnClickListener { anchor ->
+            val menu = android.widget.PopupMenu(anchor.context, anchor, Gravity.END)
+            menu.menu.add(0, 1, 0, if (saved) "Quitar de Ver más tarde" else "Guardar en Ver más tarde")
+            menu.menu.add(0, 2, 1, "Compartir")
+            menu.menu.add(0, 3, 2, "Descargar")
+            menu.menu.add(0, 4, 3, "No me interesa")
+            menu.menu.add(0, 5, 4, "No recomendar el canal")
+            menu.setOnMenuItemClickListener { item ->
+                val action = when (item.itemId) {
+                    1 -> "later"
+                    2 -> "share"
+                    3 -> "download"
+                    4 -> "not_interested"
+                    else -> "dont_recommend"
+                }
+                onAction(video, action)
+                true
+            }
+            menu.show()
         }
     }
 
@@ -509,6 +597,153 @@ private class ShortsShelfHolder(
     fun recycle() {
         // The nested RecyclerView owns its recycled image requests.
     }
+}
+
+private class ShortsGridHolder(context: Context) : RecyclerView.ViewHolder(ShortsGridView(context)) {
+    private val grid = itemView as ShortsGridView
+
+    fun bind(videos: List<VideoItem>, onOpenShort: (VideoItem) -> Unit) {
+        grid.tiles.forEachIndexed { index, tile ->
+            val video = videos.getOrNull(index)
+            if (video == null) {
+                tile.visibility = View.INVISIBLE
+                tile.setOnClickListener(null)
+            } else {
+                tile.visibility = View.VISIBLE
+                tile.title.text = video.title
+                tile.badge.visibility = if (video.isNew) View.VISIBLE else View.GONE
+                tile.setOnClickListener { onOpenShort(video) }
+                loadClearThumbnail(tile.image, video.thumbnailUrl, 360, 540)
+            }
+        }
+        // Si el bloque solo tiene 2 Shorts, la segunda fila no ocupa espacio.
+        grid.secondRow.visibility = if (videos.size > 2) View.VISIBLE else View.GONE
+    }
+
+    fun recycle() {
+        grid.tiles.forEach { tile ->
+            Glide.with(tile.image).clear(tile.image)
+            tile.setOnClickListener(null)
+        }
+    }
+}
+
+/** "Shorts" + cuadrícula 2×2 con esquinas redondeadas y etiqueta "Nuevo". */
+private class ShortsGridView(context: Context) : LinearLayout(context) {
+    val tiles = List(4) { ShortTileView(context) }
+    val secondRow = LinearLayout(context)
+
+    init {
+        orientation = VERTICAL
+        layoutParams = RecyclerView.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+        setPadding(dp(context, 12), dp(context, 6), dp(context, 12), dp(context, 18))
+
+        addView(TextView(context).apply {
+            text = "⚡  Shorts"
+            setTextColor(Color.WHITE)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 19f)
+            setTypeface(typeface, android.graphics.Typeface.BOLD)
+        }, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+            setMargins(dp(context, 4), 0, 0, dp(context, 10))
+        })
+
+        val firstRow = LinearLayout(context)
+        listOf(firstRow, secondRow).forEachIndexed { rowIndex, row ->
+            row.orientation = HORIZONTAL
+            listOf(tiles[rowIndex * 2], tiles[rowIndex * 2 + 1]).forEachIndexed { column, tile ->
+                row.addView(tile, LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+                    if (column == 0) marginEnd = dp(context, 4) else marginStart = dp(context, 4)
+                })
+            }
+            addView(row, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                if (rowIndex == 1) topMargin = dp(context, 8)
+            })
+        }
+    }
+}
+
+private class ShortTileView(context: Context) : FrameLayout(context) {
+    val image = ImageView(context)
+    val title = TextView(context)
+    val badge = TextView(context)
+
+    init {
+        isClickable = true
+        isFocusable = true
+        setBackgroundColor(0xFF1C1C22.toInt())
+        val radius = dp(context, 12).toFloat()
+        outlineProvider = object : android.view.ViewOutlineProvider() {
+            override fun getOutline(view: View, outline: android.graphics.Outline) {
+                outline.setRoundRect(0, 0, view.width, view.height, radius)
+            }
+        }
+        clipToOutline = true
+
+        image.scaleType = ImageView.ScaleType.CENTER_CROP
+        addView(image, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+
+        addView(View(context).apply {
+            background = GradientDrawable(
+                GradientDrawable.Orientation.TOP_BOTTOM,
+                intArrayOf(0x00000000, 0x00000000, 0xD0000000.toInt())
+            )
+        }, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+
+        title.setTextColor(Color.WHITE)
+        title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
+        title.setTypeface(title.typeface, android.graphics.Typeface.BOLD)
+        title.maxLines = 2
+        title.ellipsize = android.text.TextUtils.TruncateAt.END
+        title.setShadowLayer(4f, 0f, 1f, 0xAA000000.toInt())
+        addView(title, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM).apply {
+            setMargins(dp(context, 10), 0, dp(context, 10), dp(context, 10))
+        })
+
+        badge.text = "Nuevo"
+        badge.setTextColor(Color.BLACK)
+        badge.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+        badge.setTypeface(badge.typeface, android.graphics.Typeface.BOLD)
+        badge.setPadding(dp(context, 6), dp(context, 2), dp(context, 6), dp(context, 2))
+        badge.background = GradientDrawable().apply {
+            cornerRadius = dp(context, 4).toFloat()
+            setColor(Color.WHITE)
+        }
+        badge.visibility = View.GONE
+        addView(badge, LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.START).apply {
+            setMargins(dp(context, 8), dp(context, 8), 0, 0)
+        })
+    }
+
+    override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+        val width = MeasureSpec.getSize(widthMeasureSpec)
+        val height = (width * 1.5f).toInt()
+        super.onMeasure(
+            MeasureSpec.makeMeasureSpec(width, MeasureSpec.EXACTLY),
+            MeasureSpec.makeMeasureSpec(height, MeasureSpec.EXACTLY)
+        )
+    }
+}
+
+/** Agrega la etiqueta "Nuevo" (gris, como YouTube) al final de los datos del video. */
+private fun withNewBadge(text: String, isNew: Boolean): CharSequence {
+    if (!isNew) return text
+    val builder = android.text.SpannableStringBuilder(text)
+    if (builder.isNotEmpty()) builder.append("  ")
+    val start = builder.length
+    builder.append(" Nuevo ")
+    builder.setSpan(
+        android.text.style.BackgroundColorSpan(0xFF3A3A42.toInt()),
+        start,
+        builder.length,
+        android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+    )
+    builder.setSpan(
+        android.text.style.ForegroundColorSpan(Color.WHITE),
+        start,
+        builder.length,
+        android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+    )
+    return builder
 }
 
 private class SkeletonHolder(context: Context) : RecyclerView.ViewHolder(SkeletonFeedView(context)) {

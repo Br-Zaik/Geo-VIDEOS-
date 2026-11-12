@@ -1,6 +1,11 @@
 package com.geovideos.app.network
 
 import com.geovideos.app.data.ChannelItem
+import com.geovideos.app.data.CommentItem
+import com.geovideos.app.data.NotificationItem
+import com.geovideos.app.data.NotificationsPage
+import com.geovideos.app.data.CommentsPage
+import com.geovideos.app.data.HomeFeedEntry
 import com.geovideos.app.data.PlaylistItem
 import com.geovideos.app.data.VideoItem
 import kotlinx.coroutines.Dispatchers
@@ -26,11 +31,73 @@ data class InnerTubePage(
     val continuation: String,
     val channels: List<ChannelItem> = emptyList(),
     val playlists: List<PlaylistItem> = emptyList(),
-    val chips: List<HomeChip> = emptyList()
+    val chips: List<HomeChip> = emptyList(),
+    /** Mixes reales de YouTube (listas RD…) listos para mostrar como tarjeta. */
+    val mixes: List<VideoItem> = emptyList(),
+    /** Todo en el orden exacto de YouTube: videos, bloques de Shorts y Mixes. */
+    val feed: List<HomeFeedEntry> = emptyList()
 )
 
 /** Filtro de YouTube (Videojuegos, Música, En vivo…) con su token para cargarlo. */
+data class MixPanel(
+    val title: String,
+    val owner: String,
+    val videos: List<VideoItem>
+)
+
 data class HomeChip(val title: String, val token: String)
+
+/** Resultados de búsqueda en el orden exacto de YouTube (videos, canales, listas, Shorts, estanterías). */
+sealed interface SearchEntry {
+    data class Video(val video: VideoItem) : SearchEntry
+    data class Channel(val channel: ChannelItem) : SearchEntry
+    data class Playlist(val playlist: PlaylistItem, val mix: VideoItem?) : SearchEntry
+    data class Shorts(val shorts: List<VideoItem>) : SearchEntry
+    data class Shelf(val title: String, val videos: List<VideoItem>) : SearchEntry
+}
+
+data class SearchResults(
+    val entries: List<SearchEntry>,
+    val continuation: String,
+    val correctedQuery: String,
+    val page: InnerTubePage
+)
+
+/** Pestaña de un canal tal como la manda YouTube (Inicio, Videos, Shorts, En vivo, Listas...). */
+data class ChannelTabInfo(val title: String, val params: String, val selected: Boolean)
+
+/** Estantería de la pestaña Inicio de un canal ("Videos", "Shorts", "Populares"...). */
+data class ChannelShelf(
+    val title: String,
+    val videos: List<VideoItem>,
+    val shorts: List<VideoItem>,
+    val playlists: List<PlaylistItem>
+)
+
+/** Publicación de la comunidad del canal. */
+data class ChannelPost(
+    val id: String,
+    val text: String,
+    val published: String,
+    val likes: String,
+    val imageUrl: String
+)
+
+data class ChannelPageData(
+    val channel: ChannelItem,
+    val tabs: List<ChannelTabInfo>,
+    val shelves: List<ChannelShelf>,
+    val featured: VideoItem?
+)
+
+data class ChannelTabPage(
+    val videos: List<VideoItem>,
+    val shorts: List<VideoItem>,
+    val playlists: List<PlaylistItem>,
+    val posts: List<ChannelPost>,
+    val chips: List<HomeChip>,
+    val continuation: String
+)
 
 /**
  * Cliente de la API interna de YouTube (la misma que usa youtube.com) con la sesión
@@ -174,7 +241,178 @@ class InnerTubeClient(private val cookieProvider: () -> String) {
         return json.optString("playlistId")
     }
 
-    suspend fun history(continuation: String = ""): InnerTubePage = browse("FEhistory", continuation)
+    /** Historial de YouTube con el día de cada video ("Hoy", "Ayer", "martes"…). */
+    suspend fun history(continuation: String = ""): InnerTubePage = withContext(Dispatchers.IO) {
+        val body = baseBody(WEB)
+        if (continuation.isNotBlank()) body.put("continuation", continuation) else body.put("browseId", "FEhistory")
+        val json = post("browse", body, WEB)
+        val page = parsePage(json)
+        val sectionById = HashMap<String, String>()
+        collectObjects(json, "itemSectionRenderer").forEach { section ->
+            val title = text(findFirst(section.opt("header"), "title"))
+            if (title.isBlank()) return@forEach
+            val inSection = parsePage(section)
+            (inSection.videos + inSection.shorts).forEach { video ->
+                if (!sectionById.containsKey(video.id)) sectionById[video.id] = title
+            }
+        }
+        page.copy(
+            videos = page.videos.map { it.copy(historySection = sectionById[it.id].orEmpty()) },
+            shorts = page.shorts.map { it.copy(historySection = sectionById[it.id].orEmpty()) }
+        )
+    }
+
+    /** Sugerencias de búsqueda (las mismas del cuadro de búsqueda de YouTube). */
+    suspend fun searchSuggestions(query: String): List<String> = withContext(Dispatchers.IO) {
+        val clean = query.trim()
+        if (clean.isBlank()) return@withContext emptyList()
+        val url = "https://suggestqueries-clients6.youtube.com/complete/search?client=youtube&ds=yt&hl=es&gl=pe&q=" + encode(clean)
+        val connection = (URL(url).openConnection() as HttpURLConnection).apply {
+            connectTimeout = 4_000
+            readTimeout = 4_000
+            setRequestProperty("User-Agent", WEB.userAgent)
+        }
+        try {
+            val text = connection.inputStream.bufferedReader().use { it.readText() }
+            val start = text.indexOf('[')
+            val end = text.lastIndexOf(']')
+            if (start < 0 || end <= start) return@withContext emptyList()
+            val list = JSONArray(text.substring(start, end + 1)).optJSONArray(1) ?: return@withContext emptyList()
+            (0 until list.length()).mapNotNull { list.optJSONArray(it)?.optString(0) }
+                .filter { it.isNotBlank() }
+                .take(12)
+        } finally {
+            connection.disconnect()
+        }
+    }
+
+    /** Búsqueda con filtro (params) y resultados mezclados en el orden de YouTube. */
+    suspend fun searchResults(query: String, params: String = "", continuation: String = ""): SearchResults =
+        withContext(Dispatchers.IO) {
+            val body = baseBody(WEB)
+            if (continuation.isNotBlank()) {
+                body.put("continuation", continuation)
+            } else {
+                body.put("query", query)
+                if (params.isNotBlank()) body.put("params", params)
+            }
+            val json = post("search", body, WEB)
+            val page = parsePage(json)
+            val entries = ArrayList<SearchEntry>()
+            val seen = HashSet<String>()
+            var corrected = ""
+            val skip = setOf(
+                "adSlotRenderer", "promotedSparklesWebRenderer", "searchPyvRenderer",
+                "horizontalCardListRenderer", "messageRenderer", "backgroundPromoRenderer",
+                "continuationItemRenderer"
+            )
+            collectObjects(json, "itemSectionRenderer").forEach { section ->
+                val contents = section.optJSONArray("contents") ?: return@forEach
+                for (i in 0 until contents.length()) {
+                    val item = contents.optJSONObject(i) ?: continue
+                    val keys = item.keys()
+                    if (!keys.hasNext()) continue
+                    val key = keys.next()
+                    if (key in skip) continue
+                    val inner = item.optJSONObject(key)
+                    if (key == "showingResultsForRenderer" || key == "didYouMeanRenderer") {
+                        corrected = text(inner?.opt("correctedQuery"))
+                        continue
+                    }
+                    val single = parsePage(item)
+                    val title = text(inner?.opt("title")).ifBlank {
+                        findFirstString(inner?.opt("title"), "content") { it.isNotBlank() }.orEmpty()
+                    }
+                    when {
+                        single.channels.isNotEmpty() -> single.channels.forEach { channel ->
+                            if (seen.add("c:" + channel.id)) entries.add(SearchEntry.Channel(channel))
+                        }
+                        single.playlists.isNotEmpty() && single.videos.size <= 1 && key != "shelfRenderer" -> {
+                            val playlist = single.playlists.first()
+                            if (seen.add("p:" + playlist.id)) entries.add(SearchEntry.Playlist(playlist, single.mixes.firstOrNull()))
+                        }
+                        single.shorts.isNotEmpty() && single.videos.isEmpty() -> {
+                            val fresh = single.shorts.filter { seen.add(it.id) }
+                            if (fresh.isNotEmpty()) {
+                                val last = entries.lastOrNull()
+                                if (last is SearchEntry.Shorts) entries[entries.size - 1] = SearchEntry.Shorts(last.shorts + fresh)
+                                else entries.add(SearchEntry.Shorts(fresh))
+                            }
+                        }
+                        single.videos.size == 1 && key != "shelfRenderer" -> {
+                            val video = single.videos.first()
+                            if (seen.add(video.id)) entries.add(SearchEntry.Video(video))
+                        }
+                        single.videos.isNotEmpty() -> {
+                            val fresh = single.videos.filter { seen.add(it.id) }
+                            if (fresh.isNotEmpty()) entries.add(SearchEntry.Shelf(title.ifBlank { "Más resultados" }, fresh))
+                        }
+                    }
+                }
+            }
+            SearchResults(entries, page.continuation, corrected, page)
+        }
+
+    // ------------------------------------------------------------ Notificaciones
+
+    /** Cuántas notificaciones sin ver hay (el número rojo de la campana). */
+    suspend fun unseenNotifications(): Int = withContext(Dispatchers.IO) {
+        val json = post("notification/get_unseen_count", baseBody(WEB), WEB)
+        val direct = json.optInt("unseenCount", -1)
+        if (direct >= 0) return@withContext direct
+        collectObjects(json, "updateNotificationsUnseenCountAction").firstOrNull()?.optInt("unseenCount", 0) ?: 0
+    }
+
+    /** Bandeja de notificaciones con secciones ("Importante", "Más notificaciones") y continuación. */
+    suspend fun notifications(continuation: String = ""): NotificationsPage = withContext(Dispatchers.IO) {
+        val body = baseBody(WEB)
+        if (continuation.isNotBlank()) {
+            body.put("ctoken", continuation)
+        } else {
+            body.put("notificationsMenuRequestType", "NOTIFICATIONS_MENU_REQUEST_TYPE_INBOX")
+        }
+        val json = post("notification/get_notification_menu", body, WEB)
+        val items = ArrayList<NotificationItem>()
+        fun read(notification: JSONObject, section: String) {
+            val title = text(notification.opt("shortMessage"))
+            if (title.isBlank()) return
+            val videoId = findFirstString(notification.opt("navigationEndpoint"), "videoId") { it.length == 11 }
+            val videoThumb = notification.optJSONObject("videoThumbnail")?.let { lastThumb(it) }.orEmpty()
+            val avatar = notification.optJSONObject("thumbnail")?.let { lastThumb(it) }.orEmpty()
+            items.add(
+                NotificationItem(
+                    id = notification.optString("notificationId").ifBlank { videoId ?: title },
+                    title = title,
+                    subtitle = text(notification.opt("sentTimeText")),
+                    thumbnailUrl = videoThumb.ifBlank { avatar },
+                    video = videoId?.let {
+                        VideoItem(
+                            id = it,
+                            title = title,
+                            channelTitle = "",
+                            thumbnailUrl = videoThumb.ifBlank { "https://i.ytimg.com/vi/$it/hqdefault.jpg" }
+                        )
+                    },
+                    avatarUrl = avatar,
+                    section = section,
+                    read = notification.optBoolean("read", true)
+                )
+            )
+        }
+        val sections = collectObjects(json, "multiPageMenuNotificationSectionRenderer")
+        if (sections.isEmpty()) {
+            collectObjects(json, "notificationRenderer").forEach { read(it, "") }
+        } else {
+            sections.forEach { section ->
+                val title = text(section.opt("sectionTitle")).ifBlank { text(section.opt("title")) }
+                collectObjects(section, "notificationRenderer").forEach { read(it, title) }
+            }
+        }
+        val next = findFirstString(json, "token") { it.isNotBlank() }
+            ?: findFirstString(json, "continuation") { it.isNotBlank() }
+            ?: ""
+        NotificationsPage(items.distinctBy { it.id }, if (items.isEmpty()) "" else next)
+    }
 
     suspend fun watchLater(continuation: String = ""): InnerTubePage = browse("VLWL", continuation)
 
@@ -389,6 +627,8 @@ class InnerTubeClient(private val cookieProvider: () -> String) {
         val channels = ArrayList<ChannelItem>()
         val playlists = ArrayList<PlaylistItem>()
         val chips = ArrayList<HomeChip>()
+        val mixes = ArrayList<VideoItem>()
+        val feed = ArrayList<HomeFeedEntry>()
         val seen = HashSet<String>()
         var continuation = ""
 
@@ -401,11 +641,23 @@ class InnerTubeClient(private val cookieProvider: () -> String) {
         }
 
         fun addVideo(video: VideoItem?) {
-            if (video != null && video.id.isNotBlank() && seen.add(video.id)) videos.add(video)
+            if (video != null && video.id.isNotBlank() && seen.add(video.id)) {
+                videos.add(video)
+                feed.add(HomeFeedEntry.Video(video))
+            }
         }
 
         fun addShort(video: VideoItem?) {
-            if (video != null && video.id.isNotBlank() && seen.add(video.id)) shorts.add(video)
+            if (video != null && video.id.isNotBlank() && seen.add(video.id)) {
+                shorts.add(video)
+                // Shorts seguidos forman un mismo bloque, como la estantería de YouTube.
+                val last = feed.lastOrNull()
+                if (last is HomeFeedEntry.Shorts) {
+                    feed[feed.size - 1] = HomeFeedEntry.Shorts(last.shorts + video)
+                } else {
+                    feed.add(HomeFeedEntry.Shorts(listOf(video)))
+                }
+            }
         }
 
         fun visit(node: Any?) {
@@ -420,7 +672,8 @@ class InnerTubeClient(private val cookieProvider: () -> String) {
                             "videoRenderer",
                             "gridVideoRenderer",
                             "compactVideoRenderer",
-                            "playlistVideoRenderer" -> addVideo(obj?.let { parseVideoRenderer(it) })
+                            "playlistVideoRenderer",
+                            "playlistPanelVideoRenderer" -> addVideo(obj?.let { parseVideoRenderer(it) })
                             "reelItemRenderer" -> addShort(obj?.let { parseReelItem(it) })
                             "shortsLockupViewModel" -> addShort(obj?.let { parseShortsLockup(it) })
                             "lockupViewModel" -> if (obj != null) {
@@ -428,7 +681,16 @@ class InnerTubeClient(private val cookieProvider: () -> String) {
                                 if (type.isBlank() || type == "LOCKUP_CONTENT_TYPE_VIDEO") {
                                     addVideo(parseLockup(obj))
                                 } else {
-                                    addPlaylist(parseLockupPlaylist(obj))
+                                    val playlist = parseLockupPlaylist(obj)
+                                    addPlaylist(playlist)
+                                    if (playlist != null && playlist.id.startsWith("RD")) {
+                                        parseMix(obj, playlist)?.let { mix ->
+                                            if (seen.add("m:" + mix.mixPlaylistId)) {
+                                                mixes.add(mix)
+                                                feed.add(HomeFeedEntry.Mix(mix))
+                                            }
+                                        }
+                                    }
                                 }
                             }
                             "channelRenderer", "gridChannelRenderer" -> addChannel(obj?.let { parseChannelRenderer(it) })
@@ -453,7 +715,7 @@ class InnerTubeClient(private val cookieProvider: () -> String) {
         }
 
         visit(root)
-        return InnerTubePage(videos, shorts, continuation, channels, playlists, chips)
+        return InnerTubePage(videos, shorts, continuation, channels, playlists, chips, mixes, feed)
     }
 
     private fun parseVideoRenderer(o: JSONObject): VideoItem? {
@@ -493,7 +755,10 @@ class InnerTubeClient(private val cookieProvider: () -> String) {
             isLive = isLive(o, overlays),
             resumePositionMs = if (percent in 1L..99L && durationMs > 0L) durationMs * percent / 100L else 0L,
             durationMs = durationMs,
-            viewCountText = views
+            viewCountText = views,
+            isNew = hasNewBadge(o),
+            notInterestedToken = feedbackTokens(o).getOrNull(0).orEmpty(),
+            dontRecommendToken = feedbackTokens(o).getOrNull(1).orEmpty()
         )
     }
 
@@ -538,7 +803,10 @@ class InnerTubeClient(private val cookieProvider: () -> String) {
             isLive = live,
             resumePositionMs = if (percent in 1L..99L && durationMs > 0L) durationMs * percent / 100L else 0L,
             durationMs = durationMs,
-            viewCountText = parts.firstOrNull { looksLikeViews(it) }.orEmpty()
+            viewCountText = parts.firstOrNull { looksLikeViews(it) }.orEmpty(),
+            isNew = hasNewBadge(o),
+            notInterestedToken = feedbackTokens(o).getOrNull(0).orEmpty(),
+            dontRecommendToken = feedbackTokens(o).getOrNull(1).orEmpty()
         )
     }
 
@@ -555,7 +823,7 @@ class InnerTubeClient(private val cookieProvider: () -> String) {
             title = title,
             thumb = thumb,
             views = overlay?.optJSONObject("secondaryText")?.optString("content").orEmpty()
-        )
+        ).copy(isNew = hasNewBadge(o))
     }
 
     private fun parseReelItem(o: JSONObject): VideoItem? {
@@ -596,9 +864,231 @@ class InnerTubeClient(private val cookieProvider: () -> String) {
             description = text(o.opt("descriptionSnippet")),
             handle = handle,
             subscriberCount = parseCount(subscribers),
-            isSubscribed = (findFirst(o, "subscribed") as? Boolean) ?: false
+            isSubscribed = (findFirst(o, "subscribed") as? Boolean) ?: false,
+            bellState = parseBell(o).first,
+            bellParams = parseBell(o).second
         )
     }
+
+    // ------------------------------------------------------------ Campana de notificaciones
+
+    private fun bellIndex(icon: String): Int {
+        val upper = icon.uppercase()
+        return when {
+            upper.contains("ACTIVE") || upper.endsWith("_ALL") -> 0
+            upper.contains("NONE") || upper.contains("PERSONALIZED") -> 1
+            upper.contains("OFF") -> 2
+            else -> -1
+        }
+    }
+
+    /**
+     * Estado de la campana y parámetros para cambiarla. Sirve para el botón antiguo
+     * (subscriptionNotificationToggleButtonRenderer + menuServiceItemRenderer) y el nuevo
+     * (subscribeButtonViewModel + listItemViewModel + subscriptionNotificationStateEntity).
+     */
+    internal fun parseBell(root: Any?): Pair<Int, List<String>> {
+        val params = arrayOfNulls<String>(3)
+        collectObjects(root, "menuServiceItemRenderer").forEach { item ->
+            val endpoint = findFirst(item, "modifyChannelNotificationPreferenceEndpoint") as? JSONObject ?: return@forEach
+            val index = bellIndex(item.optJSONObject("icon")?.optString("iconType").orEmpty())
+            if (index >= 0 && params[index] == null) params[index] = endpoint.optString("params").takeIf { it.isNotBlank() }
+        }
+        collectObjects(root, "listItemViewModel").forEach { item ->
+            val endpoint = findFirst(item, "modifyChannelNotificationPreferenceEndpoint") as? JSONObject ?: return@forEach
+            val icon = findFirstString(item, "imageName") { it.isNotBlank() }
+                ?: findFirstString(item, "iconType") { it.isNotBlank() }
+                ?: ""
+            val index = bellIndex(icon)
+            if (index >= 0 && params[index] == null) params[index] = endpoint.optString("params").takeIf { it.isNotBlank() }
+        }
+        var current = -1
+        collectObjects(root, "subscriptionNotificationToggleButtonRenderer").firstOrNull()?.let { toggle ->
+            val currentId = toggle.optInt("currentStateId", -1)
+            val states = toggle.optJSONArray("states")
+            if (states != null) {
+                for (i in 0 until states.length()) {
+                    val state = states.optJSONObject(i) ?: continue
+                    if (state.optInt("stateId", -2) == currentId) {
+                        current = bellIndex(findFirstString(state, "iconType") { it.isNotBlank() }.orEmpty())
+                    }
+                }
+            }
+        }
+        if (current < 0) {
+            collectObjects(root, "subscriptionNotificationStateEntity").firstOrNull()?.let { entity ->
+                current = when {
+                    entity.optString("state").contains("ALL") -> 0
+                    entity.optString("state").contains("PERSONALIZED") -> 1
+                    entity.optString("state").contains("OFF") -> 2
+                    else -> -1
+                }
+            }
+        }
+        val list = if (params.all { it != null }) params.map { it.orEmpty() } else params.map { it.orEmpty() }.takeIf { p -> p.any { it.isNotBlank() } } ?: emptyList()
+        return current to list
+    }
+
+    /** Cambia la campana (Todas / Personalizadas / Ninguna). */
+    suspend fun setBell(params: String) {
+        if (params.isBlank()) return
+        call("notification/modify_channel_preference") { put("params", params) }
+    }
+
+    /** Lee la campana de un canal desde su página. */
+    suspend fun channelBell(channelId: String): Pair<Int, List<String>> = withContext(Dispatchers.IO) {
+        val json = post("browse", baseBody(WEB).put("browseId", channelId), WEB)
+        parseBell(json)
+    }
+
+    // ------------------------------------------------------------ Suscripciones (barra con punto azul)
+
+    /** Canales de la guía: en orden de YouTube, con punto de contenido nuevo y en vivo. */
+    suspend fun subscriptionGuide(): List<ChannelItem> = withContext(Dispatchers.IO) {
+        val json = post("guide", baseBody(WEB), WEB)
+        val section = collectObjects(json, "guideSubscriptionsSectionRenderer").firstOrNull() ?: return@withContext emptyList()
+        collectObjects(section, "guideEntryRenderer").mapNotNull { entry ->
+            val id = findFirstString(entry.opt("navigationEndpoint"), "browseId") { it.startsWith("UC") }
+                ?: return@mapNotNull null
+            ChannelItem(
+                id = id,
+                title = text(entry.opt("formattedTitle")).ifBlank { text(entry.opt("title")) },
+                thumbnailUrl = entry.optJSONObject("thumbnail")?.let { lastThumb(it) }.orEmpty(),
+                isSubscribed = true,
+                hasNewContent = entry.optString("presentationStyle").contains("NEW_CONTENT"),
+                isLiveNow = entry.optJSONObject("badges")?.optBoolean("liveBroadcasting") == true
+            )
+        }.distinctBy { it.id }
+    }
+
+    // ------------------------------------------------------------ Página del canal
+
+    /** Encabezado, pestañas y estanterías de Inicio de un canal. */
+    suspend fun channelPage(channelId: String): ChannelPageData = withContext(Dispatchers.IO) {
+        val json = post("browse", baseBody(WEB).put("browseId", channelId), WEB)
+        val meta = findFirst(json, "channelMetadataRenderer") as? JSONObject
+        val header = findFirst(json, "pageHeaderViewModel") as? JSONObject
+        fun lastSource(node: Any?): String {
+            val sources = findFirst(node, "sources") as? JSONArray ?: return ""
+            if (sources.length() == 0) return ""
+            return fixUrl(sources.optJSONObject(sources.length() - 1)?.optString("url").orEmpty())
+        }
+        val rows = collectStrings(header?.opt("metadata"), "content")
+        val headerTitle = findFirstString(header?.opt("title"), "content") { it.isNotBlank() }.orEmpty()
+        val headerDescription = findFirstString(header?.opt("description"), "content") { it.isNotBlank() }.orEmpty()
+        val links = findFirstString(header?.opt("attribution"), "content") { it.isNotBlank() }.orEmpty()
+        val verified = header?.toString()?.contains("CHECK_CIRCLE") == true ||
+            header?.toString()?.contains("BADGE_STYLE_TYPE_VERIFIED") == true
+        val bell = parseBell(json)
+        val subscribed = collectObjects(json, "subscriptionStateEntity").firstOrNull()?.optBoolean("subscribed")
+            ?: (findFirst(header, "subscribed") as? Boolean)
+            ?: false
+        val channel = ChannelItem(
+            id = channelId,
+            title = meta?.optString("title").orEmpty().ifBlank { headerTitle },
+            thumbnailUrl = meta?.optJSONObject("avatar")?.let { lastThumb(it) }.orEmpty().ifBlank { lastSource(header?.opt("image")) },
+            description = meta?.optString("description").orEmpty().ifBlank { headerDescription },
+            bannerUrl = lastSource(header?.opt("banner")),
+            handle = rows.firstOrNull { it.startsWith("@") }.orEmpty(),
+            subscriberCount = parseCount(rows.firstOrNull { it.contains("suscript", true) || it.contains("subscriber", true) }.orEmpty()),
+            videoCount = parseCount(rows.firstOrNull { it.contains("video", true) }.orEmpty()),
+            isSubscribed = subscribed,
+            bellState = bell.first,
+            bellParams = bell.second,
+            isVerified = verified,
+            linksText = links
+        )
+        val tabs = ArrayList<ChannelTabInfo>()
+        collectObjects(json, "tabRenderer").forEach { tab ->
+            val title = tab.optString("title").ifBlank { text(tab.opt("title")) }
+            if (title.isBlank()) return@forEach
+            val params = findFirstString(tab.opt("endpoint"), "params") { it.isNotBlank() }.orEmpty()
+            tabs.add(ChannelTabInfo(title, params, tab.optBoolean("selected")))
+        }
+        val featured = collectObjects(json, "channelVideoPlayerRenderer").firstOrNull()?.let { player ->
+            val id = player.optString("videoId")
+            if (id.isBlank()) null else VideoItem(
+                id = id,
+                title = text(player.opt("title")),
+                channelTitle = channel.title,
+                channelId = channelId,
+                channelThumbnailUrl = channel.thumbnailUrl,
+                thumbnailUrl = "https://i.ytimg.com/vi/$id/hqdefault.jpg",
+                description = text(player.opt("description")),
+                viewCountText = text(player.opt("viewCountText")),
+                publishedAt = text(player.opt("publishedTimeText"))
+            )
+        }
+        ChannelPageData(channel, tabs.distinctBy { it.title }, collectShelves(json, channel), featured)
+    }
+
+    /** Estanterías en el orden en que las manda YouTube. */
+    private fun collectShelves(root: JSONObject, channel: ChannelItem): List<ChannelShelf> {
+        val shelfKeys = setOf("shelfRenderer", "reelShelfRenderer", "richShelfRenderer")
+        val found = ArrayList<JSONObject>()
+        fun walk(node: Any?) {
+            when (node) {
+                is JSONObject -> {
+                    val keys = node.keys()
+                    while (keys.hasNext()) {
+                        val name = keys.next()
+                        val value = node.opt(name)
+                        if (name in shelfKeys && value is JSONObject) found.add(value) else walk(value)
+                    }
+                }
+                is JSONArray -> for (i in 0 until node.length()) walk(node.opt(i))
+            }
+        }
+        walk(root)
+        return found.mapNotNull { shelf ->
+            val title = text(shelf.opt("title")).ifBlank { findFirstString(shelf.opt("title"), "content") { it.isNotBlank() }.orEmpty() }
+            val page = parsePage(shelf)
+            val fill = { v: VideoItem ->
+                v.copy(
+                    channelId = v.channelId.ifBlank { channel.id },
+                    channelTitle = v.channelTitle.ifBlank { channel.title },
+                    channelThumbnailUrl = v.channelThumbnailUrl.ifBlank { channel.thumbnailUrl }
+                )
+            }
+            if (page.videos.isEmpty() && page.shorts.isEmpty() && page.playlists.isEmpty()) null
+            else ChannelShelf(title.ifBlank { "Videos" }, page.videos.map(fill), page.shorts.map(fill), page.playlists)
+        }
+    }
+
+    /** Una pestaña del canal (o un orden de esa pestaña con su token). */
+    suspend fun channelTab(channelId: String, params: String, continuation: String = ""): ChannelTabPage =
+        withContext(Dispatchers.IO) {
+            val body = baseBody(WEB)
+            if (continuation.isNotBlank()) {
+                body.put("continuation", continuation)
+            } else {
+                body.put("browseId", channelId)
+                if (params.isNotBlank()) body.put("params", params)
+            }
+            val json = post("browse", body, WEB)
+            val page = parsePage(json)
+            val posts = collectObjects(json, "backstagePostRenderer").mapNotNull { post ->
+                val textValue = text(post.opt("contentText"))
+                val image = collectObjects(post.opt("backstageAttachment"), "backstageImageRenderer").firstOrNull()
+                    ?.optJSONObject("image")?.let { lastThumb(it) }.orEmpty()
+                if (textValue.isBlank() && image.isBlank()) null else ChannelPost(
+                    id = post.optString("postId").ifBlank { textValue.hashCode().toString() },
+                    text = textValue,
+                    published = text(post.opt("publishedTimeText")),
+                    likes = text(post.opt("voteCount")),
+                    imageUrl = image
+                )
+            }
+            val fill = { v: VideoItem -> if (v.channelId.isBlank()) v.copy(channelId = channelId) else v }
+            ChannelTabPage(
+                videos = page.videos.map(fill),
+                shorts = page.shorts.map(fill),
+                playlists = page.playlists,
+                posts = posts,
+                chips = page.chips,
+                continuation = page.continuation
+            )
+        }
 
     private fun parsePlaylistRenderer(o: JSONObject): PlaylistItem? {
         val id = o.optString("playlistId")
@@ -614,6 +1104,253 @@ class InnerTubeClient(private val cookieProvider: () -> String) {
             thumbnailUrl = thumb,
             itemCount = count.toInt()
         )
+    }
+
+    /** Tarjeta de Mix: se reproduce el primer video con la lista del Mix. */
+    private fun parseMix(o: JSONObject, playlist: PlaylistItem): VideoItem? {
+        val seedId = findFirstString(o, "videoId") { it.length == 11 }
+            ?: playlist.id.removePrefix("RD").takeIf { it.length == 11 }
+            ?: return null
+        val meta = o.optJSONObject("metadata")?.optJSONObject("lockupMetadataViewModel")
+        val parts = collectStrings(meta?.opt("metadata"), "content").filter { it.isNotBlank() }
+        return VideoItem(
+            id = seedId,
+            title = playlist.title,
+            channelTitle = parts.firstOrNull().orEmpty().ifBlank { "Mix de YouTube" },
+            thumbnailUrl = playlist.thumbnailUrl.ifBlank { "https://i.ytimg.com/vi/$seedId/hqdefault.jpg" },
+            isMix = true,
+            mixPlaylistId = playlist.id
+        )
+    }
+
+    /** Tokens de "No me interesa" y "No recomendar el canal" del menú ⋮ (en ese orden). */
+    private fun feedbackTokens(o: JSONObject): List<String> =
+        collectObjects(o, "feedbackEndpoint")
+            .map { it.optString("feedbackToken") }
+            .filter { it.isNotBlank() }
+
+    /** Envía "No me interesa" / "No recomendar el canal" a YouTube. */
+    suspend fun sendFeedback(token: String) {
+        if (token.isBlank()) return
+        call("feedback") {
+            put("feedbackTokens", JSONArray().put(token))
+            put("isFeedbackTokenUnencrypted", false)
+            put("shouldMerge", false)
+        }
+    }
+
+    /** Token inicial de la sección de comentarios de un video (sale de /next). */
+    suspend fun commentsStartToken(videoId: String): String {
+        val json = next(videoId)
+        val section = collectObjects(json, "itemSectionRenderer")
+            .firstOrNull { it.optString("sectionIdentifier") == "comment-item-section" }
+            ?: return ""
+        return findFirstString(section, "token") { it.isNotBlank() }.orEmpty()
+    }
+
+    /**
+     * Una página de comentarios o de respuestas. YouTube manda el texto en
+     * frameworkUpdates (commentEntityPayload) y el orden en commentThreadRenderer.
+     */
+    suspend fun comments(token: String): CommentsPage = withContext(Dispatchers.IO) {
+        val json = post("next", baseBody(WEB).put("continuation", token), WEB)
+        val payloads = HashMap<String, JSONObject>()
+        collectObjects(json, "commentEntityPayload").forEach { payload ->
+            val key = payload.optString("key")
+            if (key.isNotBlank()) payloads[key] = payload
+        }
+        val result = ArrayList<CommentItem>()
+        var nextToken = ""
+        val sortTokens = ArrayList<String>()
+        var total = ""
+
+        fun toComment(payload: JSONObject?, repliesToken: String, pinned: Boolean): CommentItem? {
+            if (payload == null) return null
+            val properties = payload.optJSONObject("properties")
+            val author = payload.optJSONObject("author")
+            val toolbar = payload.optJSONObject("toolbar")
+            val text = properties?.optJSONObject("content")?.optString("content").orEmpty()
+            if (text.isBlank()) return null
+            return CommentItem(
+                id = properties?.optString("commentId").orEmpty().ifBlank { "c${result.size}" },
+                author = author?.optString("displayName").orEmpty(),
+                authorThumbnailUrl = fixUrl(author?.optString("avatarThumbnailUrl").orEmpty()),
+                text = text,
+                likeCount = parseCount(toolbar?.optString("likeCountNotliked").orEmpty()),
+                publishedAt = properties?.optString("publishedTime").orEmpty(),
+                replyCount = parseCount(toolbar?.optString("replyCount").orEmpty()).toInt(),
+                repliesToken = repliesToken,
+                isPinned = pinned,
+                creatorHeart = toolbar?.optString("creatorThumbnailUrl").orEmpty().isNotBlank()
+            )
+        }
+
+        val endpoints = json.optJSONArray("onResponseReceivedEndpoints")
+        if (endpoints != null) {
+            for (e in 0 until endpoints.length()) {
+                val endpoint = endpoints.optJSONObject(e) ?: continue
+                val action = endpoint.optJSONObject("reloadContinuationItemsCommand")
+                    ?: endpoint.optJSONObject("appendContinuationItemsAction")
+                    ?: continue
+                val items = action.optJSONArray("continuationItems") ?: continue
+                for (i in 0 until items.length()) {
+                    val item = items.optJSONObject(i) ?: continue
+                    item.optJSONObject("commentsHeaderRenderer")?.let { header ->
+                        total = text(header.opt("countText"))
+                        val menu = findFirst(header, "subMenuItems") as? JSONArray
+                        if (menu != null) {
+                            for (m in 0 until menu.length()) {
+                                findFirstString(menu.opt(m), "token") { it.isNotBlank() }?.let { sortTokens.add(it) }
+                            }
+                        }
+                    }
+                    item.optJSONObject("commentThreadRenderer")?.let { thread ->
+                        val key = findFirstString(thread.opt("commentViewModel"), "commentKey") { it.isNotBlank() }
+                        val replies = findFirstString(thread.opt("replies"), "token") { it.isNotBlank() }.orEmpty()
+                        val pinned = findFirst(thread, "pinnedText") != null
+                        toComment(key?.let { payloads[it] }, replies, pinned)?.let { result.add(it) }
+                    }
+                    item.optJSONObject("commentViewModel")?.let { reply ->
+                        val key = findFirstString(reply, "commentKey") { it.isNotBlank() }
+                        toComment(key?.let { payloads[it] }, "", false)?.let { result.add(it) }
+                    }
+                    item.optJSONObject("continuationItemRenderer")?.let { more ->
+                        findFirstString(more, "token") { it.isNotBlank() }?.let { nextToken = it }
+                    }
+                }
+            }
+        }
+        // Si YouTube cambió el orden de las piezas, al menos mostrar los textos.
+        if (result.isEmpty()) {
+            payloads.values.forEach { payload -> toComment(payload, "", false)?.let { result.add(it) } }
+        }
+        CommentsPage(result.distinctBy { it.id }, nextToken, sortTokens, total)
+    }
+
+    private fun hasNewBadge(o: JSONObject): Boolean {
+        val texts = collectStrings(o, "label") + collectStrings(o, "text") + collectStrings(o, "content")
+        return texts.any { value ->
+            val clean = value.trim()
+            clean.equals("Nuevo", ignoreCase = true) || clean.equals("New", ignoreCase = true)
+        }
+    }
+
+    /**
+     * Feed real de Shorts como la app de YouTube: reel/reel_watch_sequence con sequenceParams.
+     * La primera página se arma con el Short semilla (protobuf ReelSequence, como YouTube.js).
+     */
+    suspend fun shortsSequence(seedVideoId: String, continuation: String = ""): InnerTubePage =
+        withContext(Dispatchers.IO) {
+            val params = continuation.ifBlank { reelSequenceParams(seedVideoId) }
+            val json = post("reel/reel_watch_sequence", baseBody(WEB).put("sequenceParams", params), WEB)
+            val shorts = ArrayList<VideoItem>()
+            val seenIds = HashSet<String>()
+            val entries = json.optJSONArray("entries")
+            if (entries != null) {
+                for (i in 0 until entries.length()) {
+                    val endpoint = findFirst(entries.opt(i), "reelWatchEndpoint") as? JSONObject ?: continue
+                    val id = endpoint.optString("videoId")
+                    if (id.length != 11 || !seenIds.add(id)) continue
+                    val thumb = endpoint.optJSONObject("thumbnail")?.let { lastThumb(it) }.orEmpty()
+                    shorts.add(shortItem(id = id, title = "", thumb = thumb, views = ""))
+                }
+            }
+            val next = findFirstString(json.opt("continuationEndpoint"), "token") { it.isNotBlank() }.orEmpty()
+            InnerTubePage(videos = emptyList(), shorts = shorts, continuation = next)
+        }
+
+    /** Datos de un Short (título, canal, me gusta, comentarios) con reel/reel_item_watch. */
+    suspend fun shortDetails(videoId: String): VideoItem? = withContext(Dispatchers.IO) {
+        val body = baseBody(WEB)
+            .put("playerRequest", JSONObject().put("videoId", videoId))
+            .put("params", "CAUwAg==")
+            .put("disablePlayerResponse", false)
+        val json = runCatching { post("reel/reel_item_watch", body, WEB) }.getOrNull() ?: return@withContext null
+        val details = findFirst(json, "videoDetails") as? JSONObject
+        val header = findFirst(json, "reelPlayerHeaderRenderer") as? JSONObject
+        val title = details?.optString("title").orEmpty()
+            .ifBlank { text(header?.opt("reelTitleText")) }
+        val channel = details?.optString("author").orEmpty()
+            .ifBlank { text(header?.opt("channelTitleText")) }
+        val channelId = details?.optString("channelId").orEmpty()
+            .ifBlank { findFirstString(header, "browseId") { it.startsWith("UC") }.orEmpty() }
+        val avatarNode = header?.optJSONObject("channelThumbnail")
+            ?: (findFirst(json, "channelThumbnail") as? JSONObject)
+        val avatar = avatarNode?.let { lastThumb(it) }.orEmpty().ifBlank {
+            val sources = findFirst(findFirst(json, "reelChannelBarViewModel"), "sources") as? JSONArray
+            if (sources != null && sources.length() > 0) fixUrl(sources.optJSONObject(0)?.optString("url").orEmpty()) else ""
+        }
+        val likeRenderer = findFirst(json, "likeButtonRenderer") as? JSONObject
+        val likeText = text(likeRenderer?.opt("likeCountWithoutLikeText"))
+            .ifBlank { text(likeRenderer?.opt("likeCountText")) }
+            .ifBlank {
+                val count = likeRenderer?.optLong("likeCount", 0L) ?: 0L
+                if (count > 0L) compactCount(count) else ""
+            }
+            .ifBlank {
+                findFirstString(findFirst(json, "likeButtonViewModel"), "title") { it.any(Char::isDigit) }.orEmpty()
+            }
+        val commentsText = text(findFirst(findFirst(json, "viewCommentsButton"), "text"))
+            .takeIf { it.any(Char::isDigit) }
+            .orEmpty()
+        val views = details?.optString("viewCount")?.toLongOrNull()?.let { compactCount(it) + " vistas" }.orEmpty()
+        if (title.isBlank() && channel.isBlank()) return@withContext null
+        VideoItem(
+            id = videoId,
+            title = title.ifBlank { "Short" },
+            channelTitle = channel,
+            thumbnailUrl = "https://i.ytimg.com/vi/$videoId/hq2.jpg",
+            channelId = channelId,
+            channelThumbnailUrl = avatar,
+            description = "#shorts",
+            durationMs = (details?.optString("lengthSeconds")?.toLongOrNull() ?: 0L) * 1000L,
+            viewCountText = views,
+            likeCountText = likeText,
+            commentCountText = commentsText
+        )
+    }
+
+    private fun compactCount(value: Long): String = when {
+        value >= 1_000_000_000L -> String.format(Locale.US, "%.1f mil M", value / 1_000_000_000.0).replace(".0 ", " ")
+        value >= 1_000_000L -> String.format(Locale.US, "%.1f M", value / 1_000_000.0).replace(".0 ", " ")
+        value >= 1_000L -> String.format(Locale.US, "%.1f K", value / 1_000.0).replace(".0 ", " ")
+        else -> value.toString()
+    }
+
+    /** protobuf ReelSequence { short_id=1, params{number=3}=5, feature_2=10 } en base64 URL. */
+    private fun reelSequenceParams(videoId: String): String {
+        val out = java.io.ByteArrayOutputStream()
+        val idBytes = videoId.toByteArray(Charsets.UTF_8)
+        out.write(0x0A)
+        out.write(idBytes.size)
+        out.write(idBytes)
+        out.write(0x2A) // campo 5 (mensaje)
+        out.write(2)
+        out.write(0x18) // campo 3 = 5
+        out.write(5)
+        out.write(0x50) // campo 10 = 25
+        out.write(25)
+        val base64 = android.util.Base64.encodeToString(out.toByteArray(), android.util.Base64.NO_WRAP)
+        return URLEncoder.encode(base64, Charsets.UTF_8.name())
+    }
+
+    /** Videos de un Mix (lista RD…) para reproducirlos en orden, como YouTube. */
+    /** Panel del Mix / lista: título, dueño y videos alrededor del actual. */
+    suspend fun mixPanel(videoId: String, playlistId: String): MixPanel = withContext(Dispatchers.IO) {
+        val body = baseBody(WEB).put("videoId", videoId).put("playlistId", playlistId)
+        val json = post("next", body, WEB)
+        val panel = findFirst(json, "playlist") as? JSONObject
+        val title = panel?.let { text(it.opt("title")) }.orEmpty()
+        val owner = panel?.let { text(it.opt("ownerName")) }.orEmpty()
+        val videos = parsePage(panel ?: json).videos.map { it.copy(isMix = true, mixPlaylistId = playlistId) }
+        MixPanel(title, owner, videos)
+    }
+
+    suspend fun mixVideos(videoId: String, playlistId: String): List<VideoItem> = withContext(Dispatchers.IO) {
+        val body = baseBody(WEB).put("videoId", videoId).put("playlistId", playlistId)
+        val json = post("next", body, WEB)
+        val panel = findFirst(json, "playlist") as? JSONObject
+        parsePage(panel ?: json).videos.map { it.copy(isMix = true, mixPlaylistId = playlistId) }
     }
 
     private fun parseLockupPlaylist(o: JSONObject): PlaylistItem? {

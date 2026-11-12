@@ -59,9 +59,12 @@ internal fun LitePlayerView(
     onSeekBy: ((Long) -> Unit)? = null,
     onZoomFeedback: ((Int) -> Unit)? = null,
     onSingleTap: (() -> Unit)? = null,
+    onHoldFeedback: ((String?) -> Unit)? = null,
     onSettingsClick: (() -> Unit)? = null,
     onControllerVisibilityChanged: ((Boolean) -> Unit)? = null,
-    gesturesEnabled: Boolean = true
+    gesturesEnabled: Boolean = true,
+    doubleTapSeekMs: Long = 10_000L,
+    onTwoFingerSwipe: ((Int) -> Unit)? = null
 ) {
     val attachedView = remember { arrayOfNulls<PlayerView>(1) }
     val currentZoom by rememberUpdatedState(zoomScale)
@@ -69,7 +72,10 @@ internal fun LitePlayerView(
     val currentOnSeekBy by rememberUpdatedState(onSeekBy)
     val currentOnZoomFeedback by rememberUpdatedState(onZoomFeedback)
     val currentOnSingleTap by rememberUpdatedState(onSingleTap)
+    val currentOnHoldFeedback by rememberUpdatedState(onHoldFeedback)
     val currentGesturesEnabled by rememberUpdatedState(gesturesEnabled)
+    val currentDoubleTapMs by rememberUpdatedState(doubleTapSeekMs)
+    val currentOnTwoFingerSwipe by rememberUpdatedState(onTwoFingerSwipe)
     DisposableEffect(controller) {
         onDispose {
             attachedView[0]?.let { view ->
@@ -110,6 +116,17 @@ internal fun LitePlayerView(
 
                 val playerView = this
                 var localZoom = currentZoom.coerceIn(1f, 3f)
+                // Mantener presionado = 2x; mantener y arrastrar a los lados = buscar (como YouTube).
+                var holdActive = false
+                var holdSeeking = false
+                var holdStartX = 0f
+                var holdStartPosition = 0L
+                var holdPreviousSpeed = 1f
+                // Dos dedos deslizando a los lados (sin pellizcar) = cambiar de capítulo.
+                var twoFingerStartX = 0f
+                var twoFingerStartSpan = 0f
+                var twoFingerTracking = false
+                var twoFingerFired = false
                 val scaleDetector = ScaleGestureDetector(
                     context,
                     object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
@@ -136,8 +153,21 @@ internal fun LitePlayerView(
                             return true
                         }
 
+                        override fun onLongPress(e: MotionEvent) {
+                            if (!currentGesturesEnabled) return
+                            holdActive = true
+                            holdSeeking = false
+                            holdStartX = e.x
+                            holdStartPosition = controller.currentPosition
+                            holdPreviousSpeed = controller.playbackParameters.speed
+                            controller.setPlaybackSpeed(2f)
+                            playerView.parent?.requestDisallowInterceptTouchEvent(true)
+                            currentOnHoldFeedback?.invoke("2x ▶▶")
+                        }
+
                         override fun onDoubleTap(e: MotionEvent): Boolean {
-                            val delta = if (e.x >= width / 2f) 10_000L else -10_000L
+                            val step = currentDoubleTapMs.coerceIn(5_000L, 60_000L)
+                            val delta = if (e.x >= width / 2f) step else -step
                             val duration = controller.duration.takeIf { it > 0L } ?: Long.MAX_VALUE
                             controller.seekTo((controller.currentPosition + delta).coerceIn(0L, duration))
                             currentOnSeekBy?.invoke(delta)
@@ -147,8 +177,70 @@ internal fun LitePlayerView(
                 )
                 setOnTouchListener { _, event ->
                     if (!currentGesturesEnabled) return@setOnTouchListener true
+                    when (event.actionMasked) {
+                        MotionEvent.ACTION_POINTER_DOWN -> if (event.pointerCount == 2) {
+                            twoFingerStartX = (event.getX(0) + event.getX(1)) / 2f
+                            twoFingerStartSpan = kotlin.math.abs(event.getX(0) - event.getX(1)) +
+                                kotlin.math.abs(event.getY(0) - event.getY(1))
+                            twoFingerTracking = true
+                            twoFingerFired = false
+                        }
+                        MotionEvent.ACTION_MOVE -> if (twoFingerTracking && event.pointerCount >= 2 && !twoFingerFired) {
+                            val focusX = (event.getX(0) + event.getX(1)) / 2f
+                            val span = kotlin.math.abs(event.getX(0) - event.getX(1)) +
+                                kotlin.math.abs(event.getY(0) - event.getY(1))
+                            val dx = focusX - twoFingerStartX
+                            val density = context.resources.displayMetrics.density
+                            val spanStable = twoFingerStartSpan <= 0f ||
+                                kotlin.math.abs(span - twoFingerStartSpan) / twoFingerStartSpan < 0.25f
+                            if (spanStable && kotlin.math.abs(dx) > 90f * density) {
+                                twoFingerFired = true
+                                // Deslizar hacia la izquierda = siguiente capítulo.
+                                currentOnTwoFingerSwipe?.invoke(if (dx < 0f) 1 else -1)
+                            }
+                        }
+                        MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> twoFingerTracking = false
+                    }
+                    if (twoFingerFired) {
+                        val action = event.actionMasked
+                        if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) twoFingerFired = false
+                        return@setOnTouchListener true
+                    }
                     scaleDetector.onTouchEvent(event)
                     tapDetector.onTouchEvent(event)
+                    if (holdActive) {
+                        when (event.actionMasked) {
+                            MotionEvent.ACTION_MOVE -> {
+                                val dx = event.x - holdStartX
+                                val slop = 24f * context.resources.displayMetrics.density
+                                if (!holdSeeking && kotlin.math.abs(dx) > slop) {
+                                    holdSeeking = true
+                                    controller.setPlaybackSpeed(holdPreviousSpeed)
+                                }
+                                if (holdSeeking) {
+                                    val duration = controller.duration.takeIf { it > 0L } ?: 0L
+                                    if (duration > 0L && width > 0) {
+                                        val span = duration.coerceIn(30_000L, 300_000L)
+                                        val target = (holdStartPosition + (dx / width) * span).toLong()
+                                            .coerceIn(0L, duration)
+                                        controller.seekTo(target)
+                                        val totalSeconds = target / 1000L
+                                        currentOnHoldFeedback?.invoke(
+                                            "%d:%02d".format(totalSeconds / 60L, totalSeconds % 60L)
+                                        )
+                                    }
+                                }
+                                return@setOnTouchListener true
+                            }
+                            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                                if (!holdSeeking) controller.setPlaybackSpeed(holdPreviousSpeed)
+                                holdActive = false
+                                holdSeeking = false
+                                currentOnHoldFeedback?.invoke(null)
+                                return@setOnTouchListener true
+                            }
+                        }
+                    }
                     false
                 }
                 applyPlayerZoom(this, localZoom)

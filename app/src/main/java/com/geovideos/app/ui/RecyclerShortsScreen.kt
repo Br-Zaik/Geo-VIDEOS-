@@ -96,7 +96,8 @@ internal fun RecyclerShortsScreen(
     onLike: (VideoItem) -> Unit,
     onDislike: (VideoItem) -> Unit,
     onRegisterDownload: (String, String, Long) -> Unit,
-    onMessage: (String) -> Unit
+    onMessage: (String) -> Unit,
+    onSubscribe: (VideoItem) -> Unit = {}
 ) {
     val controller by playerConnection.controller.collectAsStateWithLifecycle()
     val playback by playerConnection.coreState.collectAsStateWithLifecycle()
@@ -303,6 +304,7 @@ internal fun RecyclerShortsScreen(
             }
         },
         update = { recyclerView ->
+            adapter.onSubscribe = onSubscribe
             adapter.updateCallbacks(onPreview, onOpenVideo, onWatchLater, onLike, onDislike, ::openQuality, ::openDownload) { video ->
                 if (playback.currentVideoId == video.id && playback.error != null) {
                     playerConnection.retryShort(video, dataSaver)
@@ -539,6 +541,7 @@ private class NativeShortsAdapter(
 ) : ListAdapter<VideoItem, NativeShortHolder>(ShortVideoDiff) {
     var activeId: String = ""
         private set
+    var onSubscribe: (VideoItem) -> Unit = {}
     var canLoadMore: Boolean = false
     var loadingMore: Boolean = false
     var onLoadMore: () -> Unit = {}
@@ -648,6 +651,7 @@ private class NativeShortsAdapter(
             onQuality = onQuality,
             onDownload = onDownload
         )
+        holder.bindSubscribe(video, onSubscribe)
     }
 
     override fun onBindViewHolder(holder: NativeShortHolder, position: Int, payloads: MutableList<Any>) {
@@ -695,6 +699,8 @@ private class NativeShortHolder(private val page: ShortPageView) : RecyclerView.
         page.title.text = video.title
         loadShortAvatar(page.channelAvatar, video.channelThumbnailUrl)
         page.like.setSelectedState(liked)
+        page.like.setLabel(video.likeCountText.ifBlank { "Me gusta" })
+        page.comments.setLabel(video.commentCountText.ifBlank { "Comentarios" })
         page.dislike.setSelectedState(disliked)
         page.setOnClickListener { onToggle(video) }
         page.like.setOnClickListener { onLike(video) }
@@ -716,6 +722,15 @@ private class NativeShortHolder(private val page: ShortPageView) : RecyclerView.
         )
     }
 
+    fun bindSubscribe(video: VideoItem, onSubscribe: (VideoItem) -> Unit) {
+        page.subscribe.text = "Suscribirse"
+        page.subscribe.visibility = if (video.channelId.isNotBlank()) View.VISIBLE else View.GONE
+        page.subscribe.setOnClickListener {
+            onSubscribe(video)
+            page.subscribe.text = "Suscrito"
+        }
+    }
+
     fun recycle() {
         page.detach()
         Glide.with(page.thumbnail).clear(page.thumbnail)
@@ -731,7 +746,16 @@ private class ShortPageView(context: Context) : FrameLayout(context) {
     val channelAvatar = ImageView(context)
     val channel = TextView(context)
     val title = TextView(context)
-    val like = ShortActionView(context, R.drawable.ic_short_like, "Me gusta")
+    // Shorts 2026: corazón en lugar del pulgar (YouTube quitó "No me gusta" en Shorts).
+    val like = ShortActionView(context, R.drawable.ic_short_heart, "Me gusta")
+    val subscribe = TextView(context)
+    val muteButton = ImageView(context)
+    private var cleanScreen = false
+    private var holdSpeedActive = false
+    private var previousSpeed = 1f
+    // Declarados antes del bloque init para que no se reinicien después de asignarlos.
+    private var infoPanel: View? = null
+    private var actionsPanel: View? = null
     val dislike = ShortActionView(context, R.drawable.ic_short_dislike, "No me gusta")
     val comments = ShortActionView(context, R.drawable.ic_short_comment, "Comentarios")
     val share = ShortActionView(context, R.drawable.ic_short_share, "Compartir")
@@ -829,12 +853,30 @@ private class ShortPageView(context: Context) : FrameLayout(context) {
                 title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
                 title.maxLines = 3
                 title.ellipsize = TextUtils.TruncateAt.END
-                addView(channel)
+                // Canal + botón Suscribirse en la misma fila, como YouTube.
+                addView(LinearLayout(context).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = Gravity.CENTER_VERTICAL
+                    addView(channel, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+                    subscribe.text = "Suscribirse"
+                    subscribe.setTextColor(Color.BLACK)
+                    subscribe.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+                    subscribe.setTypeface(subscribe.typeface, android.graphics.Typeface.BOLD)
+                    subscribe.setPadding(dpShort(context, 12), dpShort(context, 6), dpShort(context, 12), dpShort(context, 6))
+                    subscribe.background = GradientDrawable().apply {
+                        cornerRadius = dpShort(context, 18).toFloat()
+                        setColor(Color.WHITE)
+                    }
+                    addView(subscribe, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                        marginStart = dpShort(context, 8)
+                    })
+                })
                 addView(title, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
                     topMargin = dpShort(context, 5)
                 })
             }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
         }
+        infoPanel = info
         addView(info, LayoutParams((context.resources.displayMetrics.widthPixels * 0.74f).toInt(), ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM or Gravity.START).apply {
             setMargins(dpShort(context, 14), 0, 0, dpShort(context, 18))
         })
@@ -842,14 +884,70 @@ private class ShortPageView(context: Context) : FrameLayout(context) {
         val actions = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER_HORIZONTAL
-            listOf(like, share, save, download, quality).forEach { action ->
+            listOf(like, comments, share, save, download, quality).forEach { action ->
                 addView(action, LinearLayout.LayoutParams(dpShort(context, 72), ViewGroup.LayoutParams.WRAP_CONTENT).apply {
                     bottomMargin = dpShort(context, 14)
                 })
             }
         }
+        actionsPanel = actions
         addView(actions, LayoutParams(dpShort(context, 76), ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM or Gravity.END).apply {
             setMargins(0, 0, dpShort(context, 2), dpShort(context, 18))
+        })
+        setupShortGestures()
+    }
+
+    /** Mantener presionado en un borde = 2x; en el centro = pantalla limpia. */
+    private fun setupShortGestures() {
+        val detector = android.view.GestureDetector(context, object : android.view.GestureDetector.SimpleOnGestureListener() {
+            override fun onDown(e: android.view.MotionEvent): Boolean = true
+            override fun onLongPress(e: android.view.MotionEvent) {
+                val edge = width > 0 && (e.x < width * 0.25f || e.x > width * 0.75f)
+                val controller = attachedController
+                if (edge && controller != null) {
+                    previousSpeed = controller.playbackParameters.speed
+                    controller.setPlaybackSpeed(2f)
+                    holdSpeedActive = true
+                    errorText.text = "2x ▶▶"
+                    errorText.visibility = View.VISIBLE
+                } else if (!edge) {
+                    cleanScreen = !cleanScreen
+                    val alpha = if (cleanScreen) 0f else 1f
+                    infoPanel?.animate()?.alpha(alpha)?.setDuration(180L)?.start()
+                    actionsPanel?.animate()?.alpha(alpha)?.setDuration(180L)?.start()
+                    holdSpeedActive = false
+                }
+                parent?.requestDisallowInterceptTouchEvent(true)
+            }
+        })
+        setOnTouchListener { view, event ->
+            detector.onTouchEvent(event)
+            if (holdSpeedActive && (event.actionMasked == android.view.MotionEvent.ACTION_UP ||
+                    event.actionMasked == android.view.MotionEvent.ACTION_CANCEL)
+            ) {
+                attachedController?.setPlaybackSpeed(previousSpeed)
+                holdSpeedActive = false
+                errorText.visibility = View.GONE
+                view.isPressed = false
+                return@setOnTouchListener true
+            }
+            false
+        }
+        // Silencio, como el botón de Shorts 2026.
+        muteButton.setImageResource(android.R.drawable.ic_lock_silent_mode_off)
+        muteButton.setColorFilter(Color.WHITE)
+        muteButton.background = circleDrawable(0x5E000000.toInt())
+        muteButton.setPadding(dpShort(context, 9), dpShort(context, 9), dpShort(context, 9), dpShort(context, 9))
+        muteButton.setOnClickListener {
+            val controller = attachedController ?: return@setOnClickListener
+            val muted = controller.volume <= 0.01f
+            controller.volume = if (muted) 1f else 0f
+            muteButton.setImageResource(
+                if (muted) android.R.drawable.ic_lock_silent_mode_off else android.R.drawable.ic_lock_silent_mode
+            )
+        }
+        addView(muteButton, LayoutParams(dpShort(context, 40), dpShort(context, 40), Gravity.TOP or Gravity.END).apply {
+            setMargins(0, dpShort(context, 16), dpShort(context, 14), 0)
         })
     }
 
@@ -974,8 +1072,13 @@ private class ShortActionView(context: Context, iconRes: Int, label: String) : L
         })
     }
 
+    fun setLabel(value: String) {
+        text.text = value
+    }
+
     fun setSelectedState(selected: Boolean) {
-        val color = if (selected) 0xFF9D6CFF.toInt() else Color.WHITE
+        // Corazón rojo cuando ya te gusta, como Shorts 2026.
+        val color = if (selected) 0xFFFF3B5C.toInt() else Color.WHITE
         icon.setColorFilter(color)
         text.setTextColor(color)
     }

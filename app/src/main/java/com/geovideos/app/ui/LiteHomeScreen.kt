@@ -24,7 +24,17 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.geovideos.app.data.MediaKind
+import com.geovideos.app.data.HomeFeedEntry
 import com.geovideos.app.data.VideoItem
+import com.geovideos.app.network.HomeChip
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.sp
 
 @Composable
 internal fun LiteHomeScreen(
@@ -36,6 +46,8 @@ internal fun LiteHomeScreen(
     gaming: List<VideoItem>,
     music: List<VideoItem>,
     shorts: List<VideoItem>,
+    mixes: List<VideoItem>,
+    homeFeed: List<HomeFeedEntry>,
     loading: Boolean,
     refreshing: Boolean,
     loadingMore: Boolean,
@@ -48,7 +60,12 @@ internal fun LiteHomeScreen(
     onOpenShort: (VideoItem) -> Unit,
     onWatchLater: (VideoItem) -> Unit,
     scrollToTopSignal: Long,
-    onAtTopChanged: (Boolean) -> Unit
+    onAtTopChanged: (Boolean) -> Unit,
+    youtubeChips: List<HomeChip> = emptyList(),
+    selectedYouTubeChip: String = "",
+    chipLoading: Boolean = false,
+    onYouTubeChip: (HomeChip?) -> Unit = {},
+    onVideoMenu: (VideoItem, String) -> Unit = { _, _ -> }
 ) {
     val baseVideos = remember(category, personalized, popular, live, gaming, music) {
         when (category) {
@@ -64,12 +81,13 @@ internal fun LiteHomeScreen(
     }
     val homeShorts = remember(category, baseVideos, shorts) {
         if (category != HomeCategory.FOR_YOU) emptyList()
-        else (shorts + baseVideos.filter(::looksLikeHomeShort)).distinctBy { it.id }.take(18)
+        else (shorts + baseVideos.filter(::looksLikeHomeShort)).distinctBy { it.id }.take(40)
     }
     // Si hay una señal musical real dentro del feed personal, mostrar una sola mezcla
     // compacta como DailyTube. Nunca se crea desde Tendencias ni desde búsquedas genéricas.
-    val mixVideo: VideoItem? = remember(category, baseVideos) {
-        if (category == HomeCategory.FOR_YOU) {
+    val mixVideo: VideoItem? = remember(category, baseVideos, mixes) {
+        // Con Mixes reales de YouTube no se inventa uno a partir de un video.
+        if (category == HomeCategory.FOR_YOU && mixes.isEmpty()) {
             baseVideos.firstOrNull { video ->
                 isEligibleHomeVideoCard(video) && looksLikeMusicForMix(video)
             }?.copy(isMix = true)
@@ -99,18 +117,39 @@ internal fun LiteHomeScreen(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(7.dp)
         ) {
-            LiteCategoryChip("Todos", Icons.Default.Explore, category == HomeCategory.FOR_YOU) {
-                onCategory(HomeCategory.FOR_YOU)
+            if (youtubeChips.isNotEmpty()) {
+                // Los mismos filtros que muestra YouTube para esta cuenta.
+                YouTubeHomeChip("Todos", category == HomeCategory.FOR_YOU && selectedYouTubeChip.isBlank()) {
+                    if (category != HomeCategory.FOR_YOU) onCategory(HomeCategory.FOR_YOU)
+                    onYouTubeChip(null)
+                }
+                youtubeChips.forEach { chip ->
+                    YouTubeHomeChip(chip.title, category == HomeCategory.FOR_YOU && selectedYouTubeChip == chip.token) {
+                        if (category != HomeCategory.FOR_YOU) onCategory(HomeCategory.FOR_YOU)
+                        onYouTubeChip(chip)
+                    }
+                }
+            } else {
+                LiteCategoryChip("Todos", Icons.Default.Explore, category == HomeCategory.FOR_YOU) {
+                    onCategory(HomeCategory.FOR_YOU)
+                }
+                LiteCategoryChip("En vivo", Icons.Default.LiveTv, category == HomeCategory.LIVE) {
+                    onCategory(HomeCategory.LIVE)
+                }
+                LiteCategoryChip("Juegos", Icons.Default.Games, category == HomeCategory.GAMING) {
+                    onCategory(HomeCategory.GAMING)
+                }
+                LiteCategoryChip("Música", Icons.Default.PlaylistPlay, category == HomeCategory.MUSIC) {
+                    onCategory(HomeCategory.MUSIC)
+                }
             }
-            LiteCategoryChip("En vivo", Icons.Default.LiveTv, category == HomeCategory.LIVE) {
-                onCategory(HomeCategory.LIVE)
-            }
-            LiteCategoryChip("Juegos", Icons.Default.Games, category == HomeCategory.GAMING) {
-                onCategory(HomeCategory.GAMING)
-            }
-            LiteCategoryChip("Música", Icons.Default.PlaylistPlay, category == HomeCategory.MUSIC) {
-                onCategory(HomeCategory.MUSIC)
-            }
+        }
+        if (chipLoading) {
+            androidx.compose.material3.LinearProgressIndicator(
+                modifier = Modifier.fillMaxWidth().height(2.dp),
+                color = Color(0xFFFF0033),
+                trackColor = Color.Transparent
+            )
         }
 
         Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
@@ -119,7 +158,13 @@ internal fun LiteHomeScreen(
                 videos = videos,
                 shorts = homeShorts,
                 showShortsShelf = category == HomeCategory.FOR_YOU,
-                mixVideo = mixVideo,
+                // "Todos" con sesión: exactamente el inicio de YouTube, en su orden.
+                orderedFeed = if (category == HomeCategory.FOR_YOU) homeFeed else emptyList(),
+                mixes = if (category == HomeCategory.FOR_YOU) {
+                    mixes.ifEmpty { listOfNotNull(mixVideo) }
+                } else {
+                    emptyList()
+                },
                 loading = loading,
                 refreshing = refreshing,
                 loadingMore = loadingMore,
@@ -131,9 +176,32 @@ internal fun LiteHomeScreen(
                 onOpenShort = onOpenShort,
                 onWatchLater = onWatchLater,
                 scrollToTopSignal = scrollToTopSignal,
-                onAtTopChanged = onAtTopChanged
+                onAtTopChanged = onAtTopChanged,
+                onVideoMenu = onVideoMenu
             )
         }
+    }
+}
+
+/** Píldora de filtro como YouTube: gris oscuro, la elegida en blanco con texto negro. */
+@Composable
+private fun YouTubeHomeChip(text: String, selected: Boolean, onClick: () -> Unit) {
+    Box(
+        modifier = Modifier
+            .height(32.dp)
+            .clip(RoundedCornerShape(8.dp))
+            .background(if (selected) Color.White else Color(0xFF272727))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 12.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            text = text,
+            color = if (selected) Color.Black else Color.White,
+            fontSize = 14.sp,
+            fontWeight = FontWeight.SemiBold,
+            maxLines = 1
+        )
     }
 }
 

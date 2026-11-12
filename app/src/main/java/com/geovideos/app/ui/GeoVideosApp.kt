@@ -163,6 +163,7 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
@@ -249,7 +250,7 @@ fun GeoVideosApp(
                 video = video,
                 autoplay = if (shortPlaybackMode) true else state.autoplay,
                 dataSaver = state.dataSaver,
-                repeat = shortPlaybackMode
+                repeat = shortPlaybackMode || state.queueRepeat == 2
             )
         }
     }
@@ -264,13 +265,21 @@ fun GeoVideosApp(
         playerConnection.setAutoplayEnabled(state.autoplay)
     }
 
-    LaunchedEffect(selectedVideo?.id, state.relatedVideos, state.dataSaver) {
+    LaunchedEffect(selectedVideo?.id, state.relatedVideos, state.dataSaver, state.queue, state.queueShuffle, state.queueRepeat) {
         selectedVideo?.let { current ->
+            // Con un Mix / cola activa, lo siguiente sale de la cola (en su orden o aleatorio).
+            val upcoming = if (state.queueActive && state.queueIndex >= 0) state.upcomingQueue(4) else emptyList()
             playerConnection.updateQueue(
                 current = current,
-                candidates = state.relatedVideos,
+                candidates = upcoming.ifEmpty { state.relatedVideos },
                 dataSaver = state.dataSaver
             )
+        }
+    }
+
+    LaunchedEffect(state.queueRepeat) {
+        if (selectedVideo != null && state.section != MainSection.SHORTS) {
+            playerConnection.setRepeat(state.queueRepeat == 2)
         }
     }
 
@@ -359,6 +368,27 @@ fun GeoVideosApp(
                         onCloseChannel = viewModel::closeChannel,
                         onOpenPlaylist = viewModel::openPlaylist,
                         onClosePlaylist = viewModel::closePlaylist,
+                        onHomeChip = viewModel::selectHomeChip,
+                        onSelectChannelTab = viewModel::selectChannelTab,
+                        onSelectChannelChip = viewModel::selectChannelChip,
+                        onLoadMoreChannelTab = viewModel::loadMoreChannelTab,
+                        onSelectSubsChannel = viewModel::selectSubsChannel,
+                        onOpenBell = viewModel::openBellSheet,
+                        onSearchQueryChange = viewModel::updateSearchSuggestions,
+                        onSearchFilter = viewModel::setSearchFilter,
+                        onRemoveSearchHistory = viewModel::removeSearchHistory,
+                        onClearSearch = viewModel::clearSearchResults,
+                        onOpenNotifications = viewModel::refreshNotifications,
+                        onLoadMoreNotifications = viewModel::loadMoreNotifications,
+                        onVideoMenu = { video, action ->
+                            when (action) {
+                                "later" -> viewModel.toggleWatchLater(video)
+                                "share" -> shareVideoLite(context, video)
+                                "download" -> viewModel.play(video)
+                                "not_interested" -> viewModel.notInterested(video)
+                                "dont_recommend" -> viewModel.dontRecommendChannel(video)
+                            }
+                        },
                         onToggleSubscription = { channel ->
                             if (!state.youtubeSyncAuthorized) {
                                 viewModel.queueSubscriptionToggle(channel)
@@ -435,7 +465,95 @@ fun GeoVideosApp(
                         },
                         onSavePlayback = viewModel::savePlayback,
                         onRegisterDownload = viewModel::registerDownload,
-                        onMessage = viewModel::showMessage
+                        onMessage = viewModel::showMessage,
+                        extras = PlayerExtras(
+                            isSubscribed = selectedVideo.channelId.isNotBlank() &&
+                                state.subscriptions.any { it.id == selectedVideo.channelId },
+                            relatedChips = state.relatedChips,
+                            selectedRelatedChip = state.selectedRelatedChip,
+                            onSelectChip = viewModel::selectRelatedChip,
+                            onToggleSubscribe = {
+                                val channel = ChannelItem(
+                                    selectedVideo.channelId,
+                                    selectedVideo.channelTitle,
+                                    state.playerDetails?.channelThumbnailUrl.orEmpty().ifBlank { selectedVideo.channelThumbnailUrl }
+                                )
+                                val alreadySubscribed = state.subscriptions.any { it.id == channel.id }
+                                if (alreadySubscribed) {
+                                    viewModel.openBellSheet(state.subscriptions.first { it.id == channel.id })
+                                } else if (!state.youtubeSyncAuthorized) {
+                                    viewModel.queueSubscriptionToggle(channel)
+                                    if (!state.youtubeSyncBusy) onRequestYouTubeSync()
+                                } else {
+                                    viewModel.toggleSubscription(channel)
+                                }
+                            },
+                            onOpenComments = { viewModel.openComments(selectedVideo) },
+                            queueActive = state.queueActive,
+                            queueTitle = state.queueTitle,
+                            queueSubtitle = state.queueSubtitle,
+                            queuePosition = state.queueIndex + 1,
+                            queueCount = state.queue.size,
+                            onOpenQueue = viewModel::openQueue,
+                            onNext = viewModel::playNext,
+                            onPrevious = { viewModel.playPreviousInQueue() },
+                            repeatOne = state.queueRepeat == 2,
+                            onRepeatOneChange = viewModel::setRepeatOne
+                        )
+                    )
+                }
+
+                if (state.queueOpen && selectedVideo != null) {
+                    QueueSheet(
+                        title = state.queueTitle,
+                        subtitle = state.queueSubtitle,
+                        queue = state.queue,
+                        currentId = selectedVideo.id,
+                        repeatMode = state.queueRepeat,
+                        shuffle = state.queueShuffle,
+                        loadingMore = state.queueLoadingMore,
+                        onPlay = viewModel::playFromQueue,
+                        onRepeat = viewModel::cycleQueueRepeat,
+                        onShuffle = viewModel::toggleQueueShuffle,
+                        onLoadMore = { viewModel.maybeLoadMoreQueue(force = true) },
+                        onDismiss = viewModel::closeQueue
+                    )
+                }
+
+                state.bellSheetChannel?.let { bellChannel ->
+                    BellSheet(
+                        channel = bellChannel,
+                        loading = state.bellSheetLoading,
+                        onSelect = viewModel::setBell,
+                        onUnsubscribe = {
+                            viewModel.closeBellSheet()
+                            if (!state.youtubeSyncAuthorized) {
+                                viewModel.queueSubscriptionToggle(bellChannel)
+                                if (!state.youtubeSyncBusy) onRequestYouTubeSync()
+                            } else {
+                                viewModel.toggleSubscription(bellChannel)
+                            }
+                        },
+                        onDismiss = viewModel::closeBellSheet
+                    )
+                }
+
+                if (state.commentsOpen) {
+                    CommentsSheet(
+                        comments = state.commentsList,
+                        totalText = state.commentsTotalText,
+                        loading = state.commentsLoading,
+                        loadingMore = state.commentsLoadingMore,
+                        canLoadMore = state.commentsCanLoadMore,
+                        sortIndex = state.commentsSort,
+                        sortAvailable = state.commentsSortAvailable,
+                        replies = state.commentReplies,
+                        repliesLoading = state.commentRepliesLoading,
+                        repliesCanLoadMore = state.commentRepliesCanLoadMore,
+                        onSort = viewModel::setCommentsSort,
+                        onLoadMore = viewModel::loadMoreComments,
+                        onLoadReplies = viewModel::loadReplies,
+                        onDismiss = viewModel::closeComments
                     )
                 }
             }
@@ -584,6 +702,19 @@ private fun MainShell(
     onOpenPlaylist: (PlaylistItem) -> Unit,
     onClosePlaylist: () -> Unit,
     onToggleSubscription: (ChannelItem) -> Unit,
+    onHomeChip: (com.geovideos.app.network.HomeChip?) -> Unit = {},
+    onSelectChannelTab: (Int) -> Unit = {},
+    onSelectChannelChip: (com.geovideos.app.network.HomeChip) -> Unit = {},
+    onLoadMoreChannelTab: () -> Unit = {},
+    onSelectSubsChannel: (ChannelItem?) -> Unit = {},
+    onOpenBell: (ChannelItem) -> Unit = {},
+    onSearchQueryChange: (String) -> Unit = {},
+    onSearchFilter: (Int) -> Unit = {},
+    onRemoveSearchHistory: (String) -> Unit = {},
+    onClearSearch: () -> Unit = {},
+    onOpenNotifications: () -> Unit = {},
+    onLoadMoreNotifications: () -> Unit = {},
+    onVideoMenu: (VideoItem, String) -> Unit = { _, _ -> },
     onDisconnect: () -> Unit,
     onClearData: () -> Unit,
     onRegisterDownload: (String, String, Long) -> Unit,
@@ -646,6 +777,11 @@ private fun MainShell(
     if (showNotifications) {
         NotificationsScreen(
             notifications = state.notifications,
+            loading = state.notificationsLoading,
+            loadingMore = state.notificationsLoadingMore,
+            canLoadMore = state.notificationsCanLoadMore,
+            onRefresh = onOpenNotifications,
+            onLoadMore = onLoadMoreNotifications,
             onBack = { showNotifications = false },
             onPlay = {
                 showNotifications = false
@@ -656,16 +792,31 @@ private fun MainShell(
     }
 
     state.selectedChannel?.let { channel ->
-        ChannelScreen(
+        ChannelPage(
             channel = channel,
-            videos = state.channelVideos,
-            playlists = state.channelPlaylists,
-            loading = state.loading,
+            loading = state.loading && state.channelTabs.isEmpty(),
+            tabs = state.channelTabs,
+            tabIndex = state.channelTabIndex,
+            shelves = state.channelShelves,
+            featured = state.channelFeatured,
+            tabVideos = state.channelTabVideos,
+            tabShorts = state.channelTabShorts,
+            tabPlaylists = state.channelTabPlaylists,
+            tabPosts = state.channelTabPosts,
+            tabChips = state.channelTabChips,
+            selectedChip = state.channelTabSelectedChip,
+            tabLoading = state.channelTabLoading,
+            tabLoadingMore = state.channelTabLoadingMore,
+            tabCanLoadMore = state.channelTabCanLoadMore,
             onBack = onCloseChannel,
+            onSelectTab = onSelectChannelTab,
+            onSelectChip = onSelectChannelChip,
+            onLoadMore = onLoadMoreChannelTab,
             onPlay = onPlay,
-            onWatchLater = onWatchLater,
-            onToggleSubscription = onToggleSubscription,
-            onMessage = onMessage
+            onOpenShort = onPreviewShort,
+            onOpenPlaylist = onOpenPlaylist,
+            onSubscribe = { onToggleSubscription(channel) },
+            onOpenBell = { onOpenBell(channel) }
         )
         return
     }
@@ -698,9 +849,15 @@ private fun MainShell(
                     IconButton(onClick = { onSection(MainSection.SEARCH) }) {
                         Icon(Icons.Default.Search, contentDescription = "Buscar")
                     }
-                    IconButton(onClick = { showNotifications = true }) {
+                    IconButton(onClick = {
+                        showNotifications = true
+                        onOpenNotifications()
+                    }) {
                         BadgedBox(badge = {
-                            if (state.notifications.isNotEmpty()) Badge { Text(state.notifications.size.coerceAtMost(99).toString()) }
+                            // Número rojo de YouTube: notificaciones sin ver.
+                            if (state.notificationsUnseen > 0) {
+                                Badge { Text(if (state.notificationsUnseen > 9) "9+" else state.notificationsUnseen.toString()) }
+                            }
                         }) {
                             Icon(Icons.Outlined.Notifications, contentDescription = "Notificaciones")
                         }
@@ -749,6 +906,8 @@ private fun MainShell(
                 gaming = state.gaming,
                 music = state.music,
                 shorts = state.shorts,
+                mixes = state.homeMixes,
+                homeFeed = state.homeFeed,
                 loading = state.loading,
                 refreshing = state.refreshing,
                 loadingMore = state.isLoadingMore(state.homeCategory),
@@ -761,7 +920,12 @@ private fun MainShell(
                 onOpenShort = onPreviewShort,
                 onWatchLater = onWatchLater,
                 scrollToTopSignal = homeScrollToTopSignal,
-                onAtTopChanged = { homeAtTop = it }
+                onAtTopChanged = { homeAtTop = it },
+                youtubeChips = state.homeChips,
+                selectedYouTubeChip = state.selectedHomeChip,
+                chipLoading = state.homeChipLoading,
+                onYouTubeChip = onHomeChip,
+                onVideoMenu = onVideoMenu
             )
             MainSection.SHORTS -> RecyclerShortsScreen(
                 modifier = contentModifier,
@@ -782,7 +946,18 @@ private fun MainShell(
                 onLike = onLike,
                 onDislike = onDislike,
                 onRegisterDownload = onRegisterDownload,
-                onMessage = onMessage
+                onMessage = onMessage,
+                onSubscribe = { video ->
+                    if (video.channelId.isNotBlank()) {
+                        onToggleSubscription(
+                            ChannelItem(
+                                id = video.channelId,
+                                title = video.channelTitle,
+                                thumbnailUrl = video.channelThumbnailUrl
+                            )
+                        )
+                    }
+                }
             )
             MainSection.SUBSCRIPTIONS -> SubscriptionsFeedScreen(
                 modifier = contentModifier,
@@ -797,27 +972,52 @@ private fun MainShell(
                 onPlay = onPlay,
                 onOpenShort = onPreviewShort,
                 onOpenChannel = onOpenChannel,
-                onWatchLater = onWatchLater
+                onWatchLater = onWatchLater,
+                guide = state.subsGuide,
+                filterChannel = state.subsChannelFilter,
+                filterVideos = state.subsChannelVideos,
+                filterShorts = state.subsChannelShorts,
+                filterLoading = state.subsChannelLoading,
+                history = state.libraryHistory,
+                onSelectChannel = onSelectSubsChannel,
+                onOpenBell = onOpenBell
             )
-            MainSection.SEARCH -> SearchScreen(
+            MainSection.SEARCH -> SearchPage(
                 modifier = contentModifier,
-                results = state.searchResults,
-                channels = state.searchChannels,
-                playlists = state.searchPlaylists,
+                currentQuery = state.searchQuery,
+                entries = state.searchEntries,
+                filter = state.searchFilter,
+                suggestions = state.searchSuggestions,
                 history = state.searchHistory,
+                corrected = state.searchCorrected,
                 loading = state.loading,
                 loadingMore = state.searchLoadingMore,
+                canLoadMore = state.searchCanLoadMore,
+                subscribedIds = state.subscriptions.mapTo(HashSet()) { it.id },
+                onBack = {
+                    onClearSearch()
+                    onSection(MainSection.HOME)
+                },
+                onQueryChange = onSearchQueryChange,
                 onSearch = onSearch,
+                onFilter = onSearchFilter,
+                onRemoveHistory = onRemoveSearchHistory,
                 onLoadMore = onLoadMoreSearch,
                 onPlay = onPlay,
-                onWatchLater = onWatchLater,
+                onOpenShort = onPreviewShort,
                 onOpenChannel = onOpenChannel,
-                onOpenPlaylist = onOpenPlaylist
+                onOpenPlaylist = onOpenPlaylist,
+                onWatchLater = onWatchLater,
+                onSubscribe = onToggleSubscription,
+                onOpenBell = onOpenBell
             )
             MainSection.LIBRARY -> {
                 if (libraryDestination == LibraryDestination.ROOT) {
                     LibraryScreen(
                         modifier = contentModifier,
+                        profile = state.profile,
+                        onOpenAccount = { onSection(MainSection.ACCOUNT) },
+                        onOpenPlaylist = onOpenPlaylist,
                         history = state.libraryHistory,
                         watchLater = state.libraryWatchLater,
                         liked = (state.localLikedVideos + state.liked).distinctBy { it.id },
@@ -1170,6 +1370,9 @@ private fun looksLikeMusicCollection(video: VideoItem): Boolean {
 @Composable
 private fun LibraryScreen(
     modifier: Modifier,
+    profile: GoogleProfile? = null,
+    onOpenAccount: () -> Unit = {},
+    onOpenPlaylist: (PlaylistItem) -> Unit = {},
     history: List<VideoItem>,
     watchLater: List<VideoItem>,
     liked: List<VideoItem>,
@@ -1205,6 +1408,60 @@ private fun LibraryScreen(
         contentPadding = PaddingValues(top = 8.dp, bottom = 22.dp),
         verticalArrangement = Arrangement.spacedBy(4.dp)
     ) {
+        // Encabezado de la pestaña Tú como YouTube: foto, nombre, @canal y accesos.
+        item(key = "library-profile") {
+            Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    ProfileAvatar(profile = profile, size = 68.dp, onClick = onOpenAccount)
+                    Column(Modifier.weight(1f).padding(start = 14.dp)) {
+                        Text(
+                            profile?.name?.ifBlank { null } ?: profile?.channelTitle?.ifBlank { null } ?: "Tu cuenta",
+                            fontWeight = FontWeight.ExtraBold,
+                            fontSize = 22.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Text(
+                            buildString {
+                                profile?.channelTitle?.takeIf { it.isNotBlank() && it != profile.name }?.let { append(it).append(" · ") }
+                                append("Ver canal ›")
+                            },
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            fontSize = 13.sp,
+                            modifier = Modifier.clickable {
+                                val id = profile?.channelId.orEmpty()
+                                if (id.isNotBlank()) {
+                                    onOpenChannel(ChannelItem(id, profile?.channelTitle.orEmpty().ifBlank { profile?.name.orEmpty() }, profile?.pictureUrl.orEmpty()))
+                                } else {
+                                    onOpenAccount()
+                                }
+                            }
+                        )
+                    }
+                }
+                LazyRow(
+                    modifier = Modifier.padding(top = 12.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    item(key = "chip-account") {
+                        AssistChip(onClick = onOpenAccount, label = { Text("Cambiar de cuenta") }, leadingIcon = { Icon(Icons.Default.AccountCircle, null) })
+                    }
+                    item(key = "chip-google") {
+                        AssistChip(
+                            onClick = {
+                                runCatching {
+                                    context.startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse("https://myaccount.google.com")))
+                                }
+                            },
+                            label = { Text("Cuenta de Google") }
+                        )
+                    }
+                    item(key = "chip-settings") {
+                        AssistChip(onClick = onOpenAccount, label = { Text("Ajustes") })
+                    }
+                }
+            }
+        }
         item(key = "library-history-title") {
             CompactLibraryHeader("Historial", "Ver todo", onOpenHistory)
         }
@@ -1269,7 +1526,7 @@ private fun LibraryScreen(
                     )
                 }
                 items(playlists.take(10), key = { "library-playlist-${it.id}" }) { playlist ->
-                    PlaylistCard(playlist)
+                    PlaylistCard(playlist, onClick = { onOpenPlaylist(playlist) })
                 }
             }
         }
@@ -1824,32 +2081,99 @@ private fun SettingSwitch(title: String, subtitle: String, checked: Boolean, onC
 @Composable
 private fun NotificationsScreen(
     notifications: List<NotificationItem>,
+    loading: Boolean,
+    loadingMore: Boolean,
+    canLoadMore: Boolean,
+    onRefresh: () -> Unit,
+    onLoadMore: () -> Unit,
     onBack: () -> Unit,
     onPlay: (VideoItem) -> Unit
 ) {
     BackHandler(onBack = onBack)
+    val listState = rememberLazyListState()
+    val nearEnd by remember {
+        derivedStateOf {
+            val info = listState.layoutInfo
+            val last = info.visibleItemsInfo.lastOrNull()?.index ?: 0
+            info.totalItemsCount > 0 && last >= info.totalItemsCount - 3
+        }
+    }
+    LaunchedEffect(nearEnd, canLoadMore, loadingMore) {
+        if (nearEnd && canLoadMore && !loadingMore) onLoadMore()
+    }
+    val sections = remember(notifications) { notifications.groupBy { it.section }.entries.toList() }
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Actividad") },
-                navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, "Volver") } }
+                title = { Text("Notificaciones", fontWeight = FontWeight.Bold) },
+                navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, "Volver") } },
+                actions = {
+                    IconButton(onClick = onRefresh) { Icon(Icons.Default.Refresh, contentDescription = "Actualizar") }
+                }
             )
         }
     ) { padding ->
-        LazyColumn(modifier = Modifier.padding(padding).fillMaxSize(), contentPadding = PaddingValues(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            if (notifications.isEmpty()) {
-                item { EmptyBlock("YouTube no devolvió actividad reciente. La API pública no expone toda la bandeja privada de notificaciones.") }
-            } else {
-                items(notifications, key = { "notification-${it.id}" }) { item ->
-                    Card(onClick = { item.video?.let(onPlay) }, enabled = item.video != null) {
-                        Row(modifier = Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                            Thumbnail(item.thumbnailUrl, Modifier.size(92.dp).clip(RoundedCornerShape(12.dp)))
-                            Column(modifier = Modifier.weight(1f).padding(horizontal = 12.dp)) {
-                                Text(item.title, fontWeight = FontWeight.SemiBold, maxLines = 3, overflow = TextOverflow.Ellipsis)
-                                Text(item.subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 5.dp))
+        LazyColumn(state = listState, modifier = Modifier.padding(padding).fillMaxSize(), contentPadding = PaddingValues(bottom = 18.dp)) {
+            if (loading && notifications.isEmpty()) {
+                item(key = "notif-loading") {
+                    Box(Modifier.fillMaxWidth().height(220.dp), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
+                }
+            } else if (notifications.isEmpty()) {
+                item(key = "notif-empty") { EmptyBlock("No tienes notificaciones. Cuando tus canales publiquen algo, aparecerá aquí.") }
+            }
+            sections.forEach { (title, group) ->
+                if (title.isNotBlank()) {
+                    item(key = "notif-section-$title") {
+                        Text(
+                            title,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 16.sp,
+                            modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 14.dp, bottom = 6.dp)
+                        )
+                    }
+                }
+                items(group, key = { "notification-${it.id}" }) { item ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable(enabled = item.video != null) { item.video?.let(onPlay) }
+                            .padding(start = 6.dp, end = 12.dp, top = 10.dp, bottom = 10.dp),
+                        verticalAlignment = Alignment.Top
+                    ) {
+                        // Punto azul de "sin leer", como YouTube.
+                        Box(
+                            Modifier
+                                .padding(top = 18.dp)
+                                .size(6.dp)
+                                .clip(CircleShape)
+                                .background(if (!item.read) Color(0xFF3EA6FF) else Color.Transparent)
+                        )
+                        Spacer(Modifier.width(6.dp))
+                        Thumbnail(
+                            item.avatarUrl.ifBlank { item.thumbnailUrl },
+                            Modifier.size(44.dp).clip(CircleShape),
+                            contentScale = ContentScale.Crop
+                        )
+                        Column(modifier = Modifier.weight(1f).padding(horizontal = 12.dp)) {
+                            Text(item.title, fontSize = 14.sp, maxLines = 3, overflow = TextOverflow.Ellipsis)
+                            if (item.subtitle.isNotBlank()) {
+                                Text(item.subtitle, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 4.dp))
                             }
-                            Icon(Icons.Default.Notifications, null, tint = MaterialTheme.colorScheme.primary)
                         }
+                        if (item.video != null) {
+                            Thumbnail(
+                                item.video.thumbnailUrl.ifBlank { item.thumbnailUrl },
+                                Modifier.width(112.dp).aspectRatio(16f / 9f).clip(RoundedCornerShape(8.dp)),
+                                contentScale = ContentScale.Crop
+                            )
+                        }
+                    }
+                }
+            }
+            if (loadingMore) {
+                item(key = "notif-more") {
+                    Box(Modifier.fillMaxWidth().padding(18.dp), contentAlignment = Alignment.Center) {
+                        CircularProgressIndicator(Modifier.size(26.dp), strokeWidth = 2.dp)
                     }
                 }
             }
@@ -2346,8 +2670,8 @@ private fun ResumeProgress(video: VideoItem, modifier: Modifier = Modifier) {
 }
 
 @Composable
-private fun PlaylistCard(playlist: PlaylistItem) {
-    Column(modifier = Modifier.width(148.dp)) {
+private fun PlaylistCard(playlist: PlaylistItem, onClick: () -> Unit = {}) {
+    Column(modifier = Modifier.width(148.dp).clickable(onClick = onClick)) {
         Box(
             modifier = Modifier
                 .fillMaxWidth()

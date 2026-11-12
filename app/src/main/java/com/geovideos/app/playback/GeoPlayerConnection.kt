@@ -86,6 +86,39 @@ class GeoPlayerConnection private constructor(context: Context) {
     )
     val preferredQualityHeight: StateFlow<Int?> = _preferredQualityHeight.asStateFlow()
 
+    /** Segundos que salta el doble toque (YouTube deja elegir 5–60 s). */
+    private val _doubleTapSeekSeconds = MutableStateFlow(
+        playerPreferences.getInt(KEY_DOUBLE_TAP_SECONDS, 10).coerceIn(5, 60)
+    )
+    val doubleTapSeekSeconds: StateFlow<Int> = _doubleTapSeekSeconds.asStateFlow()
+
+    fun setDoubleTapSeekSeconds(seconds: Int) {
+        val safe = seconds.coerceIn(5, 60)
+        _doubleTapSeekSeconds.value = safe
+        playerPreferences.edit().putInt(KEY_DOUBLE_TAP_SECONDS, safe).apply()
+    }
+
+    internal suspend fun playbackExtras(video: VideoItem): PlaybackExtras = StreamResolver.extras(video)
+
+    /** Cambia la pista de audio (original / doblada) sin perder la posición. */
+    fun selectAudioTrack(video: VideoItem, trackId: String?, dataSaver: Boolean) {
+        StreamResolver.setPreferredAudioTrack(video.id, trackId)
+        val controllerNow = _controller.value
+        val position = controllerNow?.currentPosition?.takeIf { it >= 0L } ?: video.resumePositionMs
+        val shouldPlay = controllerNow?.playWhenReady ?: true
+        val repeat = controllerNow?.repeatMode == Player.REPEAT_MODE_ONE
+        openInternal(
+            video = video.copy(resumePositionMs = position),
+            autoplay = shouldPlay,
+            dataSaver = dataSaver,
+            repeat = repeat,
+            preferredHeight = _preferredQualityHeight.value,
+            forceReload = true,
+            audioOnly = _audioOnlyMode.value,
+            updateQualityPreference = false
+        )
+    }
+
     // El modo música pertenece únicamente a la reproducción actual. No se conserva
     // como preferencia global porque al abrir otro video o un Short debe volver el video.
     private val _audioOnlyMode = MutableStateFlow(false)
@@ -403,7 +436,7 @@ class GeoPlayerConnection private constructor(context: Context) {
                 _state.update {
                     it.copy(
                         resolving = false,
-                        error = friendlyPlaybackError(error.message)
+                        error = friendlyPlaybackError(describeError(error))
                     )
                 }
             }
@@ -635,9 +668,58 @@ class GeoPlayerConnection private constructor(context: Context) {
         }
     }
 
+    /** Nombre y mensaje de la excepción y de sus causas (NewPipe envuelve el motivo real). */
+    private fun describeError(error: Throwable): String {
+        val parts = ArrayList<String>()
+        var current: Throwable? = error
+        var depth = 0
+        while (current != null && depth < 5) {
+            parts.add(current.javaClass.simpleName + " " + current.message.orEmpty())
+            current = current.cause
+            depth += 1
+        }
+        return parts.joinToString(" | ")
+    }
+
+    /** Motivo que YouTube escribió en playabilityStatus ("Got error UNPLAYABLE: \"…\""). */
+    private fun youtubeReason(message: String): String =
+        Regex("""Got error \w+: "(.*?)"""").find(message)?.groupValues?.getOrNull(1)
+            ?.takeIf { it.isNotBlank() && it != "null" }
+            .orEmpty()
+
     private fun friendlyPlaybackError(rawMessage: String?): String {
         val message = rawMessage.orEmpty()
         return when {
+            message.contains("AgeRestricted", ignoreCase = true) ||
+                message.contains("age", ignoreCase = true) && message.contains("restrict", ignoreCase = true) ||
+                message.contains("inappropriate", ignoreCase = true) ->
+                "YouTube pide confirmar la edad para este video. Ábrelo en YouTube."
+            message.contains("SignInConfirmNotBot", ignoreCase = true) ||
+                message.contains("not a bot", ignoreCase = true) ->
+                "YouTube pidió verificar que no eres un robot. Reintenta en unos minutos o ábrelo en YouTube."
+            message.contains("members", ignoreCase = true) ||
+                message.contains("PaidContent", ignoreCase = true) ||
+                message.contains("Premium", ignoreCase = true) ->
+                "Este video es solo para miembros o de pago. Ábrelo en YouTube."
+            message.contains("PrivateContent", ignoreCase = true) || message.contains("private", ignoreCase = true) ->
+                "Este video es privado."
+            message.contains("GeographicRestriction", ignoreCase = true) ||
+                message.contains("country", ignoreCase = true) ->
+                "Este video no está disponible en tu país."
+            message.contains("premiere", ignoreCase = true) ||
+                message.contains("will begin", ignoreCase = true) ||
+                message.contains("upcoming", ignoreCase = true) ->
+                "Es un estreno o directo que todavía no empieza."
+            message.contains("kids", ignoreCase = true) || message.contains("niños", ignoreCase = true) ->
+                "Es un video \"para niños\": YouTube no lo entrega a apps externas. Ábrelo en YouTube."
+            youtubeReason(message).isNotBlank() ->
+                "YouTube dice: " + youtubeReason(message)
+            message.contains("ContentNotAvailable", ignoreCase = true) ||
+                message.contains("unavailable", ignoreCase = true) ||
+                message.contains("not available", ignoreCase = true) ->
+                "YouTube no entrega este video a apps externas ahora. Reintenta o ábrelo en YouTube."
+            message.contains("403") ->
+                "YouTube rechazó el enlace del video. Pulsa Reintentar."
             message.contains("unable to resolve host", ignoreCase = true) ||
                 message.contains("no address associated with hostname", ignoreCase = true) ||
                 message.contains("youtubei.googleapis.com", ignoreCase = true) ->
@@ -680,6 +762,7 @@ class GeoPlayerConnection private constructor(context: Context) {
 
     companion object {
         private const val KEY_PREFERRED_QUALITY = "preferred_quality_height"
+        private const val KEY_DOUBLE_TAP_SECONDS = "double_tap_seek_seconds"
         private const val MAX_PLAYBACK_FALLBACK_ATTEMPT = 3
 
         @Volatile

@@ -187,8 +187,8 @@ private fun HistoryCollectionScreen(
     var showSearch by rememberSaveable { mutableStateOf(false) }
     var query by rememberSaveable { mutableStateOf("") }
     val filtered = remember(videos, query) {
+        // Ya viene en orden (lo recién visto aquí y luego el historial de YouTube): no reordenar.
         videos.asSequence()
-            .sortedByDescending { it.watchedAtMs }
             .distinctBy { it.id }
             .filter { video ->
                 query.isBlank() || video.title.contains(query, true) || video.channelTitle.contains(query, true)
@@ -221,7 +221,7 @@ private fun HistoryCollectionScreen(
                 onValueChange = { query = it },
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
                 singleLine = true,
-                placeholder = { Text("Buscar en el historial de Geo Videos") },
+                placeholder = { Text("Buscar en el historial") },
                 leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) }
             )
         }
@@ -327,18 +327,25 @@ private fun HistoryVideoRow(
     }
 }
 
+/** Día como lo muestra YouTube: Hoy, Ayer, el nombre del día esta semana o la fecha. */
 private fun historyDayLabel(video: VideoItem): String {
     val time = video.watchedAtMs
-    if (time <= 0L) return "Anteriores"
+    if (time <= 0L) {
+        return video.historySection.trim().replaceFirstChar { it.uppercase() }.ifBlank { "Anteriores" }
+    }
     val now = Calendar.getInstance()
     val watched = Calendar.getInstance().apply { timeInMillis = time }
-    val nowDay = now.get(Calendar.DAY_OF_YEAR)
-    val watchedDay = watched.get(Calendar.DAY_OF_YEAR)
-    val sameYear = now.get(Calendar.YEAR) == watched.get(Calendar.YEAR)
+    val startToday = (now.clone() as Calendar).apply {
+        set(Calendar.HOUR_OF_DAY, 0); set(Calendar.MINUTE, 0); set(Calendar.SECOND, 0); set(Calendar.MILLISECOND, 0)
+    }
+    val days = ((startToday.timeInMillis - time) / 86_400_000L).toInt() + if (time < startToday.timeInMillis) 1 else 0
+    val locale = java.util.Locale("es")
     return when {
-        sameYear && nowDay == watchedDay -> "Hoy"
-        sameYear && nowDay - watchedDay == 1 -> "Ayer"
-        else -> "Anteriores"
+        time >= startToday.timeInMillis -> "Hoy"
+        days <= 1 -> "Ayer"
+        days < 7 -> java.text.SimpleDateFormat("EEEE", locale).format(watched.time).replaceFirstChar { it.uppercase() }
+        now.get(Calendar.YEAR) == watched.get(Calendar.YEAR) -> java.text.SimpleDateFormat("d 'de' MMM", locale).format(watched.time)
+        else -> java.text.SimpleDateFormat("d MMM yyyy", locale).format(watched.time)
     }
 }
 

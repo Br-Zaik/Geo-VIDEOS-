@@ -308,6 +308,12 @@ class GeoVideosRepository(context: Context) {
         return updated
     }
 
+    fun removeSearch(query: String): List<String> {
+        val updated = loadSearchHistory().filterNot { it.equals(query.trim(), true) }
+        saveStrings(KEY_SEARCH_HISTORY, updated)
+        return updated
+    }
+
     fun addSearch(query: String): List<String> {
         val clean = query.trim()
         if (clean.isBlank()) return loadSearchHistory()
@@ -414,6 +420,9 @@ class GeoVideosRepository(context: Context) {
                     .put("downloadId", video.downloadId)
                     .put("watchedAtMs", video.watchedAtMs)
                     .put("viewCountText", video.viewCountText)
+                    .put("isNew", video.isNew)
+                    .put("mixPlaylistId", video.mixPlaylistId)
+                    .put("isMix", video.isMix)
             )
         }
         return array
@@ -443,7 +452,10 @@ class GeoVideosRepository(context: Context) {
                         durationMs = item.optLong("durationMs", 0L),
                         downloadId = item.optLong("downloadId", -1L),
                         watchedAtMs = item.optLong("watchedAtMs", 0L),
-                        viewCountText = item.optString("viewCountText", "")
+                        viewCountText = item.optString("viewCountText", ""),
+                        isNew = item.optBoolean("isNew", false),
+                        mixPlaylistId = item.optString("mixPlaylistId", ""),
+                        isMix = item.optBoolean("isMix", false)
                     )
                 )
             }

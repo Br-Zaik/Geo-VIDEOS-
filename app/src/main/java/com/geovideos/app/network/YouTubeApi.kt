@@ -3,8 +3,10 @@ package com.geovideos.app.network
 import com.geovideos.app.data.ChannelDetails
 import com.geovideos.app.data.ChannelItem
 import com.geovideos.app.data.CommentItem
+import com.geovideos.app.data.CommentsPage
 import com.geovideos.app.data.GoogleProfile
 import com.geovideos.app.data.NotificationItem
+import com.geovideos.app.data.NotificationsPage
 import com.geovideos.app.data.PlaylistItem
 import com.geovideos.app.data.VideoDetails
 import com.geovideos.app.data.VideoItem
@@ -13,7 +15,9 @@ import org.json.JSONObject
 
 data class VideoPage(
     val items: List<VideoItem>,
-    val nextPageToken: String = ""
+    val nextPageToken: String = "",
+    /** Filtros de la página (por ejemplo "Todos", "De este canal", "Relacionados", "Para ti"). */
+    val chips: List<HomeChip> = emptyList()
 )
 
 data class YouTubeSearchPage(
@@ -168,7 +172,30 @@ class YouTubeApi(private val inner: InnerTubeClient) {
         } else {
             inner.parse(inner.next(video.id, continuation = pageToken))
         }
+        VideoPage(page.videos.filterNot { it.id == video.id }, page.continuation, if (firstPage) page.chips else emptyList())
+    }
+
+    /** Relacionados de un filtro (chip) de la página del video: watch-next-feed. */
+    suspend fun relatedChipPage(token: String, video: VideoItem, chipToken: String): VideoPage = session {
+        val page = inner.parse(inner.next(video.id, continuation = chipToken))
         VideoPage(page.videos.filterNot { it.id == video.id }, page.continuation)
+    }
+
+    suspend fun sendFeedback(token: String, feedbackToken: String) = session { inner.sendFeedback(feedbackToken) }
+
+    suspend fun commentsFirstPage(token: String, videoId: String): CommentsPage = session {
+        val start = inner.commentsStartToken(videoId)
+        if (start.isBlank()) CommentsPage(emptyList()) else inner.comments(start)
+    }
+
+    suspend fun commentsPage(token: String, pageToken: String): CommentsPage = session { inner.comments(pageToken) }
+
+    suspend fun mixPanel(token: String, video: VideoItem): MixPanel = session {
+        if (video.mixPlaylistId.isBlank()) MixPanel("", "", emptyList()) else inner.mixPanel(video.id, video.mixPlaylistId)
+    }
+
+    suspend fun mixVideos(token: String, video: VideoItem): List<VideoItem> = session {
+        if (video.mixPlaylistId.isBlank()) emptyList() else inner.mixVideos(video.id, video.mixPlaylistId)
     }
 
     suspend fun rateVideo(token: String, videoId: String, rating: String) = session {
@@ -443,6 +470,17 @@ class YouTubeApi(private val inner: InnerTubeClient) {
         )
     }
 
+    suspend fun channelPage(token: String, channelId: String): ChannelPageData = session { inner.channelPage(channelId) }
+
+    suspend fun channelTab(token: String, channelId: String, params: String, continuation: String = ""): ChannelTabPage =
+        session { inner.channelTab(channelId, params, continuation) }
+
+    suspend fun channelBell(token: String, channelId: String): Pair<Int, List<String>> = session { inner.channelBell(channelId) }
+
+    suspend fun setBell(token: String, params: String) = session { inner.setBell(params) }
+
+    suspend fun subscriptionGuide(token: String): List<ChannelItem> = session { inner.subscriptionGuide() }
+
     suspend fun channelPlaylists(token: String, channelId: String): List<PlaylistItem> = session {
         inner.browsePage(channelId, PARAMS_CHANNEL_PLAYLISTS).playlists
     }
@@ -454,6 +492,16 @@ class YouTubeApi(private val inner: InnerTubeClient) {
     }
 
     // --------------------------------------------------------- Notificaciones
+
+    suspend fun searchSuggestions(token: String, query: String): List<String> = session { inner.searchSuggestions(query) }
+
+    suspend fun searchResults(token: String, query: String, params: String, continuation: String = ""): SearchResults =
+        session { inner.searchResults(query, params, continuation) }
+
+    suspend fun notificationsPage(token: String, continuation: String = ""): NotificationsPage =
+        session { inner.notifications(continuation) }
+
+    suspend fun unseenNotifications(token: String): Int = session { inner.unseenNotifications() }
 
     suspend fun homeActivities(token: String): List<NotificationItem> = session {
         val json = inner.call("notification/get_notification_menu") {
