@@ -4,10 +4,10 @@ on:
   push:
     branches: [main]
     paths:
-      - '*.zip'
+      - 'Geo-VIDEOS-*.zip'
       # No lanzar compilaciones por eliminar o reemplazar la copia del proyecto.
       - '!Geo-VIDEOS-actual.zip'
-      - 'incoming/**/*.zip'
+      - 'incoming/**/Geo-VIDEOS-*.zip'
       - '.github/workflows/zip-to-apk.yml'
       - 'app/**'
       - 'build.gradle.kts'
@@ -51,7 +51,7 @@ jobs:
               current = os.environ['GITHUB_SHA']
               if previous and previous != '0' * 40:
                   changed = subprocess.check_output(
-                      ['git', 'diff', '--name-only', '--diff-filter=ACMR', previous, current],
+                      ['git', 'diff', '--name-only', previous, current],
                       text=True,
                   ).splitlines()
               else:
@@ -62,6 +62,7 @@ jobs:
               for name in changed:
                   path = Path(name)
                   if (path.is_file() and path.suffix.lower() == '.zip'
+                          and path.name.startswith('Geo-VIDEOS-')
                           and path.name != 'Geo-VIDEOS-actual.zip'
                           and (len(path.parts) == 1 or path.parts[0] == 'incoming')):
                       candidates.append(path)
@@ -70,11 +71,27 @@ jobs:
               raise SystemExit('Sube un solo ZIP por actualizacion: ' + ', '.join(map(str, candidates)))
 
           file = candidates[0].as_posix() if candidates else ''
+          # Solo compilar por una version nueva, cambios Android o ejecucion manual.
+          required = (
+              bool(file)
+              or os.getenv('GITHUB_EVENT_NAME') == 'workflow_dispatch'
+              or any(
+                  name.startswith(('app/', 'gradle/'))
+                  or name in (
+                      '.github/workflows/zip-to-apk.yml',
+                      'build.gradle.kts',
+                      'settings.gradle.kts',
+                      'gradle.properties',
+                  )
+                  for name in changed
+              )
+          )
           # Mantener la version original para identificar y recuperar cada APK.
           import re
           version = re.sub(r'[^A-Za-z0-9._-]', '-', Path(file).stem) if file else ''
           with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
               output.write(f'has_zip={"true" if file else "false"}\n')
+              output.write(f'should_build={"true" if required else "false"}\n')
               output.write(f'file={file}\n')
               output.write(f'version={version}\n')
           with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as summary:
@@ -126,14 +143,26 @@ jobs:
           if not candidates:
               raise SystemExit('El ZIP no contiene un proyecto Android (app + settings.gradle)')
           project = min(candidates, key=lambda p: (len(p.relative_to(temp).parts), str(p)))
-          print('Proyecto importado desde: ' + str(project))
+          # Nunca sustituir Geo Videos con otra app (por ejemplo Zeta Motion).
+          import re
+          gradle_file = project / 'app' / 'build.gradle.kts'
+          gradle_text = gradle_file.read_text(encoding='utf-8') if gradle_file.is_file() else ''
+          expected = r'com\.geovideos\.app'
+          if not (re.search(r'(?m)^\s*namespace\s*=\s*"' + expected + r'"', gradle_text)
+                  and re.search(r'(?m)^\s*applicationId\s*=\s*"' + expected + r'"', gradle_text)):
+              raise SystemExit(
+                  'ZIP rechazado: no es Geo Videos (applicationId debe ser com.geovideos.app). '
+                  'El codigo del repositorio NO se modificara.'
+              )
+          print('Proyecto Geo Videos verificado: ' + str(project))
           # La gestion del repositorio, su README, su firma y su workflow se mantienen.
           subprocess_args = [
               'rsync', '-a', '--delete',
               '--exclude=/.git/', '--exclude=/.github/', '--exclude=/incoming/',
               '--exclude=*.zip', '--exclude=/README*', '--exclude=/.gitignore',
               '--exclude=/COPYING', '--exclude=/THIRD_PARTY_NOTICES.md',
-              '--exclude=/VALIDACION*', '--exclude=/app/geovideos-dev.jks',
+              '--exclude=/VALIDACION*', '--exclude=/LEEME*',
+              '--exclude=/app/geovideos-dev.jks',
               str(project) + '/', './',
           ]
           import subprocess
@@ -141,30 +170,37 @@ jobs:
           PY
 
       - name: Limpiar archivos de validacion y README duplicados
+        if: steps.zip.outputs.should_build == 'true'
         shell: bash
         run: |
           set -euo pipefail
           find . -maxdepth 1 -type f \( -iname 'VALIDACION*.txt' -o -iname 'README*.md' ! -name 'README.md' \) -print -delete
 
       - name: Verificar proyecto Android
+        if: steps.zip.outputs.should_build == 'true'
         shell: bash
         run: |
           test -d app
           test -f app/build.gradle.kts
           test -f settings.gradle.kts
+          grep -Eq 'namespace[[:space:]]*=[[:space:]]*"com\.geovideos\.app"' app/build.gradle.kts
+          grep -Eq 'applicationId[[:space:]]*=[[:space:]]*"com\.geovideos\.app"' app/build.gradle.kts
 
       - name: Preparar Java 17
+        if: steps.zip.outputs.should_build == 'true'
         uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '17'
 
       - name: Preparar Gradle 8.13
+        if: steps.zip.outputs.should_build == 'true'
         uses: gradle/actions/setup-gradle@v6
         with:
           gradle-version: '8.13'
 
       - name: Compilar APK
+        if: steps.zip.outputs.should_build == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -176,6 +212,7 @@ jobs:
           fi
 
       - name: Preparar APK directo sin carpetas
+        if: steps.zip.outputs.should_build == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -191,6 +228,7 @@ jobs:
           echo "APK lista para descargar: Geo-Videos.apk"
 
       - name: Guardar APK para descargar
+        if: steps.zip.outputs.should_build == 'true'
         uses: actions/upload-artifact@v7
         with:
           name: ${{ steps.zip.outputs.version || 'Geo-Videos' }}-APK-${{ github.run_number }}
@@ -198,43 +236,12 @@ jobs:
           if-no-files-found: error
           compression-level: 0
 
-      - name: Generar un solo ZIP del proyecto actual
-        shell: bash
-        run: |
-          set -euo pipefail
-          python3 <<'PY'
-          import os
-          import zipfile
-          from pathlib import Path
-
-          archive = Path('Geo-VIDEOS-actual.zip')
-          tmp = Path(os.environ['RUNNER_TEMP']) / 'Geo-VIDEOS-actual.zip'
-          skip_dirs = {'.git', '.gradle', '.idea', 'build', '.cxx', '.externalNativeBuild', '__MACOSX', 'incoming'}
-          with zipfile.ZipFile(tmp, 'w', zipfile.ZIP_DEFLATED, compresslevel=7) as z:
-              for root, dirs, files in os.walk('.'):
-                  dirs[:] = sorted(d for d in dirs if d not in skip_dirs)
-                  for name in sorted(files):
-                      path = Path(root) / name
-                      rel = path.as_posix().removeprefix('./')
-                      if (name.lower().endswith(('.zip', '.apk', '.aab', '.iml'))
-                              or name == '.DS_Store'
-                              or (len(path.parts) <= 2 and name.upper().startswith('VALIDACION'))
-                              or (len(path.parts) <= 2 and name.lower().startswith('readme') and name != 'README.md')):
-                          continue
-                      z.write(path, arcname='Geo-VIDEOS/' + rel)
-          tmp.replace(archive)
-          print(f'ZIP unico: {archive} ({archive.stat().st_size} bytes)')
-          PY
-
       - name: Guardar proyecto limpio en GitHub
+        if: steps.zip.outputs.should_build == 'true'
         shell: bash
-        env:
-          ZIP_FILE: ${{ steps.zip.outputs.file }}
         run: |
           set -euo pipefail
-          if [ -n "$ZIP_FILE" ]; then
-            rm -f -- "$ZIP_FILE"
-          fi
+          # Conservar el ZIP original con su nombre de version; no renombrar ni borrar.
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add -A

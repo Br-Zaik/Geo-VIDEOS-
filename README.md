@@ -1,27 +1,28 @@
 # Geo Videos
 
-Proyecto Android para explorar videos y Shorts, buscar contenido, administrar colecciones e historial local y reproducir videos con un reproductor integrado.
+Proyecto Android de Geo Videos, separado de Zeta Motion y de otras aplicaciones.
 
-## Descargar
+## Descargar APK
 
-- **Código fuente en un único archivo:** [Geo-VIDEOS-actual.zip](./Geo-VIDEOS-actual.zip). GitHub Actions actualiza este archivo después de una compilación exitosa. Si todavía no aparece, utiliza **Code → Download ZIP**.
-- **APK para instalar:** abre la pestaña **Actions**, selecciona la última ejecución correcta de «Geo Videos - ZIP a APK» y descarga el archivo «Geo-Videos-APK-...» en **Artifacts** (disponible durante 30 días).
+En [Actions](https://github.com/Br-Zaik/Geo-VIDEOS-/actions), abre una compilacion correcta y descarga su artefacto ZIP. Al abrir ese ZIP encontraras directamente **Geo-Videos.apk**, sin carpetas internas.
 
-## Actualizar el proyecto
+Las APK compiladas desde ZIP nuevos tambien se guardan en [Releases](https://github.com/Br-Zaik/Geo-VIDEOS-/releases), con el nombre de la version. Los artefactos de Actions pueden caducar; los Releases se conservan hasta que los elimines.
 
-1. Sube **un solo ZIP** nuevo a la raíz del repositorio o a la carpeta `incoming/`.
-2. GitHub Actions detectará ese ZIP, importará el proyecto Android, compilará la APK y actualizará `Geo-VIDEOS-actual.zip`.
-3. Tras finalizar correctamente, GitHub conservará el código y **un solo ZIP del proyecto**. Los archivos antiguos de validación y los README duplicados no se incorporarán.
+## Subir versiones
 
-También puedes ejecutar el workflow manualmente desde **Actions → Geo Videos - ZIP a APK → Run workflow** para compilar el código que ya esté en el repositorio.
+1. Sube un archivo con nombre **Geo-VIDEOS-vXX.zip** a la raiz del repositorio (o a `incoming/`).
+2. El workflow comprueba que sea un proyecto Android con `applicationId = "com.geovideos.app"` antes de reemplazar codigo.
+3. Compila la APK y la publica dentro de un ZIP descargable desde Actions.
+4. Conserva el **ZIP original con su nombre**, para poder revisar y comparar versiones antiguas. Ya no crea el archivo generico `Geo-VIDEOS-actual.zip`.
 
-La versión de la app se define en [app/build.gradle.kts](./app/build.gradle.kts). Este README no necesita cambiar de nombre con cada versión.
+Si borras un ZIP antiguo, el workflow no intentara compilar por ese borrado.
 
-## Estructura
+**Nota sobre los titulos de Actions:** GitHub muestra el mensaje del commit (por ejemplo, «Add files via upload»). Al subir el ZIP, cambia ese mensaje por el nombre del archivo para que tambien aparezca la version en la lista de ejecuciones.
 
-- `app/`: código fuente y recursos de Android.
-- `gradle/`, `build.gradle.kts` y `settings.gradle.kts`: configuración de compilación.
-- `.github/workflows/zip-to-apk.yml`: importación de ZIP y generación de APK.
-- `COPYING` y `THIRD_PARTY_NOTICES.md`: licencias y avisos de terceros.
+## Codigo
 
-**Nota:** la APK actual utiliza una firma de desarrollo. No utilices esa clave pública como firma definitiva para publicar en Google Play.
+- `app/`: codigo y recursos Android
+- `gradle/` y archivos `*.gradle.kts`: compilacion
+- `.github/workflows/zip-to-apk.yml`: importar proyecto y compilar APK
+
+La firma debug incluida es solo para pruebas, no para publicar en Google Play.

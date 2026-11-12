@@ -1,0 +1,384 @@
+package com.geovideos.app.playback
+
+import android.app.PendingIntent
+import android.content.Context
+import android.content.Intent
+import android.net.Uri
+import androidx.annotation.OptIn
+import androidx.core.app.NotificationCompat
+import androidx.media3.common.AudioAttributes
+import androidx.media3.common.C
+import androidx.media3.common.MediaItem
+import androidx.media3.common.MediaMetadata
+import androidx.media3.common.Player
+import androidx.media3.common.util.UnstableApi
+import androidx.media3.database.StandaloneDatabaseProvider
+import androidx.media3.datasource.DefaultDataSource
+import androidx.media3.datasource.DefaultHttpDataSource
+import androidx.media3.datasource.cache.CacheDataSource
+import androidx.media3.datasource.cache.LeastRecentlyUsedCacheEvictor
+import androidx.media3.datasource.cache.SimpleCache
+import androidx.media3.exoplayer.DefaultLoadControl
+import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+import androidx.media3.exoplayer.source.MergingMediaSource
+import androidx.media3.exoplayer.source.ProgressiveMediaSource
+import androidx.media3.session.CommandButton
+import androidx.media3.session.DefaultMediaNotificationProvider
+import androidx.media3.session.MediaNotification
+import androidx.media3.session.MediaSession
+import androidx.media3.session.MediaSessionService
+import com.geovideos.app.MainActivity
+import com.geovideos.app.R
+import com.google.common.collect.ImmutableList
+import java.io.File
+
+@OptIn(UnstableApi::class)
+class PlaybackService : MediaSessionService() {
+    private var mediaSession: MediaSession? = null
+    private var playbackCache: SimpleCache? = null
+    private var cacheDataSourceFactory: CacheDataSource.Factory? = null
+    private var exoPlayer: ExoPlayer? = null
+
+    override fun onCreate() {
+        super.onCreate()
+        setMediaNotificationProvider(GeoMediaNotificationProvider(this).apply {
+            setSmallIcon(R.drawable.ic_notification)
+        })
+
+        val httpFactory = DefaultHttpDataSource.Factory()
+            .setUserAgent(USER_AGENT)
+            .setAllowCrossProtocolRedirects(true)
+            .setConnectTimeoutMs(20_000)
+            .setReadTimeoutMs(30_000)
+            .setDefaultRequestProperties(
+                mapOf(
+                    "Accept" to "*/*",
+                    "Accept-Language" to "es-PE,es;q=0.9,en;q=0.7",
+                    "Origin" to "https://www.youtube.com",
+                    "Referer" to "https://www.youtube.com/"
+                )
+            )
+        val upstreamFactory = DefaultDataSource.Factory(this, httpFactory)
+        val cache = SimpleCache(
+            File(cacheDir, "media3-playback"),
+            LeastRecentlyUsedCacheEvictor(CACHE_SIZE_BYTES),
+            StandaloneDatabaseProvider(this)
+        ).also { playbackCache = it }
+        val cacheFactory = CacheDataSource.Factory()
+            .setCache(cache)
+            .setUpstreamDataSourceFactory(upstreamFactory)
+            .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
+            .also { cacheDataSourceFactory = it }
+        val mediaSourceFactory = DefaultMediaSourceFactory(cacheFactory)
+        val loadControl = DefaultLoadControl.Builder()
+            .setBufferDurationsMs(
+                MIN_BUFFER_MS,
+                MAX_BUFFER_MS,
+                BUFFER_FOR_PLAYBACK_MS,
+                BUFFER_AFTER_REBUFFER_MS
+            )
+            .build()
+
+        val player = ExoPlayer.Builder(this)
+            .setMediaSourceFactory(mediaSourceFactory)
+            .setLoadControl(loadControl)
+            .setSeekBackIncrementMs(5_000L)
+            .setSeekForwardIncrementMs(15_000L)
+            .build()
+            .apply {
+                setAudioAttributes(
+                    AudioAttributes.Builder()
+                        .setUsage(C.USAGE_MEDIA)
+                        .setContentType(C.AUDIO_CONTENT_TYPE_MOVIE)
+                        .build(),
+                    true
+                )
+                setHandleAudioBecomingNoisy(true)
+                setWakeMode(C.WAKE_MODE_NETWORK)
+            }
+            .also { exoPlayer = it }
+
+        val sessionActivity = PendingIntent.getActivity(
+            this,
+            0,
+            Intent(this, MainActivity::class.java).apply {
+                flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            },
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
+        mediaSession = MediaSession.Builder(this, player)
+            .setSessionActivity(sessionActivity)
+            .build()
+    }
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        when (intent?.action) {
+            ACTION_NOTIFICATION_PREVIOUS -> {
+                exoPlayer?.let { player ->
+                    if (player.hasPreviousMediaItem()) player.seekToPreviousMediaItem() else player.seekTo(0L)
+                }
+                return START_NOT_STICKY
+            }
+            ACTION_NOTIFICATION_TOGGLE -> {
+                exoPlayer?.let { player ->
+                    if (player.isPlaying) player.pause() else {
+                        if (player.playbackState == Player.STATE_ENDED) player.seekTo(0L)
+                        player.play()
+                    }
+                }
+                return START_NOT_STICKY
+            }
+            ACTION_NOTIFICATION_NEXT -> {
+                exoPlayer?.let { player -> if (player.hasNextMediaItem()) player.seekToNextMediaItem() }
+                return START_NOT_STICKY
+            }
+            ACTION_NOTIFICATION_CLOSE -> {
+                closePlaybackFromNotification()
+                return START_NOT_STICKY
+            }
+        }
+        val result = super.onStartCommand(intent, flags, startId)
+        when (intent?.action) {
+            ACTION_PLAY_RESOLVED -> playResolved(intent)
+            ACTION_APPEND_RESOLVED -> appendResolved(intent)
+            ACTION_SET_CONTINUOUS_AUTOPLAY -> setContinuousAutoplay(intent)
+        }
+        return result
+    }
+
+    private fun closePlaybackFromNotification() {
+        exoPlayer?.run {
+            pause()
+            stop()
+            clearMediaItems()
+        }
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.N) {
+            stopForeground(STOP_FOREGROUND_REMOVE)
+        } else {
+            @Suppress("DEPRECATION")
+            stopForeground(true)
+        }
+        (getSystemService(Context.NOTIFICATION_SERVICE) as? android.app.NotificationManager)
+            ?.cancel(DefaultMediaNotificationProvider.DEFAULT_NOTIFICATION_ID)
+        stopSelf()
+    }
+
+    private fun playResolved(intent: Intent) {
+        val player = exoPlayer ?: return
+        val source = createResolvedSource(intent) ?: return
+        val startPositionMs = intent.getLongExtra(EXTRA_POSITION_MS, 0L).coerceAtLeast(0L)
+        val autoplay = intent.getBooleanExtra(EXTRA_AUTOPLAY, true)
+        val repeat = intent.getBooleanExtra(EXTRA_REPEAT, false)
+
+        player.setTrackSelectionParameters(
+            player.trackSelectionParameters
+                .buildUpon()
+                .clearVideoSizeConstraints()
+                .build()
+        )
+        player.repeatMode = if (repeat) Player.REPEAT_MODE_ONE else Player.REPEAT_MODE_OFF
+        player.setMediaSource(source, startPositionMs)
+        player.prepare()
+        player.playWhenReady = autoplay
+    }
+
+    private fun appendResolved(intent: Intent) {
+        val player = exoPlayer ?: return
+        val mediaId = intent.getStringExtra(EXTRA_MEDIA_ID).orEmpty()
+        if (mediaId.isBlank()) return
+        val alreadyQueued = (0 until player.mediaItemCount)
+            .any { index -> player.getMediaItemAt(index).mediaId == mediaId }
+        if (alreadyQueued) return
+        val source = createResolvedSource(intent) ?: return
+        player.addMediaSource(source)
+    }
+
+
+    private fun setContinuousAutoplay(intent: Intent) {
+        val enabled = intent.getBooleanExtra(EXTRA_CONTINUOUS_AUTOPLAY, true)
+        exoPlayer?.setPauseAtEndOfMediaItems(!enabled)
+    }
+
+    private fun createResolvedSource(intent: Intent): androidx.media3.exoplayer.source.MediaSource? {
+        val dataSourceFactory = cacheDataSourceFactory ?: return null
+        val videoUrl = intent.getStringExtra(EXTRA_VIDEO_URL).orEmpty()
+        if (videoUrl.isBlank()) return null
+        val mediaId = intent.getStringExtra(EXTRA_MEDIA_ID).orEmpty()
+        val title = intent.getStringExtra(EXTRA_TITLE).orEmpty()
+        val artist = intent.getStringExtra(EXTRA_ARTIST).orEmpty()
+        val artwork = intent.getStringExtra(EXTRA_ARTWORK).orEmpty()
+        val videoMime = intent.getStringExtra(EXTRA_VIDEO_MIME)
+        val audioUrl = intent.getStringExtra(EXTRA_AUDIO_URL).orEmpty()
+        val audioMime = intent.getStringExtra(EXTRA_AUDIO_MIME)
+        val metadata = MediaMetadata.Builder()
+            .setTitle(title)
+            .setArtist(artist)
+            .setArtworkUri(artwork.takeIf { it.isNotBlank() }?.let(Uri::parse))
+            .build()
+        val videoItem = MediaItem.Builder()
+            .setMediaId(mediaId)
+            .setUri(videoUrl)
+            .setMimeType(videoMime)
+            .setMediaMetadata(metadata)
+            .build()
+        val progressiveFactory = ProgressiveMediaSource.Factory(dataSourceFactory)
+        val videoSource = progressiveFactory.createMediaSource(videoItem)
+        if (audioUrl.isBlank()) return videoSource
+        val audioItem = MediaItem.Builder()
+            .setMediaId("$mediaId-audio")
+            .setUri(audioUrl)
+            .setMimeType(audioMime)
+            .build()
+        return MergingMediaSource(videoSource, progressiveFactory.createMediaSource(audioItem))
+    }
+
+    override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? = mediaSession
+
+    override fun onDestroy() {
+        mediaSession?.run {
+            player.release()
+            release()
+        }
+        mediaSession = null
+        exoPlayer = null
+        cacheDataSourceFactory = null
+        playbackCache?.release()
+        playbackCache = null
+        super.onDestroy()
+    }
+
+    private class GeoMediaNotificationProvider(
+        private val appContext: Context
+    ) : DefaultMediaNotificationProvider(appContext) {
+        override fun addNotificationActions(
+            mediaSession: MediaSession,
+            mediaButtons: ImmutableList<CommandButton>,
+            builder: NotificationCompat.Builder,
+            actionFactory: MediaNotification.ActionFactory
+        ): IntArray {
+            // Preserve the three transport controls in the compact MediaStyle row. Cerrar is
+            // an explicit fourth action when the notification is expanded, and the delete
+            // intent uses the same full-stop path when the card is dismissed.
+            builder.addAction(notificationAction(android.R.drawable.ic_media_previous, "Anterior", ACTION_NOTIFICATION_PREVIOUS, 31))
+            builder.addAction(
+                notificationAction(
+                    if (mediaSession.player.isPlaying) android.R.drawable.ic_media_pause else android.R.drawable.ic_media_play,
+                    if (mediaSession.player.isPlaying) "Pausar" else "Reproducir",
+                    ACTION_NOTIFICATION_TOGGLE,
+                    32
+                )
+            )
+            builder.addAction(notificationAction(android.R.drawable.ic_media_next, "Siguiente", ACTION_NOTIFICATION_NEXT, 33))
+            builder.addAction(notificationAction(R.drawable.ic_notification_close, "Cerrar", ACTION_NOTIFICATION_CLOSE, 34))
+            builder.setDeleteIntent(notificationPendingIntent(ACTION_NOTIFICATION_CLOSE, 35))
+            return intArrayOf(0, 1, 2)
+        }
+
+        private fun notificationAction(icon: Int, title: String, action: String, requestCode: Int): NotificationCompat.Action =
+            NotificationCompat.Action.Builder(icon, title, notificationPendingIntent(action, requestCode)).build()
+
+        private fun notificationPendingIntent(action: String, requestCode: Int): PendingIntent = PendingIntent.getService(
+            appContext,
+            requestCode,
+            Intent(appContext, PlaybackService::class.java).setAction(action),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
+    }
+
+    companion object {
+        private const val ACTION_PLAY_RESOLVED = "com.geovideos.app.action.PLAY_RESOLVED"
+        private const val ACTION_APPEND_RESOLVED = "com.geovideos.app.action.APPEND_RESOLVED"
+        private const val ACTION_SET_CONTINUOUS_AUTOPLAY = "com.geovideos.app.action.SET_CONTINUOUS_AUTOPLAY"
+        private const val ACTION_NOTIFICATION_PREVIOUS = "com.geovideos.app.action.NOTIFICATION_PREVIOUS"
+        private const val ACTION_NOTIFICATION_TOGGLE = "com.geovideos.app.action.NOTIFICATION_TOGGLE"
+        private const val ACTION_NOTIFICATION_NEXT = "com.geovideos.app.action.NOTIFICATION_NEXT"
+        private const val ACTION_NOTIFICATION_CLOSE = "com.geovideos.app.action.NOTIFICATION_CLOSE"
+        private const val EXTRA_MEDIA_ID = "media_id"
+        private const val EXTRA_TITLE = "title"
+        private const val EXTRA_ARTIST = "artist"
+        private const val EXTRA_ARTWORK = "artwork"
+        private const val EXTRA_VIDEO_URL = "video_url"
+        private const val EXTRA_VIDEO_MIME = "video_mime"
+        private const val EXTRA_AUDIO_URL = "audio_url"
+        private const val EXTRA_AUDIO_MIME = "audio_mime"
+        private const val EXTRA_POSITION_MS = "position_ms"
+        private const val EXTRA_AUTOPLAY = "autoplay"
+        private const val EXTRA_REPEAT = "repeat"
+        private const val EXTRA_CONTINUOUS_AUTOPLAY = "continuous_autoplay"
+
+        internal fun stopPlayback(context: Context) {
+            val intent = Intent(context, PlaybackService::class.java).apply {
+                action = ACTION_NOTIFICATION_CLOSE
+            }
+            runCatching { context.startService(intent) }
+        }
+
+        internal fun setContinuousAutoplay(context: Context, enabled: Boolean) {
+            val intent = Intent(context, PlaybackService::class.java).apply {
+                action = ACTION_SET_CONTINUOUS_AUTOPLAY
+                putExtra(EXTRA_CONTINUOUS_AUTOPLAY, enabled)
+            }
+            runCatching { context.startService(intent) }
+        }
+
+        internal fun playResolved(
+            context: Context,
+            videoId: String,
+            title: String,
+            artist: String,
+            artwork: String,
+            resolved: ResolvedMedia,
+            positionMs: Long,
+            autoplay: Boolean,
+            repeat: Boolean
+        ) {
+            val intent = Intent(context, PlaybackService::class.java).apply {
+                action = ACTION_PLAY_RESOLVED
+                putExtra(EXTRA_MEDIA_ID, videoId)
+                putExtra(EXTRA_TITLE, title)
+                putExtra(EXTRA_ARTIST, artist)
+                putExtra(EXTRA_ARTWORK, artwork)
+                putExtra(EXTRA_VIDEO_URL, resolved.uri)
+                putExtra(EXTRA_VIDEO_MIME, resolved.mimeType)
+                putExtra(EXTRA_AUDIO_URL, resolved.audioUri)
+                putExtra(EXTRA_AUDIO_MIME, resolved.audioMimeType)
+                putExtra(EXTRA_POSITION_MS, positionMs.coerceAtLeast(0L))
+                putExtra(EXTRA_AUTOPLAY, autoplay)
+                putExtra(EXTRA_REPEAT, repeat)
+            }
+            runCatching { context.startService(intent) }
+        }
+
+        internal fun appendResolved(
+            context: Context,
+            videoId: String,
+            title: String,
+            artist: String,
+            artwork: String,
+            resolved: ResolvedMedia
+        ) {
+            val intent = Intent(context, PlaybackService::class.java).apply {
+                action = ACTION_APPEND_RESOLVED
+                putExtra(EXTRA_MEDIA_ID, videoId)
+                putExtra(EXTRA_TITLE, title)
+                putExtra(EXTRA_ARTIST, artist)
+                putExtra(EXTRA_ARTWORK, artwork)
+                putExtra(EXTRA_VIDEO_URL, resolved.uri)
+                putExtra(EXTRA_VIDEO_MIME, resolved.mimeType)
+                putExtra(EXTRA_AUDIO_URL, resolved.audioUri)
+                putExtra(EXTRA_AUDIO_MIME, resolved.audioMimeType)
+            }
+            runCatching { context.startService(intent) }
+        }
+
+        private const val CACHE_SIZE_BYTES = 128L * 1024L * 1024L
+        private const val MIN_BUFFER_MS = 6_000
+        private const val MAX_BUFFER_MS = 25_000
+        private const val BUFFER_FOR_PLAYBACK_MS = 500
+        private const val BUFFER_AFTER_REBUFFER_MS = 1_000
+        private const val USER_AGENT =
+            "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 " +
+                "(KHTML, like Gecko) Chrome/124.0 Mobile Safari/537.36"
+    }
+}

@@ -1,0 +1,1244 @@
+package com.geovideos.app.playback
+
+import androidx.media3.common.MimeTypes
+import com.geovideos.app.data.MediaKind
+import com.geovideos.app.data.VideoItem
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import org.schabi.newpipe.extractor.NewPipe
+import org.schabi.newpipe.extractor.localization.ContentCountry
+import org.schabi.newpipe.extractor.localization.Localization
+import org.schabi.newpipe.extractor.stream.AudioStream
+import org.schabi.newpipe.extractor.stream.AudioTrackType
+import org.schabi.newpipe.extractor.stream.StreamInfo
+import org.schabi.newpipe.extractor.stream.VideoStream
+import java.net.HttpURLConnection
+import java.net.URL
+import java.util.concurrent.ConcurrentHashMap
+import kotlin.math.abs
+
+internal data class ResolvedMedia(
+    val uri: String,
+    val mimeType: String? = null,
+    val audioUri: String? = null,
+    val audioMimeType: String? = null
+) {
+    val hasSeparateAudio: Boolean get() = !audioUri.isNullOrBlank()
+}
+
+internal data class StreamQualityOption(
+    val height: Int,
+    val label: String
+)
+
+internal data class DownloadStreamOption(
+    val id: String,
+    val label: String,
+    val height: Int,
+    val uri: String,
+    val mimeType: String?,
+    val extension: String,
+    val audioUri: String? = null,
+    val audioMimeType: String? = null,
+    val audioExtension: String? = null,
+    val videoSizeBytes: Long = -1L,
+    val audioSizeBytes: Long = -1L,
+    val estimatedSizeBytes: Long = -1L
+) {
+    val requiresMux: Boolean get() = !audioUri.isNullOrBlank()
+}
+
+/** Un capítulo del video (sale de la descripción o de los marcadores de YouTube). */
+internal data class VideoChapter(
+    val title: String,
+    val startMs: Long,
+    val thumbnailUrl: String = ""
+)
+
+/** Hoja de miniaturas que YouTube usa para la vista previa al arrastrar la barra. */
+internal data class StoryboardInfo(
+    val urls: List<String>,
+    val frameWidth: Int,
+    val frameHeight: Int,
+    val perPageX: Int,
+    val perPageY: Int,
+    val totalCount: Int,
+    val durationPerFrameMs: Int
+) {
+    /** URL de la hoja y esquina superior izquierda del cuadro para esa posición. */
+    fun frameAt(positionMs: Long): Triple<String, Int, Int>? {
+        if (urls.isEmpty() || perPageX <= 0 || perPageY <= 0 || durationPerFrameMs <= 0) return null
+        val perPage = perPageX * perPageY
+        val frame = (positionMs.coerceAtLeast(0L) / durationPerFrameMs).toInt()
+            .coerceIn(0, (totalCount - 1).coerceAtLeast(0))
+        val page = (frame / perPage).coerceIn(0, urls.size - 1)
+        val inPage = frame % perPage
+        val column = inPage % perPageX
+        val row = inPage / perPageX
+        return Triple(urls[page], column * frameWidth, row * frameHeight)
+    }
+}
+
+/** Pista de audio (original o doblada). */
+internal data class AudioTrackOption(
+    val id: String,
+    val label: String,
+    val isOriginal: Boolean
+)
+
+/** Lo que el reproductor necesita además del video: capítulos, vista previa y pistas de audio. */
+internal data class PlaybackExtras(
+    val chapters: List<VideoChapter> = emptyList(),
+    val storyboard: StoryboardInfo? = null,
+    val audioTracks: List<AudioTrackOption> = emptyList(),
+    val selectedAudioTrackId: String? = null
+)
+
+internal data class StreamOptions(
+    val qualities: List<StreamQualityOption> = emptyList(),
+    val downloads: List<DownloadStreamOption> = emptyList(),
+    val isLive: Boolean = false
+)
+
+/** Resolves public YouTube pages to streams playable by Media3. */
+internal object StreamResolver {
+    @Volatile
+    private var initialized = false
+
+    private data class CachedStream(
+        val media: ResolvedMedia,
+        val expiresAtMs: Long
+    )
+
+    private data class CachedInfo(
+        val info: StreamInfo,
+        val expiresAtMs: Long
+    )
+
+    private data class CachedQualities(
+        val qualities: List<StreamQualityOption>,
+        val isLive: Boolean,
+        val expiresAtMs: Long
+    )
+
+    private val resolvedCache = ConcurrentHashMap<String, CachedStream>()
+    private val infoCache = ConcurrentHashMap<String, CachedInfo>()
+    private val qualityCache = ConcurrentHashMap<String, CachedQualities>()
+    private val infoLocks = ConcurrentHashMap<String, Mutex>()
+    private val contentLengthCache = ConcurrentHashMap<String, Pair<Long, Long>>()
+
+    /**
+     * Respaldo con tu sesión de YouTube. Lo conecta el ViewModel. Si YouTube pide
+     * "confirma que no eres un robot" a la reproducción anónima, se reproduce con la sesión.
+     */
+    @Volatile
+    var sessionPlayerProvider: (suspend (videoId: String, signatureTimestamp: Int?) -> org.json.JSONObject?)? = null
+
+    @Volatile
+    var sessionChaptersProvider: (suspend (videoId: String) -> List<VideoChapter>)? = null
+
+    /** Lo que llegó por la sesión: manifiesto HLS, vista previa y duración. */
+    private data class SessionData(
+        val hlsUrl: String,
+        val storyboard: StoryboardInfo?,
+        val expiresAtMs: Long,
+        var heights: List<Int> = emptyList()
+    )
+
+    private val sessionCache = ConcurrentHashMap<String, SessionData>()
+
+    private fun isAnonymousBlocked(): Boolean = System.currentTimeMillis() < anonymousBlockedUntilMs
+
+    /** Videos cuyo enlace normal falló al reproducir: el reintento usa la sesión primero. */
+    private val rejectedLinks = ConcurrentHashMap<String, Long>()
+
+    fun markLinkRejected(videoId: String) {
+        if (videoId.isNotBlank()) rejectedLinks[videoId] = System.currentTimeMillis() + 30 * 60_000L
+    }
+
+    private fun preferSession(videoId: String, attempt: Int): Boolean {
+        val until = rejectedLinks[videoId] ?: 0L
+        if (until in 1 until System.currentTimeMillis()) rejectedLinks.remove(videoId)
+        return attempt >= 2 || until > System.currentTimeMillis()
+    }
+
+    /** Spec del storyboard de YouTube: "url|ancho#alto#total#cols#filas#ms#nombre#sigh|…". */
+    private fun parseStoryboardSpec(spec: String, lengthSeconds: Long): StoryboardInfo? {
+        val parts = spec.split("|")
+        if (parts.size < 2) return null
+        val baseUrl = parts[0]
+        var best: StoryboardInfo? = null
+        for (index in 1 until parts.size) {
+            val fields = parts[index].split("#")
+            if (fields.size < 8) continue
+            val width = fields[0].toIntOrNull() ?: continue
+            val height = fields[1].toIntOrNull() ?: continue
+            val count = fields[2].toIntOrNull() ?: continue
+            val cols = fields[3].toIntOrNull() ?: continue
+            val rows = fields[4].toIntOrNull() ?: continue
+            val interval = fields[5].toIntOrNull() ?: 0
+            if (width <= 0 || cols <= 0 || rows <= 0 || count <= 0 || width > 320) continue
+            val duration = when {
+                interval > 0 -> interval
+                lengthSeconds > 0 -> (lengthSeconds * 1000L / count).toInt()
+                else -> continue
+            }
+            val pages = (count + cols * rows - 1) / (cols * rows)
+            val levelUrl = baseUrl.replace("\$L", (index - 1).toString()).replace("\$N", fields[6])
+            val urls = (0 until pages).map { page ->
+                levelUrl.replace("\$M", page.toString()) + (if ('?' in levelUrl) "&" else "?") + "sigh=" + fields[7]
+            }
+            val candidate = StoryboardInfo(urls, width, height, cols, rows, count, duration)
+            if (best == null || width > best.frameWidth) best = candidate
+        }
+        return best
+    }
+
+    /** Alturas que trae el manifiesto HLS (para el menú de calidad). */
+    private fun hlsHeights(url: String): List<Int> = runCatching {
+        val connection = (URL(url).openConnection() as HttpURLConnection).apply {
+            connectTimeout = 8_000
+            readTimeout = 8_000
+        }
+        try {
+            val text = connection.inputStream.bufferedReader().use { it.readText() }
+            Regex("RESOLUTION=\\d+x(\\d+)").findAll(text)
+                .mapNotNull { it.groupValues[1].toIntOrNull() }
+                .distinct()
+                .sortedDescending()
+                .toList()
+        } finally {
+            connection.disconnect()
+        }
+    }.getOrDefault(emptyList())
+
+    private fun tvDownloads(videoId: String, data: org.json.JSONObject): List<DownloadStreamOption> {
+        fun list(key: String): List<org.json.JSONObject> {
+            val array = data.optJSONArray(key) ?: return emptyList()
+            return (0 until array.length()).mapNotNull { array.optJSONObject(it) }
+                .filter { it.optJSONArray("drmFamilies") == null }
+        }
+        val adaptive = list("adaptiveFormats")
+        val audio = adaptive.filter { it.optString("mimeType").startsWith("audio/mp4") }
+            .maxByOrNull { it.optInt("bitrate") }
+        val audioUrl = audio?.let { tvFormatUrl(videoId, it) }
+        val byHeight = adaptive.filter {
+            val mime = it.optString("mimeType")
+            mime.startsWith("video/mp4") && mime.contains("avc1") && it.optInt("height") > 0
+        }.groupBy { it.optInt("height") }
+        val result = ArrayList<DownloadStreamOption>()
+        if (audioUrl != null) {
+            byHeight.keys.sortedDescending().forEach { height ->
+                val format = byHeight[height]?.maxByOrNull { it.optInt("bitrate") } ?: return@forEach
+                val videoUrl = tvFormatUrl(videoId, format) ?: return@forEach
+                result.add(
+                    DownloadStreamOption(
+                        id = "session:$height",
+                        label = "Video ${height}p",
+                        height = height,
+                        uri = videoUrl,
+                        mimeType = MimeTypes.VIDEO_MP4,
+                        extension = "mp4",
+                        audioUri = audioUrl,
+                        audioMimeType = MimeTypes.AUDIO_MP4,
+                        audioExtension = "m4a"
+                    )
+                )
+            }
+        }
+        list("formats").maxByOrNull { it.optInt("height") }?.let { muxed ->
+            val height = muxed.optInt("height")
+            if (result.none { it.height == height }) {
+                tvFormatUrl(videoId, muxed)?.let { url ->
+                    result.add(DownloadStreamOption("session-direct:$height", "Video ${height}p", height, url, MimeTypes.VIDEO_MP4, "mp4"))
+                }
+            }
+        }
+        return result.sortedByDescending { it.height }
+    }
+
+    /** Calidades y descargas con la sesión cuando la vía anónima está bloqueada. */
+    private suspend fun sessionOptions(video: VideoItem, includeDownloadSizes: Boolean): StreamOptions? {
+        if (sessionCache[video.id]?.takeIf { it.expiresAtMs > System.currentTimeMillis() } == null) {
+            // Aún no se reprodujo: pedir el HLS con la sesión para conocer calidades.
+            runCatching { sessionFallback(video, dataSaver = false, preferredHeight = null) }
+        }
+        val cached = sessionCache[video.id]?.takeIf { it.expiresAtMs > System.currentTimeMillis() }
+        val heights = cached?.let { data ->
+            if (data.heights.isEmpty() && data.hlsUrl.isNotBlank()) data.heights = hlsHeights(data.hlsUrl)
+            data.heights
+        }.orEmpty()
+        var downloads: List<DownloadStreamOption> = emptyList()
+        if (includeDownloadSizes) {
+            val tvProvider = sessionTvProvider
+            if (tvProvider != null) {
+                ensureInitialized()
+                val sts = runCatching {
+                    org.schabi.newpipe.extractor.services.youtube.YoutubeJavaScriptPlayerManager.getSignatureTimestamp(video.id)
+                }.getOrNull()
+                val data = runCatching { tvProvider(video.id, sts) }.getOrNull()
+                if (data != null) downloads = attachSizes(tvDownloads(video.id, data))
+            }
+        }
+        // Calidades que no salieron por el cliente TV: descargarlas desde el HLS (último recurso).
+        val hlsUrl = cached?.hlsUrl.orEmpty()
+        if (includeDownloadSizes && hlsUrl.isNotBlank()) {
+            val covered = downloads.map { it.height }.toSet()
+            downloads = (downloads + heights.filter { it !in covered }.map { height ->
+                DownloadStreamOption(
+                    id = "hls:$height",
+                    label = "Video ${height}p",
+                    height = height,
+                    uri = hlsUrl,
+                    mimeType = MimeTypes.APPLICATION_M3U8,
+                    extension = "mp4"
+                )
+            }).sortedByDescending { it.height }
+        }
+        val allHeights = (heights + downloads.map { it.height }).filter { it > 0 }.distinct().sortedDescending()
+        if (allHeights.isEmpty() && downloads.isEmpty()) return null
+        return StreamOptions(
+            qualities = allHeights.map { StreamQualityOption(it, "${it}p") },
+            downloads = downloads,
+            isLive = video.isLive
+        )
+    }
+
+    @Volatile
+    var sessionTvProvider: (suspend (videoId: String, signatureTimestamp: Int?) -> org.json.JSONObject?)? = null
+
+    /** Mientras YouTube bloquee la vía anónima, ir directo con la sesión (ahorra tiempo). */
+    @Volatile
+    private var anonymousBlockedUntilMs: Long = 0L
+
+    private fun isBotBlock(error: Throwable): Boolean {
+        var current: Throwable? = error
+        while (current != null) {
+            val text = (current.message.orEmpty() + " " + current.javaClass.simpleName).lowercase()
+            if ("bot" in text || "sign in to confirm" in text || "signinconfirm" in text ||
+                "login_required" in text || "page needs to be reloaded" in text
+            ) return true
+            current = current.cause
+        }
+        return false
+    }
+
+    private suspend fun sessionFallback(video: VideoItem, dataSaver: Boolean, preferredHeight: Int?): ResolvedMedia? {
+        val playerProvider = sessionPlayerProvider ?: return null
+        sessionCache[video.id]?.takeIf { it.expiresAtMs > System.currentTimeMillis() && it.hlsUrl.isNotBlank() }?.let {
+            return ResolvedMedia(it.hlsUrl, MimeTypes.APPLICATION_M3U8)
+        }
+        ensureInitialized()
+        val sts = runCatching {
+            org.schabi.newpipe.extractor.services.youtube.YoutubeJavaScriptPlayerManager.getSignatureTimestamp(video.id)
+        }.getOrNull()
+        var lastError: Throwable? = null
+        // 1) Como Safari con tu cuenta: HLS con audio y video juntos (todas las calidades del video).
+        runCatching { playerProvider(video.id, sts) }
+            .onSuccess { json ->
+                val url = json?.optJSONObject("streamingData")?.optString("hlsManifestUrl").orEmpty()
+                if (json != null && url.isNotBlank()) {
+                    val spec = json.optJSONObject("storyboards")
+                        ?.optJSONObject("playerStoryboardSpecRenderer")
+                        ?.optString("spec").orEmpty()
+                    val length = json.optJSONObject("videoDetails")?.optString("lengthSeconds")?.toLongOrNull() ?: 0L
+                    sessionCache[video.id] = SessionData(
+                        hlsUrl = url,
+                        storyboard = if (spec.isBlank()) null else runCatching { parseStoryboardSpec(spec, length) }.getOrNull(),
+                        expiresAtMs = System.currentTimeMillis() + 4 * 60 * 60_000L
+                    )
+                    return ResolvedMedia(url, MimeTypes.APPLICATION_M3U8)
+                }
+            }
+            .onFailure { lastError = it }
+        // 2) Cliente de TV con firma descifrada.
+        val tvProvider = sessionTvProvider
+        if (tvProvider != null) {
+            runCatching { tvProvider(video.id, sts) }
+                .onSuccess { data -> if (data != null) tvMedia(video.id, data, dataSaver, preferredHeight)?.let { return it } }
+                .onFailure { lastError = it }
+        }
+        lastError?.let { error ->
+            // Si la sesión también dice por qué no se puede ver (privado, edad...), mostrar eso.
+            if (error.message.orEmpty().startsWith("Got error")) throw error
+        }
+        return null
+    }
+
+    private fun nsig(videoId: String, url: String): String = runCatching {
+        org.schabi.newpipe.extractor.services.youtube.YoutubeJavaScriptPlayerManager
+            .getUrlWithThrottlingParameterDeobfuscated(videoId, url)
+    }.getOrDefault(url)
+
+    private fun tvFormatUrl(videoId: String, format: org.json.JSONObject): String? {
+        format.optString("url").takeIf { it.isNotBlank() }?.let { return nsig(videoId, it) }
+        val cipher = format.optString("signatureCipher").ifBlank { format.optString("cipher") }
+        if (cipher.isBlank()) return null
+        val params = cipher.split("&").mapNotNull { part ->
+            val index = part.indexOf('=')
+            if (index <= 0) null else part.substring(0, index) to java.net.URLDecoder.decode(part.substring(index + 1), "UTF-8")
+        }.toMap()
+        val baseUrl = params["url"] ?: return null
+        val obfuscated = params["s"] ?: return nsig(videoId, baseUrl)
+        val name = params["sp"] ?: "signature"
+        val signature = runCatching {
+            org.schabi.newpipe.extractor.services.youtube.YoutubeJavaScriptPlayerManager
+                .deobfuscateSignature(videoId, obfuscated)
+        }.getOrNull() ?: return null
+        return nsig(videoId, baseUrl + "&" + name + "=" + java.net.URLEncoder.encode(signature, "UTF-8"))
+    }
+
+    private fun tvMedia(videoId: String, data: org.json.JSONObject, dataSaver: Boolean, preferredHeight: Int?): ResolvedMedia? {
+        fun list(key: String): List<org.json.JSONObject> {
+            val array = data.optJSONArray(key) ?: return emptyList()
+            return (0 until array.length()).mapNotNull { array.optJSONObject(it) }
+                .filter { it.optJSONArray("drmFamilies") == null }
+        }
+        val target = preferredHeight ?: if (dataSaver) 360 else 720
+        val adaptive = list("adaptiveFormats")
+        val videos = adaptive.filter {
+            val mime = it.optString("mimeType")
+            mime.startsWith("video/mp4") && mime.contains("avc1") && it.optInt("height") in 1..target
+        }.sortedByDescending { it.optInt("height") * 1000 + it.optInt("fps") }
+        val audios = adaptive.filter { it.optString("mimeType").startsWith("audio/mp4") }
+            .sortedByDescending { it.optInt("bitrate") }
+        val videoFormat = videos.firstOrNull()
+        val audioFormat = audios.firstOrNull()
+        if (videoFormat != null && audioFormat != null) {
+            val videoUrl = tvFormatUrl(videoId, videoFormat)
+            val audioUrl = tvFormatUrl(videoId, audioFormat)
+            if (videoUrl != null && audioUrl != null) {
+                return ResolvedMedia(videoUrl, MimeTypes.VIDEO_MP4, audioUrl, MimeTypes.AUDIO_MP4)
+            }
+        }
+        val muxed = list("formats").sortedByDescending { it.optInt("height") }.firstOrNull() ?: return null
+        return tvFormatUrl(videoId, muxed)?.let { ResolvedMedia(it, MimeTypes.VIDEO_MP4) }
+    }
+
+    /** Pista de audio elegida por video (por ejemplo el doblaje al español). */
+    private val preferredAudioTracks = ConcurrentHashMap<String, String>()
+
+    fun setPreferredAudioTrack(videoId: String, trackId: String?) {
+        if (videoId.isBlank()) return
+        if (trackId.isNullOrBlank()) preferredAudioTracks.remove(videoId) else preferredAudioTracks[videoId] = trackId
+        invalidatePlayback(videoId, includeInfo = false)
+    }
+
+    /**
+     * Audios que se pueden usar: la pista elegida o, si no se eligió ninguna, la ORIGINAL.
+     * Antes se tomaba el audio de mayor calidad y a veces salía un doblaje automático.
+     */
+    private fun audioCandidates(info: StreamInfo): List<AudioStream> {
+        val usable = info.audioStreams.filter { it.isUrl && it.content.isNotBlank() }
+        val preferred = preferredAudioTracks[info.id]
+        if (!preferred.isNullOrBlank()) {
+            usable.filter { it.audioTrackId == preferred }.takeIf { it.isNotEmpty() }?.let { return it }
+        }
+        val original = usable.filter { it.audioTrackType == AudioTrackType.ORIGINAL }
+        if (original.isNotEmpty()) return original
+        val notDubbed = usable.filter {
+            it.audioTrackType != AudioTrackType.DUBBED && it.audioTrackType != AudioTrackType.DESCRIPTIVE
+        }
+        return notDubbed.ifEmpty { usable }
+    }
+
+    private fun hasPreferredDub(videoId: String): Boolean = !preferredAudioTracks[videoId].isNullOrBlank()
+
+    /** Capítulos, vista previa y pistas de audio (usa la información ya extraída). */
+    suspend fun extras(video: VideoItem): PlaybackExtras {
+        if (video.mediaKind != MediaKind.YOUTUBE || video.id.isBlank()) return PlaybackExtras()
+        return withContext(Dispatchers.IO) {
+            val info = runCatching { streamInfo(video.id) }.getOrNull()
+            if (info == null) {
+                val chapters = runCatching { sessionChaptersProvider?.invoke(video.id) }.getOrNull().orEmpty()
+                return@withContext PlaybackExtras(
+                    chapters = chapters,
+                    storyboard = sessionCache[video.id]?.storyboard
+                )
+            }
+            val chapters = runCatching {
+                info.streamSegments.orEmpty()
+                    .map { VideoChapter(it.title.orEmpty().trim(), it.startTimeSeconds * 1000L, it.previewUrl.orEmpty()) }
+                    .filter { it.title.isNotBlank() }
+                    .sortedBy { it.startMs }
+                    .distinctBy { it.startMs }
+            }.getOrDefault(emptyList())
+            val storyboard = runCatching {
+                val frames = info.previewFrames.orEmpty().filter { it.urls.isNotEmpty() && it.frameWidth > 0 }
+                // La de más resolución que no sea enorme (como la burbuja de YouTube).
+                val chosen = frames.filter { it.frameWidth <= 320 }.maxByOrNull { it.frameWidth }
+                    ?: frames.minByOrNull { it.frameWidth }
+                chosen?.let {
+                    StoryboardInfo(
+                        urls = it.urls,
+                        frameWidth = it.frameWidth,
+                        frameHeight = it.frameHeight,
+                        perPageX = it.framesPerPageX,
+                        perPageY = it.framesPerPageY,
+                        totalCount = it.totalCount,
+                        durationPerFrameMs = it.durationPerFrame
+                    )
+                }
+            }.getOrNull()
+            val tracks = runCatching {
+                info.audioStreams
+                    .filter { it.isUrl && !it.audioTrackId.isNullOrBlank() }
+                    .distinctBy { it.audioTrackId }
+                    .map { stream ->
+                        val original = stream.audioTrackType == AudioTrackType.ORIGINAL
+                        val name = stream.audioTrackName?.takeIf { it.isNotBlank() }
+                            ?: stream.audioLocale?.getDisplayName(java.util.Locale("es"))?.replaceFirstChar { it.uppercase() }
+                            ?: stream.audioTrackId.orEmpty()
+                        AudioTrackOption(
+                            id = stream.audioTrackId.orEmpty(),
+                            label = when (stream.audioTrackType) {
+                                AudioTrackType.ORIGINAL -> "$name (original)"
+                                AudioTrackType.DESCRIPTIVE -> "$name (descriptivo)"
+                                else -> name
+                            },
+                            isOriginal = original
+                        )
+                    }
+                    .sortedWith(compareByDescending<AudioTrackOption> { it.isOriginal }.thenBy { it.label })
+            }.getOrDefault(emptyList())
+            PlaybackExtras(
+                chapters = chapters,
+                storyboard = storyboard,
+                audioTracks = if (tracks.size > 1) tracks else emptyList(),
+                selectedAudioTrackId = preferredAudioTracks[video.id] ?: tracks.firstOrNull { it.isOriginal }?.id
+            )
+        }
+    }
+
+    suspend fun resolve(
+        video: VideoItem,
+        dataSaver: Boolean,
+        preferredHeight: Int? = null,
+        preferProgressive: Boolean = false,
+        fallbackAttempt: Int = 0,
+        forceFresh: Boolean = false
+    ): ResolvedMedia {
+        if (video.mediaKind != MediaKind.YOUTUBE) return ResolvedMedia(video.source)
+        val safeAttempt = fallbackAttempt.coerceIn(0, MAX_PLAYBACK_FALLBACK_ATTEMPT)
+        val key = cacheKey(video.id, dataSaver, preferredHeight, preferProgressive, safeAttempt)
+        val now = System.currentTimeMillis()
+        if (forceFresh) {
+            // Un error real de Media3 suele significar que YouTube invalidó una URL firmada
+            // o que la extracción ya quedó vieja. No reutilizar ni la URL ni StreamInfo.
+            invalidatePlayback(video.id, includeInfo = true)
+        } else {
+            resolvedCache[key]?.takeIf { it.expiresAtMs > now }?.let { return it.media }
+        }
+
+        if (forceFresh && safeAttempt >= 2) sessionCache.remove(video.id)
+        val media = withContext(Dispatchers.IO) {
+            val sessionFirst = isAnonymousBlocked() || preferSession(video.id, safeAttempt)
+            if (sessionFirst && !hasPreferredDub(video.id)) {
+                runCatching { sessionFallback(video, dataSaver, preferredHeight) }.getOrNull()
+                    ?.let { return@withContext it }
+            }
+            val info = try {
+                streamInfo(video.id, forceRefresh = forceFresh)
+            } catch (error: Exception) {
+                if (error is kotlinx.coroutines.CancellationException) throw error
+                // YouTube bloqueó la vía anónima: reproducir con la sesión de YouTube.
+                if (isBotBlock(error)) anonymousBlockedUntilMs = System.currentTimeMillis() + 10 * 60_000L
+                sessionFallback(video, dataSaver, preferredHeight)?.let { return@withContext it }
+                throw error
+            }
+            cacheQualities(video.id, info)
+
+            if (video.isLive && info.hlsUrl.isNotBlank()) {
+                return@withContext ResolvedMedia(info.hlsUrl, MimeTypes.APPLICATION_M3U8)
+            }
+
+            // La primera pasada respeta una calidad elegida explicitamente. Los reintentos
+            // posteriores priorizan que el video arranque con otro formato compatible.
+            if (safeAttempt == 0) {
+                preferredHeight?.takeIf { it > 0 }?.let { exactHeight ->
+                    val exactProgressive = if (hasPreferredDub(video.id)) null else selectExactProgressive(info.videoStreams, exactHeight)
+                    if (exactProgressive != null) {
+                        return@withContext ResolvedMedia(
+                            uri = exactProgressive.content,
+                            mimeType = exactProgressive.format?.mimeType
+                        )
+                    }
+
+                    val adaptiveVideo = selectExactAdaptive(info, exactHeight)
+                    if (adaptiveVideo != null) {
+                        val family = containerFamily(adaptiveVideo.format?.mimeType)
+                        val audioStreams = audioCandidates(info)
+                        val audio = chooseAudio(audioStreams, family) ?: chooseBestAudio(audioStreams)
+                        if (audio != null) {
+                            return@withContext ResolvedMedia(
+                                uri = adaptiveVideo.content,
+                                mimeType = adaptiveVideo.format?.mimeType,
+                                audioUri = audio.content,
+                                audioMimeType = audio.format?.mimeType
+                            )
+                        }
+                    }
+                }
+            }
+
+            val targetHeight = preferredHeight?.takeIf { safeAttempt == 0 && it > 0 }
+                ?: if (dataSaver) 360 else 720
+            val primaryProgressive = selectProgressive(
+                streams = info.videoStreams,
+                dataSaver = dataSaver,
+                preferredHeight = targetHeight
+            )
+            val alternateProgressive = selectAlternateProgressive(
+                streams = info.videoStreams,
+                primary = primaryProgressive,
+                targetHeight = targetHeight
+            )
+            val adaptive = selectAdaptivePlayback(info, targetHeight)
+
+            when (safeAttempt) {
+                0 -> {
+                    // YouTube hoy solo entrega el formato "progresivo" (video+audio juntos) en
+                    // 360p. Si se pidió más calidad, usar video y audio adaptativos como hace
+                    // YouTube; así los videos y Shorts ya no se ven borrosos.
+                    val progressiveHeight = primaryProgressive?.height ?: 0
+                    if (adaptive != null && hasPreferredDub(video.id)) return@withContext adaptive
+                    if (!dataSaver && adaptive != null && progressiveHeight < targetHeight) {
+                        return@withContext adaptive
+                    }
+                    primaryProgressive?.let { stream ->
+                        return@withContext ResolvedMedia(stream.content, stream.format?.mimeType)
+                    }
+                    adaptive?.let { return@withContext it }
+                    if (!dataSaver && info.dashMpdUrl.isNotBlank()) {
+                        return@withContext ResolvedMedia(info.dashMpdUrl, MimeTypes.APPLICATION_MPD)
+                    }
+                }
+
+                1 -> {
+                    // Segundo intento: no repetir exactamente la URL que ya fallo.
+                    alternateProgressive?.let { stream ->
+                        return@withContext ResolvedMedia(stream.content, stream.format?.mimeType)
+                    }
+                    adaptive?.let { return@withContext it }
+                }
+
+                2 -> {
+                    // Tercer intento: usar video/audio adaptativos separados. PlaybackService
+                    // los combina en Media3 sin depender del progresivo que fallo.
+                    adaptive?.let { return@withContext it }
+                    if (info.dashMpdUrl.isNotBlank()) {
+                        return@withContext ResolvedMedia(info.dashMpdUrl, MimeTypes.APPLICATION_MPD)
+                    }
+                }
+
+                else -> {
+                    // Ultima salida controlada: manifiesto DASH/HLS y, si no existe, cualquier
+                    // progresivo alternativo disponible.
+                    if (info.dashMpdUrl.isNotBlank()) {
+                        return@withContext ResolvedMedia(info.dashMpdUrl, MimeTypes.APPLICATION_MPD)
+                    }
+                    if (info.hlsUrl.isNotBlank()) {
+                        return@withContext ResolvedMedia(info.hlsUrl, MimeTypes.APPLICATION_M3U8)
+                    }
+                    alternateProgressive?.let { stream ->
+                        return@withContext ResolvedMedia(stream.content, stream.format?.mimeType)
+                    }
+                }
+            }
+
+            if (info.hlsUrl.isNotBlank()) {
+                return@withContext ResolvedMedia(info.hlsUrl, MimeTypes.APPLICATION_M3U8)
+            }
+            if (info.dashMpdUrl.isNotBlank()) {
+                return@withContext ResolvedMedia(info.dashMpdUrl, MimeTypes.APPLICATION_MPD)
+            }
+            primaryProgressive?.let { stream ->
+                return@withContext ResolvedMedia(stream.content, stream.format?.mimeType)
+            }
+            adaptive?.let { return@withContext it }
+
+            error("No se encontro una transmision compatible para este video.")
+        }
+        resolvedCache[key] = CachedStream(media, now + CACHE_TTL_MS)
+        trimCache(now)
+        return media
+    }
+
+    suspend fun resolveAudio(video: VideoItem): ResolvedMedia {
+        if (video.mediaKind != MediaKind.YOUTUBE) {
+            return ResolvedMedia(video.source)
+        }
+        val key = "${video.id}:audio-only"
+        val now = System.currentTimeMillis()
+        resolvedCache[key]?.takeIf { it.expiresAtMs > now }?.let { return it.media }
+
+        val media = withContext(Dispatchers.IO) {
+            val info = try {
+                streamInfo(video.id)
+            } catch (error: Exception) {
+                if (error is kotlinx.coroutines.CancellationException) throw error
+                if (isBotBlock(error)) anonymousBlockedUntilMs = System.currentTimeMillis() + 10 * 60_000L
+                sessionFallback(video, dataSaver = true, preferredHeight = null)?.let { return@withContext it }
+                throw error
+            }
+            cacheQualities(video.id, info)
+            val audio = chooseBestAudio(
+                audioCandidates(info)
+            ) ?: error("No se encontró una pista de audio compatible para este video.")
+            ResolvedMedia(
+                uri = audio.content,
+                mimeType = audio.format?.mimeType
+            )
+        }
+        resolvedCache[key] = CachedStream(media, now + CACHE_TTL_MS)
+        trimCache(now)
+        return media
+    }
+
+    suspend fun options(video: VideoItem, includeDownloadSizes: Boolean = true): StreamOptions {
+        if (video.mediaKind != MediaKind.YOUTUBE) {
+            val direct = video.source.takeIf { it.startsWith("http://") || it.startsWith("https://") }
+            val downloads = direct?.let {
+                listOf(
+                    DownloadStreamOption(
+                        id = "original",
+                        label = "Calidad original",
+                        height = 0,
+                        uri = it,
+                        mimeType = null,
+                        extension = extensionFrom(null, it)
+                    )
+                )
+            }.orEmpty()
+            return StreamOptions(
+                downloads = if (includeDownloadSizes) attachSizes(downloads) else downloads,
+                isLive = video.isLive
+            )
+        }
+
+        if (!includeDownloadSizes) {
+            val now = System.currentTimeMillis()
+            qualityCache[video.id]?.takeIf { it.expiresAtMs > now }?.let { cached ->
+                return StreamOptions(qualities = cached.qualities, isLive = cached.isLive)
+            }
+        }
+
+        return withContext(Dispatchers.IO) {
+            val info = try {
+                streamInfo(video.id)
+            } catch (error: Exception) {
+                if (error is kotlinx.coroutines.CancellationException) throw error
+                if (isBotBlock(error)) anonymousBlockedUntilMs = System.currentTimeMillis() + 10 * 60_000L
+                sessionOptions(video, includeDownloadSizes)?.let { return@withContext it }
+                throw error
+            }
+            val qualities = qualitiesFromInfo(info)
+            qualityCache[video.id] = CachedQualities(
+                qualities = qualities,
+                isLive = video.isLive || info.hlsUrl.isNotBlank(),
+                expiresAtMs = System.currentTimeMillis() + INFO_CACHE_TTL_MS
+            )
+            if (!includeDownloadSizes) {
+                return@withContext StreamOptions(qualities = qualities, isLive = video.isLive)
+            }
+
+            val progressive = info.videoStreams
+                .filter { it.isUrl && !it.isVideoOnly && it.content.isNotBlank() && it.height > 0 }
+            val adaptiveVideo = buildList {
+                addAll(info.videoOnlyStreams)
+                addAll(info.videoStreams.filter { it.isVideoOnly })
+            }
+                .filter { it.isUrl && it.content.isNotBlank() && it.height > 0 }
+                .distinctBy { "${it.height}:${it.content}" }
+            val audioStreams = audioCandidates(info)
+
+            val allHeights = (progressive.asSequence() + adaptiveVideo.asSequence())
+                .map { it.height }
+                .distinct()
+                .sortedDescending()
+                .toList()
+
+            val downloadsWithoutSizes = allHeights.mapNotNull { height ->
+                val direct = progressive
+                    .filter { it.height == height }
+                    .sortedWith(
+                        compareByDescending<VideoStream> { if (isMp4(it.format?.mimeType)) 1 else 0 }
+                            .thenByDescending { videoCodecCompatibility(it.codec) }
+                            .thenByDescending { it.bitrate }
+                    )
+                    .firstOrNull()
+                if (direct != null) {
+                    val mime = direct.format?.mimeType
+                    return@mapNotNull DownloadStreamOption(
+                        id = "direct:${height}:${direct.content.hashCode()}",
+                        label = "Video ${height}p",
+                        height = height,
+                        uri = direct.content,
+                        mimeType = mime,
+                        extension = extensionFrom(mime, direct.content)
+                    )
+                }
+
+                val videoOnly = chooseAdaptiveVideo(adaptiveVideo.filter { it.height == height })
+                    ?: return@mapNotNull null
+                val videoMime = videoOnly.format?.mimeType
+                val family = containerFamily(videoMime)
+                val audio = chooseAudio(audioStreams, family) ?: return@mapNotNull null
+                val audioMime = audio.format?.mimeType
+                val extension = if (family == FAMILY_WEBM) "webm" else "mp4"
+
+                DownloadStreamOption(
+                    id = "mux:${height}:${videoOnly.content.hashCode()}:${audio.content.hashCode()}",
+                    label = "Video ${height}p",
+                    height = height,
+                    uri = videoOnly.content,
+                    mimeType = videoMime,
+                    extension = extension,
+                    audioUri = audio.content,
+                    audioMimeType = audioMime,
+                    audioExtension = extensionFrom(audioMime, audio.content)
+                )
+            }
+
+            val downloads = attachSizes(downloadsWithoutSizes)
+
+            StreamOptions(
+                qualities = qualities,
+                downloads = downloads,
+                isLive = video.isLive
+            )
+        }
+    }
+
+    suspend fun isVerifiedShort(video: VideoItem): Boolean {
+        if (video.mediaKind != MediaKind.YOUTUBE) {
+            return video.durationMs in 1L..MAX_SHORT_DURATION_MS
+        }
+        return withContext(Dispatchers.IO) {
+            val text = "${video.title} ${video.description} ${video.source}".lowercase()
+            val tagged = "/shorts/" in text || "#shorts" in text || "#short " in text
+            runCatching {
+                val info = streamInfo(video.id)
+                info.isShortFormContent ||
+                    (tagged && info.duration in 1L..(MAX_SHORT_DURATION_MS / 1000L))
+            }.getOrElse {
+                tagged && (video.durationMs <= 0L || video.durationMs <= MAX_SHORT_DURATION_MS)
+            }
+        }
+    }
+
+    suspend fun preload(
+        videos: List<VideoItem>,
+        dataSaver: Boolean,
+        preferredHeight: Int? = null
+    ) {
+        // Resolve likely next videos before they are tapped. Use exactly the same quality key
+        // as normal playback so the result is consumed directly from resolvedCache.
+        // Con YouTube bloqueando la vía anónima no se insiste por ahí (cada intento suma al
+        // bloqueo): se precarga con tu sesión, así el siguiente video/Short arranca al instante.
+        if (System.currentTimeMillis() < anonymousBlockedUntilMs) {
+            if (sessionPlayerProvider == null) return
+            videos.asSequence()
+                .filter { it.mediaKind == MediaKind.YOUTUBE && it.id.isNotBlank() }
+                .distinctBy { it.id }
+                .take(PRELOAD_COUNT)
+                .forEach { video ->
+                    val cached = sessionCache[video.id]
+                        ?.takeIf { it.expiresAtMs > System.currentTimeMillis() && it.hlsUrl.isNotBlank() }
+                    if (cached == null) runCatching { sessionFallback(video, dataSaver, preferredHeight) }
+                }
+            return
+        }
+        videos.asSequence()
+            .filter { it.mediaKind == MediaKind.YOUTUBE && it.id.isNotBlank() }
+            .distinctBy { it.id }
+            .take(PRELOAD_COUNT)
+            .forEach { video ->
+                runCatching {
+                    resolve(
+                        video = video,
+                        dataSaver = dataSaver,
+                        preferredHeight = preferredHeight,
+                        preferProgressive = false
+                    )
+                }
+            }
+    }
+
+    private suspend fun streamInfo(videoId: String, forceRefresh: Boolean = false): StreamInfo {
+        val now = System.currentTimeMillis()
+        if (!forceRefresh) {
+            infoCache[videoId]?.takeIf { it.expiresAtMs > now }?.let { return it.info }
+        }
+        // YouTube está bloqueando la vía anónima: no insistir (cada intento tarda y empeora el bloqueo).
+        if (!forceRefresh && now < anonymousBlockedUntilMs) {
+            throw IllegalStateException("Sign in to confirm you're not a bot (bloqueo temporal de YouTube)")
+        }
+
+        // If a home-feed preload and a tap request the same video at the same time, only run
+        // the expensive NewPipe extraction once. Other videos are not blocked by this lock.
+        val mutex = infoLocks.getOrPut(videoId) { Mutex() }
+        return try {
+            mutex.withLock {
+                val lockedNow = System.currentTimeMillis()
+                if (!forceRefresh) {
+                    infoCache[videoId]?.takeIf { it.expiresAtMs > lockedNow }?.let { return@withLock it.info }
+                }
+                withContext(Dispatchers.IO) {
+                    ensureInitialized()
+                    val watchUrl = "https://www.youtube.com/watch?v=$videoId"
+                    StreamInfo.getInfo(watchUrl).also { info ->
+                        infoCache[videoId] = CachedInfo(info, System.currentTimeMillis() + INFO_CACHE_TTL_MS)
+                        trimCache(System.currentTimeMillis())
+                    }
+                }
+            }
+        } finally {
+            if (infoLocks[videoId] === mutex) infoLocks.remove(videoId)
+        }
+    }
+
+    private fun selectExactAdaptive(info: StreamInfo, height: Int): VideoStream? {
+        val streams = buildList {
+            addAll(info.videoOnlyStreams)
+            addAll(info.videoStreams.filter { it.isVideoOnly })
+        }.filter { it.isUrl && it.content.isNotBlank() && it.height == height }
+        return chooseAdaptiveVideo(streams)
+    }
+
+    private fun chooseAdaptiveVideo(streams: List<VideoStream>): VideoStream? {
+        if (streams.isEmpty()) return null
+        return streams.sortedWith(
+            compareByDescending<VideoStream> { if (isMp4(it.format?.mimeType)) 1 else 0 }
+                .thenByDescending { videoCodecCompatibility(it.codec) }
+                .thenByDescending { it.bitrate }
+        ).firstOrNull()
+    }
+
+    private fun chooseAudio(streams: List<AudioStream>, family: String): AudioStream? {
+        val compatible = streams.filter { containerFamily(it.format?.mimeType) == family }
+        return chooseBestAudio(compatible)
+    }
+
+    private fun chooseBestAudio(streams: List<AudioStream>): AudioStream? = streams.maxByOrNull { stream ->
+        val bitrate = when {
+            stream.averageBitrate > 0 -> stream.averageBitrate
+            stream.bitrate > 0 -> stream.bitrate
+            else -> 0
+        }
+        val codecBonus = when {
+            stream.codec.orEmpty().contains("mp4a", ignoreCase = true) -> 2_000_000
+            stream.codec.orEmpty().contains("opus", ignoreCase = true) -> 1_000_000
+            else -> 0
+        }
+        codecBonus + bitrate
+    }
+
+    private fun qualitiesFromInfo(info: StreamInfo): List<StreamQualityOption> {
+        val heights = (info.videoStreams.asSequence() + info.videoOnlyStreams.asSequence())
+            .filter { it.isUrl && it.content.isNotBlank() && it.height > 0 }
+            .map { it.height }
+            .distinct()
+            .sortedDescending()
+            .toList()
+        return heights.map { height -> StreamQualityOption(height, "${height}p") }
+    }
+
+    private fun cacheQualities(videoId: String, info: StreamInfo) {
+        if (videoId.isBlank()) return
+        val qualities = qualitiesFromInfo(info)
+        qualityCache[videoId] = CachedQualities(
+            qualities = qualities,
+            isLive = info.hlsUrl.isNotBlank(),
+            expiresAtMs = System.currentTimeMillis() + INFO_CACHE_TTL_MS
+        )
+    }
+
+    private fun selectAlternateProgressive(
+        streams: List<VideoStream>,
+        primary: VideoStream?,
+        targetHeight: Int
+    ): VideoStream? {
+        return streams.asSequence()
+            .filter {
+                it.isUrl &&
+                    !it.isVideoOnly &&
+                    it.content.isNotBlank() &&
+                    it.content != primary?.content
+            }
+            .sortedWith(
+                compareByDescending<VideoStream> { if (isMp4(it.format?.mimeType)) 1 else 0 }
+                    .thenByDescending { videoCodecCompatibility(it.codec) }
+                    .thenBy { abs(it.height - targetHeight) }
+                    .thenByDescending { it.bitrate }
+            )
+            .firstOrNull()
+    }
+
+    private fun selectAdaptivePlayback(info: StreamInfo, targetHeight: Int): ResolvedMedia? {
+        val videos = buildList {
+            addAll(info.videoOnlyStreams)
+            addAll(info.videoStreams.filter { it.isVideoOnly })
+        }.filter { it.isUrl && it.content.isNotBlank() && it.height > 0 }
+        if (videos.isEmpty()) return null
+
+        val bestHeight = videos
+            .map { it.height }
+            .distinct()
+            .filter { it <= targetHeight }
+            .maxOrNull()
+            ?: videos.minByOrNull { abs(it.height - targetHeight) }?.height
+            ?: return null
+        val video = chooseAdaptiveVideo(videos.filter { it.height == bestHeight }) ?: return null
+        val audioStreams = audioCandidates(info)
+        val family = containerFamily(video.format?.mimeType)
+        val audio = chooseAudio(audioStreams, family) ?: chooseBestAudio(audioStreams) ?: return null
+        return ResolvedMedia(
+            uri = video.content,
+            mimeType = video.format?.mimeType,
+            audioUri = audio.content,
+            audioMimeType = audio.format?.mimeType
+        )
+    }
+
+    private fun selectExactProgressive(
+        streams: List<VideoStream>,
+        height: Int
+    ): VideoStream? = streams
+        .asSequence()
+        .filter { it.isUrl && !it.isVideoOnly && it.content.isNotBlank() && it.height == height }
+        .sortedWith(
+            compareByDescending<VideoStream> { if (isMp4(it.format?.mimeType)) 1 else 0 }
+                .thenByDescending { videoCodecCompatibility(it.codec) }
+                .thenByDescending { it.bitrate }
+        )
+        .firstOrNull()
+
+    private fun selectProgressive(
+        streams: List<VideoStream>,
+        dataSaver: Boolean,
+        preferredHeight: Int?
+    ): VideoStream? {
+        val playable = streams.filter { it.isUrl && !it.isVideoOnly && it.content.isNotBlank() }
+        if (playable.isEmpty()) return null
+        val targetHeight = preferredHeight?.takeIf { it > 0 } ?: if (dataSaver) 360 else 720
+        return playable
+            .filter { it.height in 1..targetHeight }
+            .maxByOrNull { it.height }
+            ?: playable.minByOrNull { abs(it.height - targetHeight) }
+    }
+
+    private suspend fun attachSizes(options: List<DownloadStreamOption>): List<DownloadStreamOption> {
+        if (options.isEmpty()) return options
+        val urls = options.flatMap { option ->
+            buildList {
+                add(option.uri)
+                option.audioUri?.takeIf { it.isNotBlank() }?.let(::add)
+            }
+        }.distinct()
+
+        val sizes = coroutineScope {
+            urls.map { uri ->
+                async(Dispatchers.IO) { uri to probeContentLength(uri) }
+            }.awaitAll().toMap()
+        }
+
+        return options.map { option ->
+            val videoBytes = sizes[option.uri] ?: -1L
+            val audioBytes = option.audioUri?.let { sizes[it] ?: -1L } ?: 0L
+            val total = when {
+                option.requiresMux && videoBytes > 0L && audioBytes > 0L -> videoBytes + audioBytes
+                !option.requiresMux && videoBytes > 0L -> videoBytes
+                else -> -1L
+            }
+            option.copy(
+                videoSizeBytes = videoBytes,
+                audioSizeBytes = audioBytes,
+                estimatedSizeBytes = total
+            )
+        }
+    }
+
+    private fun probeContentLength(uri: String): Long {
+        val now = System.currentTimeMillis()
+        contentLengthCache[uri]?.takeIf { it.second > now }?.let { return it.first }
+        contentLengthFromQuery(uri)?.let { declaredLength ->
+            contentLengthCache[uri] = declaredLength to (now + CONTENT_LENGTH_CACHE_TTL_MS)
+            return declaredLength
+        }
+
+        val headLength = runCatching {
+            openLengthConnection(uri, "HEAD", null).useConnection { connection ->
+                if (connection.responseCode in 200..299) connection.contentLengthLong else -1L
+            }
+        }.getOrDefault(-1L)
+
+        val length = if (headLength > 0L) {
+            headLength
+        } else {
+            runCatching {
+                openLengthConnection(uri, "GET", "bytes=0-0").useConnection { connection ->
+                    val response = connection.responseCode
+                    if (response !in listOf(HttpURLConnection.HTTP_OK, HttpURLConnection.HTTP_PARTIAL)) {
+                        return@useConnection -1L
+                    }
+                    val contentRange = connection.getHeaderField("Content-Range").orEmpty()
+                    val totalFromRange = contentRange.substringAfterLast('/', "")
+                        .toLongOrNull()
+                        ?.takeIf { it > 0L }
+                    totalFromRange ?: connection.contentLengthLong.takeIf { it > 0L } ?: -1L
+                }
+            }.getOrDefault(-1L)
+        }
+
+        contentLengthCache[uri] = length to (now + CONTENT_LENGTH_CACHE_TTL_MS)
+        return length
+    }
+
+
+    private fun contentLengthFromQuery(uri: String): Long? = runCatching {
+        URL(uri).query.orEmpty()
+            .split('&')
+            .firstOrNull { parameter -> parameter.substringBefore('=') == "clen" }
+            ?.substringAfter('=', "")
+            ?.toLongOrNull()
+            ?.takeIf { it > 0L }
+    }.getOrNull()
+
+    private fun openLengthConnection(uri: String, method: String, range: String?): HttpURLConnection =
+        (URL(uri).openConnection() as HttpURLConnection).apply {
+            requestMethod = method
+            instanceFollowRedirects = true
+            connectTimeout = 8_000
+            readTimeout = 8_000
+            useCaches = false
+            setRequestProperty("User-Agent", USER_AGENT)
+            setRequestProperty("Accept", "*/*")
+            setRequestProperty("Accept-Encoding", "identity")
+            setRequestProperty("Origin", "https://www.youtube.com")
+            setRequestProperty("Referer", "https://www.youtube.com/")
+            if (!range.isNullOrBlank()) setRequestProperty("Range", range)
+        }
+
+    private inline fun <T> HttpURLConnection.useConnection(block: (HttpURLConnection) -> T): T {
+        return try {
+            block(this)
+        } finally {
+            runCatching { inputStream.close() }
+            disconnect()
+        }
+    }
+
+    private fun containerFamily(mimeType: String?): String = when {
+        mimeType?.contains("webm", ignoreCase = true) == true -> FAMILY_WEBM
+        else -> FAMILY_MP4
+    }
+
+    private fun videoCodecCompatibility(codec: String?): Int = when (codec.orEmpty().lowercase()) {
+        "avc1", "h264" -> 4
+        "vp9", "vp09" -> 3
+        "av01", "av1" -> 2
+        else -> when {
+            codec.orEmpty().contains("avc1", true) || codec.orEmpty().contains("h264", true) -> 4
+            codec.orEmpty().contains("vp9", true) || codec.orEmpty().contains("vp09", true) -> 3
+            codec.orEmpty().contains("av01", true) || codec.orEmpty().contains("av1", true) -> 2
+            else -> 1
+        }
+    }
+
+    private fun isMp4(mimeType: String?): Boolean =
+        mimeType?.contains("mp4", ignoreCase = true) == true
+
+    private fun extensionFrom(mimeType: String?, uri: String): String {
+        return when {
+            mimeType?.contains("webm", ignoreCase = true) == true -> "webm"
+            mimeType?.contains("mp4", ignoreCase = true) == true -> "mp4"
+            mimeType?.contains("m4a", ignoreCase = true) == true -> "m4a"
+            else -> uri.substringBefore('?')
+                .substringAfterLast('.', "mp4")
+                .lowercase()
+                .takeIf { it.matches(Regex("[a-z0-9]{2,5}")) }
+                ?: "mp4"
+        }
+    }
+
+    /**
+     * Purga únicamente datos de reproducción de un video. Se usa cuando Media3 confirma que
+     * una URL dejó de servir; no borra preferencias, historial ni ningún dato del usuario.
+     */
+    fun invalidatePlayback(videoId: String, includeInfo: Boolean = true) {
+        if (videoId.isBlank()) return
+        val prefix = "$videoId:"
+        resolvedCache.keys
+            .filter { it.startsWith(prefix) }
+            .forEach { resolvedCache.remove(it) }
+        if (includeInfo) {
+            infoCache.remove(videoId)
+            qualityCache.remove(videoId)
+        }
+    }
+
+    private fun trimCache(now: Long) {
+        resolvedCache.entries
+            .filter { it.value.expiresAtMs <= now }
+            .forEach { resolvedCache.remove(it.key, it.value) }
+        infoCache.entries
+            .filter { it.value.expiresAtMs <= now }
+            .forEach { infoCache.remove(it.key, it.value) }
+        qualityCache.entries
+            .filter { it.value.expiresAtMs <= now }
+            .forEach { qualityCache.remove(it.key, it.value) }
+        contentLengthCache.entries
+            .filter { it.value.second <= now }
+            .forEach { contentLengthCache.remove(it.key, it.value) }
+
+        if (resolvedCache.size > MAX_CACHE_ENTRIES) {
+            resolvedCache.entries
+                .sortedBy { it.value.expiresAtMs }
+                .take(resolvedCache.size - MAX_CACHE_ENTRIES)
+                .forEach { resolvedCache.remove(it.key) }
+        }
+        if (infoCache.size > MAX_INFO_CACHE_ENTRIES) {
+            infoCache.entries
+                .sortedBy { it.value.expiresAtMs }
+                .take(infoCache.size - MAX_INFO_CACHE_ENTRIES)
+                .forEach { infoCache.remove(it.key) }
+        }
+    }
+
+    private fun cacheKey(
+        videoId: String,
+        dataSaver: Boolean,
+        preferredHeight: Int?,
+        preferProgressive: Boolean,
+        fallbackAttempt: Int
+    ): String =
+        "$videoId:${if (dataSaver) "save" else "auto"}:${preferredHeight ?: 0}:${if (preferProgressive) "fast" else "adaptive"}:try$fallbackAttempt"
+
+    @Synchronized
+    private fun ensureInitialized() {
+        if (initialized) return
+        val localization = Localization("es", "PE")
+        NewPipe.init(AndroidDownloader(), localization, ContentCountry("PE"))
+        initialized = true
+    }
+
+    private const val FAMILY_MP4 = "mp4"
+    private const val FAMILY_WEBM = "webm"
+    private const val CACHE_TTL_MS = 20L * 60L * 1000L
+    private const val INFO_CACHE_TTL_MS = 12L * 60L * 1000L
+    private const val CONTENT_LENGTH_CACHE_TTL_MS = 30L * 60L * 1000L
+    private const val MAX_CACHE_ENTRIES = 30
+    private const val MAX_INFO_CACHE_ENTRIES = 12
+    private const val PRELOAD_COUNT = 2
+    private const val MAX_PLAYBACK_FALLBACK_ATTEMPT = 3
+    private const val MAX_SHORT_DURATION_MS = 180_000L
+    private const val USER_AGENT =
+        "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 " +
+            "(KHTML, like Gecko) Chrome/124.0 Mobile Safari/537.36"
+}
