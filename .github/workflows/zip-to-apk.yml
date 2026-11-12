@@ -5,6 +5,8 @@ on:
     branches: [main]
     paths:
       - '*.zip'
+      # No lanzar compilaciones por eliminar o reemplazar la copia del proyecto.
+      - '!Geo-VIDEOS-actual.zip'
       - 'incoming/**/*.zip'
       - '.github/workflows/zip-to-apk.yml'
       - 'app/**'
@@ -68,9 +70,18 @@ jobs:
               raise SystemExit('Sube un solo ZIP por actualizacion: ' + ', '.join(map(str, candidates)))
 
           file = candidates[0].as_posix() if candidates else ''
+          # Mantener la version original para identificar y recuperar cada APK.
+          import re
+          version = re.sub(r'[^A-Za-z0-9._-]', '-', Path(file).stem) if file else ''
           with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
               output.write(f'has_zip={"true" if file else "false"}\n')
               output.write(f'file={file}\n')
+              output.write(f'version={version}\n')
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as summary:
+              if file:
+                  summary.write(f'## Archivo subido: `{Path(file).name}`\n\n')
+              else:
+                  summary.write('## Compilacion del codigo existente (sin ZIP nuevo)\n\n')
           print('Nuevo ZIP: ' + (file or 'ninguno; compilar codigo existente'))
           PY
 
@@ -182,7 +193,7 @@ jobs:
       - name: Guardar APK para descargar
         uses: actions/upload-artifact@v7
         with:
-          name: Geo-Videos-APK-${{ github.run_number }}
+          name: ${{ steps.zip.outputs.version || 'Geo-Videos' }}-APK-${{ github.run_number }}
           path: ${{ runner.temp }}/Geo-Videos.apk
           if-no-files-found: error
           retention-days: 30
