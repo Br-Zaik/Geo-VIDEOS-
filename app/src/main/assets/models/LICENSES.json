@@ -1,0 +1,30 @@
+{
+ "version": 2,
+ "fecha": "2026-11-09",
+ "nota": "v44.24: la app muestra estas licencias en Ajustes › Licencias (lista simple + texto completo de assets/licenses). Solo va incluido el modelo de «Mejorar imagen».",
+ "modelos": [
+  {
+   "id": "realesr_animevideov3",
+   "archivo": "realesr_animevideov3_x4.onnx",
+   "nombre": "Real-ESRGAN realesr-animevideov3 x4 (mejorar imagen, opcional)",
+   "autor": "Xintao Wang et al. (xinntao/Real-ESRGAN); convertido a ONNX por Zeta Motion (tools/banco_v44/pth_to_onnx.py)",
+   "licencia": "BSD-3-Clause (texto completo en assets/licenses/Real-ESRGAN_BSD-3.txt)",
+   "url": "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesr-animevideov3.pth",
+   "sha256": "758c71d1b4eccf3e30e82a57fad0b0a9076842962ddbe6aac664fe4e4cf12577",
+   "bytes": 2490686,
+   "nota": "Va DENTRO del proyecto (no se descarga al compilar). Origen .pth SHA-256 b8a8376811077954d82ca3fcf476f1ac3da3e8a68a4f4d71363008000a18b75d. Pesos sin modificar; solo cambia el formato (ONNX opset 13), comprobado contra una implementación NumPy (error máx. 3e-6)."
+  }
+ ],
+ "bibliotecas": [
+  {
+   "nombre": "ONNX Runtime Android 1.23.2",
+   "licencia": "MIT (texto en assets/licenses/onnxruntime_MIT.txt)",
+   "url": "https://github.com/microsoft/onnxruntime"
+  },
+  {
+   "nombre": "lbpcascade_animeface (detector de caras anime, assets/detect/)",
+   "licencia": "MIT — nagadomi (texto en assets/licenses/lbpcascade_animeface_MIT.txt)",
+   "url": "https://github.com/nagadomi/lbpcascade_animeface (commit 4433ab1, SHA-256 del XML 9376d30ac38db6bda2a68b88b3b76bbd7e6aa33af47f7f5c76bc88ca75f1ce30)"
+  }
+ ]
+}

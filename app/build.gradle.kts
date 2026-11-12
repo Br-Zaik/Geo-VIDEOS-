@@ -1,124 +1,116 @@
-import org.jetbrains.kotlin.gradle.dsl.JvmTarget
-
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
-    id("org.jetbrains.kotlin.plugin.compose")
 }
 
 android {
-    namespace = "com.geovideos.app"
-    compileSdk = 35
+    namespace = "com.zeta.fondo"
+    compileSdk = 36
 
     defaultConfig {
-        applicationId = "com.geovideos.app"
-        minSdk = 23
-        targetSdk = 35
-        versionCode = 526
-        versionName = "61.1.0"
-
-        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
-        vectorDrawables.useSupportLibrary = true
+        applicationId = "com.zeta.fondo"
+        // v44.26: Android 10 o más nuevo (94 % de los teléfonos en uso, oct. 2026). Quita los caminos
+        // de Android 8 y 9, que eran los más frágiles (imágenes, Galería, permisos).
+        minSdk = 29
+        targetSdk = 36
+        versionCode = 76
+        versionName = "44.28.1"
+        manifestPlaceholders["zetaAppLabel"] = "@string/app_name"
+        // v48: solo procesadores ARM (todos los teléfonos Android reales). Quita las librerías
+        // x86/x86_64 de ONNX Runtime, que solo sirven para emuladores de PC.
+        ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a") }
     }
 
+    // Una variante BETA, separada de instalaciones anteriores, SIEMPRE firmada.
+    // Esta clave es PUBLICA, exclusiva de pruebas, y NUNCA se usará para Google Play.
+    // Conserva el mismo certificado entre compilaciones para poder actualizar la beta.
+    // NO confundir esta clave de pruebas con la clave privada de producción.
+    val prodStore = System.getenv("ZETA_KEYSTORE_PATH")
+    val prodPass = System.getenv("ZETA_KEYSTORE_PASSWORD")
+    val prodAlias = System.getenv("ZETA_KEY_ALIAS")
+    val prodKeyPass = System.getenv("ZETA_KEY_PASSWORD")
+    val prodSigningConfigured = listOf(prodStore, prodPass, prodAlias, prodKeyPass)
+        .all { !it.isNullOrBlank() }
+
     signingConfigs {
-        create("geoDev") {
-            storeFile = file("geovideos-dev.jks")
-            storePassword = "geovideos"
-            keyAlias = "geovideos"
-            keyPassword = "geovideos"
+        create("betaPublicTestOnly") {
+            storeFile = file("zeta-beta-public-only.jks")
+            storePassword = "publicBetaOnly-2026"
+            keyAlias = "zeta_beta"
+            keyPassword = "publicBetaOnly-2026"
+        }
+        if (prodSigningConfigured) {
+            create("zetaPrivateRelease") {
+                storeFile = file(prodStore!!)
+                storePassword = prodPass!!
+                keyAlias = prodAlias!!
+                keyPassword = prodKeyPass!!
+            }
         }
     }
 
     buildTypes {
         debug {
-            signingConfig = signingConfigs.getByName("geoDev")
-            // El APK que se instala sale de esta variante. Sin el modo depuración, Android
-            // optimiza el código y usa los perfiles de arranque: todo se siente más fluido.
-            isDebuggable = false
+            applicationIdSuffix = ".beta"
+            manifestPlaceholders["zetaAppLabel"] = "Zeta Motion Beta"
+            signingConfig = signingConfigs.getByName("betaPublicTestOnly")
         }
         release {
-            isMinifyEnabled = false
-            signingConfig = signingConfigs.getByName("geoDev")
-            proguardFiles(
-                getDefaultProguardFile("proguard-android-optimize.txt"),
-                "proguard-rules.pro"
-            )
+            // Incluso con un workflow antiguo que ejecute assembleRelease,
+            // NUNCA entregar un app-release-unsigned.apk.
+            if (prodSigningConfigured) {
+                signingConfig = signingConfigs.getByName("zetaPrivateRelease")
+            } else {
+                applicationIdSuffix = ".beta"
+                manifestPlaceholders["zetaAppLabel"] = "Zeta Motion Beta"
+                signingConfig = signingConfigs.getByName("betaPublicTestOnly")
+            }
+            // v44.25: R8 quita el código y los recursos que no se usan (sobre todo los miles de
+            // iconos de material-icons-extended): APK más liviano y arranque más rápido.
+            // Sin ofuscar y conservando el código de la app (ver proguard-rules.pro).
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
         }
     }
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
-        isCoreLibraryDesugaringEnabled = true
     }
-
-    buildFeatures {
-        compose = true
-        buildConfig = true
-    }
-
+    kotlinOptions { jvmTarget = "17" }
+    // El modelo de «Mejorar imagen» va sin comprimir: se copia más rápido la primera vez.
+    androidResources { noCompress += "onnx" }
+    buildFeatures { compose = true }
+    composeOptions { kotlinCompilerExtensionVersion = "1.5.14" }
     packaging {
-        resources {
-            excludes += "/META-INF/{AL2.0,LGPL2.1}"
-        }
+        resources { excludes += "/META-INF/{AL2.0,LGPL2.1}" }
     }
-
-    // Al no ser depurable, Gradle correría la revisión "lint" de publicación en cada APK;
-    // es solo para la Play Store y podría frenar la compilación por avisos sin importancia.
     lint {
-        checkReleaseBuilds = false
         abortOnError = false
-    }
-}
-
-kotlin {
-    compilerOptions {
-        jvmTarget = JvmTarget.fromTarget("17")
+        checkReleaseBuilds = false
     }
 }
 
 dependencies {
-    val composeBom = platform("androidx.compose:compose-bom:2026.06.00")
-
-    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs_nio:2.0.1")
-
+    testImplementation("junit:junit:4.13.2")
+    val composeBom = platform("androidx.compose:compose-bom:2024.06.00")
     implementation(composeBom)
-    androidTestImplementation(composeBom)
-
-    implementation("androidx.core:core-ktx:1.16.0")
-    implementation("androidx.activity:activity-compose:1.10.1")
-    implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.9.2")
-    implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.9.2")
-    implementation("androidx.lifecycle:lifecycle-runtime-compose:2.9.2")
-
+    implementation("androidx.core:core-ktx:1.13.1")
+    implementation("androidx.activity:activity-ktx:1.9.0")
+    implementation("androidx.activity:activity-compose:1.9.0")
+    implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.7.0")
+    implementation("androidx.lifecycle:lifecycle-viewmodel-ktx:2.7.0")
+    implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.7.0")
     implementation("androidx.compose.ui:ui")
-    implementation("androidx.compose.ui:ui-tooling-preview")
+    implementation("androidx.compose.ui:ui-graphics")
     implementation("androidx.compose.foundation:foundation")
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.material:material-icons-extended")
-
-    implementation("com.google.android.gms:play-services-auth:21.6.0")
-    implementation("io.coil-kt:coil-compose:2.7.0")
-    implementation("androidx.recyclerview:recyclerview:1.4.0")
-    implementation("com.github.bumptech.glide:glide:4.16.0")
-
-    implementation("androidx.media3:media3-exoplayer:1.6.1")
-    implementation("androidx.media3:media3-exoplayer-dash:1.6.1")
-    implementation("androidx.media3:media3-exoplayer-hls:1.6.1")
-    implementation("androidx.media3:media3-datasource:1.6.1")
-    implementation("androidx.media3:media3-database:1.6.1")
-    implementation("androidx.media3:media3-ui:1.6.1")
-    implementation("androidx.media3:media3-session:1.6.1")
-
-    // Public-stream resolver used by the custom Media3 player.
-    implementation("com.github.teamnewpipe:NewPipeExtractor:v0.27.1")
-
-    debugImplementation("androidx.compose.ui:ui-tooling")
-    debugImplementation("androidx.compose.ui:ui-test-manifest")
-
-    testImplementation("junit:junit:4.13.2")
-    androidTestImplementation("androidx.test.ext:junit:1.2.1")
-    androidTestImplementation("androidx.test.espresso:espresso-core:3.6.1")
-    androidTestImplementation("androidx.compose.ui:ui-test-junit4")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
+    // ONNX Runtime (MIT): solo para «Mejorar imagen» (modelo incluido en el APK; sin descargas).
+    // v44.25: 1.23.2 (oct. 2025) trae libonnxruntime4j_jni.so alineada a 16 KB (PR #24947):
+    // Google Play lo exige a las apps con target 35+ (la 1.20.0 no lo cumplía).
+    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.23.2")
 }
+
