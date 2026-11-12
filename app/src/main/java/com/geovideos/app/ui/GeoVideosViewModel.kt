@@ -417,6 +417,8 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
         com.geovideos.app.playback.StreamResolver.sessionEmbeddedProvider = { id, sts ->
             if (!youtubeSession.hasStoredSession()) null else innerTube.sessionEmbeddedStreams(id, sts)
         }
+        // App de YouTube para Android sin cuenta: lo que usaba el ZIP original (va primero).
+        com.geovideos.app.playback.StreamResolver.androidProvider = { id -> innerTube.androidReelStreams(id) }
         // TV Samsung sin cuenta: última opción, funciona aunque no hayas iniciado sesión.
         com.geovideos.app.playback.StreamResolver.anonymousTvProvider = { id, sts ->
             innerTube.anonymousTvStreams(id, sts)

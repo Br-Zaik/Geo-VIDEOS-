@@ -44,6 +44,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
@@ -215,6 +216,18 @@ internal fun RecyclerShortsScreen(
     // The ViewModel already supplies a dedicated Shorts feed. Do not filter it again here:
     // a second strict filter previously removed every item when duration metadata was delayed.
     val shortVideos = remember(videos) { videos.distinctBy { it.id } }
+
+    // Si YouTube rechaza el reproductor propio, el Short se abre solo en el reproductor web.
+    var autoWebShortId by remember { mutableStateOf("") }
+    LaunchedEffect(playback.error, playback.currentVideoId) {
+        val failedId = playback.currentVideoId
+        if (playback.error != null && failedId.isNotBlank() && autoWebShortId != failedId &&
+            shortVideos.any { it.id == failedId }
+        ) {
+            autoWebShortId = failedId
+            runCatching { com.geovideos.app.WebPlayerActivity.open(context, failedId, short = true) }
+        }
+    }
 
     if (shortVideos.isEmpty()) {
         Box(modifier = modifier.fillMaxSize(), contentAlignment = Alignment.Center) {

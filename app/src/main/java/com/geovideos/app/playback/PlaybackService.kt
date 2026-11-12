@@ -47,19 +47,24 @@ class PlaybackService : MediaSessionService() {
         })
 
         val httpFactory = DefaultHttpDataSource.Factory()
-            .setUserAgent(USER_AGENT)
             .setAllowCrossProtocolRedirects(true)
             .setConnectTimeoutMs(20_000)
             .setReadTimeoutMs(30_000)
             .setDefaultRequestProperties(
                 mapOf(
+                    "User-Agent" to USER_AGENT,
                     "Accept" to "*/*",
                     "Accept-Language" to "es-PE,es;q=0.9,en;q=0.7",
                     "Origin" to "https://www.youtube.com",
                     "Referer" to "https://www.youtube.com/"
                 )
             )
-        val upstreamFactory = DefaultDataSource.Factory(this, httpFactory)
+        // Cada parte del video se pide con el User-Agent del cliente que generó el enlace.
+        val agentFactory = androidx.media3.datasource.ResolvingDataSource.Factory(httpFactory) { spec ->
+            val agent = StreamUserAgents.forUrl(spec.uri.toString())
+            if (agent == StreamUserAgents.DEFAULT) spec else spec.withAdditionalHeaders(mapOf("User-Agent" to agent))
+        }
+        val upstreamFactory = DefaultDataSource.Factory(this, agentFactory)
         val cache = SimpleCache(
             File(cacheDir, "media3-playback"),
             LeastRecentlyUsedCacheEvictor(CACHE_SIZE_BYTES),

@@ -309,6 +309,21 @@ internal fun UnifiedPlayerOverlay(
     LaunchedEffect(mainActivity, video.id) {
         mainActivity?.setVideoPictureInPictureEnabled(false)
     }
+    // Si YouTube rechaza el reproductor propio, el video se abre solo en el reproductor web
+    // (una vez por video; al volver quedan los botones Reintentar / Ver en web).
+    var autoWebVideoId by remember { mutableStateOf("") }
+    LaunchedEffect(playback.error, playback.currentVideoId, video.id) {
+        if (playback.error != null && playback.currentVideoId == video.id && autoWebVideoId != video.id) {
+            autoWebVideoId = video.id
+            runCatching {
+                com.geovideos.app.WebPlayerActivity.open(
+                    context,
+                    video.id,
+                    (progressState.positionMs / 1000L).coerceAtLeast(0L)
+                )
+            }
+        }
+    }
     // La primera vez que se ve un video se ofrece (una sola vez) el permiso de ventana emergente.
     LaunchedEffect(mainActivity, playback.isPlaying) {
         if (playback.isPlaying && !isInPictureInPictureMode) {
@@ -1430,7 +1445,10 @@ internal fun UnifiedPlayerOverlay(
                             modifier = Modifier.padding(top = 12.dp),
                             horizontalArrangement = Arrangement.spacedBy(10.dp)
                         ) {
-                            Button(onClick = { playerConnection.open(video, autoplay, dataSaver, repeat = false) }) {
+                            Button(onClick = {
+                                com.geovideos.app.playback.StreamResolver.clearNativeBlock()
+                                playerConnection.open(video, autoplay, dataSaver, repeat = false)
+                            }) {
                                 Text("Reintentar")
                             }
                             // Último recurso dentro de la app: la página de YouTube con tu cuenta.

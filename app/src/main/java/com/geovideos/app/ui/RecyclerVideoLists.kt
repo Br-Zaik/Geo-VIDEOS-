@@ -321,6 +321,7 @@ private class FullVideoHolder(context: Context) : RecyclerView.ViewHolder(FullVi
             append(video.channelTitle.ifBlank { "Canal" })
             video.viewCountText.takeIf { it.isNotBlank() }?.let { append(" · ").append(it) }
             formatRelativeTime(video.publishedAt).takeIf { it.isNotBlank() }?.let { append(" · ").append(it) }
+            if (video.isNew) append(" · Nuevo")
         }
         card.duration.text = durationText(video.durationMs)
         card.duration.visibility = if (video.durationMs > 0L && !video.isLive) View.VISIBLE else View.GONE

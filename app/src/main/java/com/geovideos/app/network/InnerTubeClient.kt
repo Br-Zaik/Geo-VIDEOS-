@@ -368,6 +368,98 @@ class InnerTubeClient(private val cookieProvider: () -> String) {
         json.optJSONObject("streamingData")
     }
 
+    // ------------------------------------------------- Cliente Android (como el ZIP original)
+
+    @Volatile
+    private var androidVisitorData: String = ""
+
+    /**
+     * Exactamente lo que hacía NewPipeExtractor 0.26.3 (la versión del ZIP original, que sí
+     * reproducía todo): se presenta como la app oficial de YouTube para Android, sin cuenta,
+     * en youtubei.googleapis.com con reel/reel_item_watch. Devuelve streamingData con los
+     * enlaces ya listos (con el "cpn" agregado como hacía NewPipe).
+     */
+    suspend fun androidReelStreams(videoId: String): JSONObject? = withContext(Dispatchers.IO) {
+        if (androidVisitorData.isBlank()) {
+            val visitor = androidRequest("visitor_id?prettyPrint=false", androidBody())
+            androidVisitorData = visitor.optJSONObject("responseContext")?.optString("visitorData").orEmpty()
+        }
+        val cpn = newCpn()
+        val body = androidBody().apply {
+            put(
+                "playerRequest",
+                JSONObject()
+                    .put("videoId", videoId)
+                    .put("cpn", cpn)
+                    .put("contentCheckOk", true)
+                    .put("racyCheckOk", true)
+            )
+            put("disablePlayerResponse", false)
+        }
+        val path = "reel/reel_item_watch?prettyPrint=false&t=" + newCpn().take(12) +
+            "&id=" + videoId + "&\$fields=playerResponse"
+        val response = runCatching { androidRequest(path, body) }.getOrElse { error ->
+            // El visitante pudo vencer: pedir uno nuevo la próxima vez.
+            androidVisitorData = ""
+            throw error
+        }
+        val player = response.optJSONObject("playerResponse") ?: throw IOException("Respuesta vacía de YouTube")
+        checkPlayable(player)
+        val data = player.optJSONObject("streamingData") ?: return@withContext null
+        for (key in listOf("formats", "adaptiveFormats")) {
+            val array = data.optJSONArray(key) ?: continue
+            for (index in 0 until array.length()) {
+                val format = array.optJSONObject(index) ?: continue
+                val url = format.optString("url")
+                if (url.isNotBlank() && !url.contains("&cpn=")) format.put("url", "$url&cpn=$cpn")
+            }
+        }
+        data
+    }
+
+    private fun androidBody(): JSONObject {
+        val client = JSONObject()
+            .put("clientName", "ANDROID")
+            .put("clientVersion", ANDROID_VERSION)
+            .put("clientScreen", "WATCH")
+            .put("platform", "MOBILE")
+            .put("osName", "Android")
+            .put("osVersion", "16")
+            .put("androidSdkVersion", 36)
+            .put("hl", "es-419")
+            .put("gl", "PE")
+            .put("utcOffsetMinutes", 0)
+        if (androidVisitorData.isNotBlank()) client.put("visitorData", androidVisitorData)
+        return JSONObject().put(
+            "context",
+            JSONObject()
+                .put("client", client)
+                .put("request", JSONObject().put("internalExperimentFlags", JSONArray()).put("useSsl", true))
+                .put("user", JSONObject().put("lockedSafetyMode", false))
+        )
+    }
+
+    private fun androidRequest(path: String, body: JSONObject): JSONObject {
+        val connection = URL("https://youtubei.googleapis.com/youtubei/v1/$path").openConnection() as HttpURLConnection
+        try {
+            connection.requestMethod = "POST"
+            connection.connectTimeout = 12_000
+            connection.readTimeout = 15_000
+            connection.doOutput = true
+            connection.setRequestProperty("User-Agent", "com.google.android.youtube/$ANDROID_VERSION (Linux; U; Android 15; PE) gzip")
+            connection.setRequestProperty("X-Goog-Api-Format-Version", "2")
+            connection.setRequestProperty("Content-Type", "application/json")
+            connection.outputStream.use { it.write(body.toString().toByteArray(Charsets.UTF_8)) }
+            val code = connection.responseCode
+            val stream = if (code in 200..299) connection.inputStream else connection.errorStream
+            val text = stream?.bufferedReader()?.use { it.readText() }.orEmpty()
+            if (code !in 200..299) throw IOException("YouTube respondió $code")
+            return JSONObject(text)
+        } finally {
+            connection.disconnect()
+        }
+    }
+
     /** Sugerencias de búsqueda (las mismas del cuadro de búsqueda de YouTube). */
     suspend fun searchSuggestions(query: String): List<String> = withContext(Dispatchers.IO) {
         val clean = query.trim()
@@ -967,7 +1059,7 @@ class InnerTubeClient(private val cookieProvider: () -> String) {
             title = text(o.opt("headline")),
             thumb = o.optJSONObject("thumbnail")?.let { lastThumb(it) }.orEmpty(),
             views = text(o.opt("viewCountText"))
-        )
+        ).copy(isNew = hasNewBadge(o))
     }
 
     private fun shortItem(id: String, title: String, thumb: String, views: String): VideoItem =
@@ -1696,6 +1788,9 @@ class InnerTubeClient(private val cookieProvider: () -> String) {
     companion object {
         private const val ORIGIN = "https://www.youtube.com"
         private const val MIN_PROGRESS_INTERVAL_MS = 20_000L
+
+        /** Versión de la app de YouTube para Android que usaba NewPipeExtractor 0.26.3. */
+        private const val ANDROID_VERSION = "21.03.36"
 
         /** Versión web de respaldo (la de NewPipeExtractor 0.27.1); al abrir se pide la actual. */
         private const val WEB_FALLBACK_VERSION = "2.20260805.01.00"

@@ -392,6 +392,18 @@ private fun SearchVideoCard(video: VideoItem, onPlay: () -> Unit, onWatchLater: 
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.padding(top = 3.dp)
                 )
+                if (video.isNew) {
+                    Text(
+                        "Nuevo",
+                        color = Color.White,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Medium,
+                        modifier = Modifier
+                            .padding(top = 4.dp)
+                            .background(Color(0xFF3A3A42), RoundedCornerShape(4.dp))
+                            .padding(horizontal = 6.dp, vertical = 1.dp)
+                    )
+                }
             }
             Box {
                 IconButton(onClick = { menu = true }) { Icon(Icons.Rounded.MoreVert, contentDescription = "Opciones") }

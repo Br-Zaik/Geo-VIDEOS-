@@ -647,6 +647,18 @@ private fun SubsVideoCard(video: VideoItem, resumeFraction: Float = 0f, onPlay: 
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.padding(top = 3.dp)
                 )
+                if (video.isNew) {
+                    Text(
+                        "Nuevo",
+                        color = Color.White,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Medium,
+                        modifier = Modifier
+                            .padding(top = 4.dp)
+                            .background(Color(0xFF3A3A42), RoundedCornerShape(4.dp))
+                            .padding(horizontal = 6.dp, vertical = 1.dp)
+                    )
+                }
             }
             Box {
                 IconButton(onClick = { menu = true }) { Icon(Icons.Default.MoreVert, "Opciones") }

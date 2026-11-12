@@ -579,7 +579,10 @@ class ResolvedMediaDownloadService : Service() {
                 connectTimeout = 25_000
                 readTimeout = 45_000
                 useCaches = false
-                setRequestProperty("User-Agent", USER_AGENT)
+                setRequestProperty(
+                    "User-Agent",
+                    StreamUserAgents.forUrl(url).takeIf { it != StreamUserAgents.DEFAULT } ?: USER_AGENT
+                )
                 setRequestProperty("Accept", "*/*")
                 setRequestProperty("Accept-Encoding", "identity")
                 setRequestProperty("Origin", "https://www.youtube.com")

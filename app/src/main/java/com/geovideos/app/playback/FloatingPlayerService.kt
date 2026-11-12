@@ -146,6 +146,9 @@ class FloatingPlayerService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // Android cierra la app si un servicio pedido en primer plano termina sin mostrar su
+        // aviso: por eso el aviso se muestra SIEMPRE primero, incluso si enseguida se cierra.
+        runCatching { startForeground(NOTIFICATION_ID, buildNotification()) }
         if (intent?.action == ACTION_CLOSE) {
             stopSelf()
             return START_NOT_STICKY
@@ -158,7 +161,6 @@ class FloatingPlayerService : Service() {
         }
         if (!::connection.isInitialized) {
             connection = GeoPlayerConnection.get(applicationContext)
-            startForeground(NOTIFICATION_ID, buildNotification())
             observePlayer()
         }
         if (!screenReceiverRegistered) {
@@ -1119,7 +1121,17 @@ class FloatingPlayerService : Service() {
         }
 
         fun stop(context: Context) {
-            context.stopService(Intent(context, FloatingPlayerService::class.java))
+            if (!isActiveOrStarting()) return
+            // Se cierra con un aviso al propio servicio (no con stopService): si justo estaba
+            // arrancando, detenerlo de golpe hacía que Android cerrara toda la app.
+            val sent = runCatching {
+                context.startService(
+                    Intent(context, FloatingPlayerService::class.java).setAction(ACTION_CLOSE)
+                )
+            }.isSuccess
+            if (!sent && running) runCatching {
+                context.stopService(Intent(context, FloatingPlayerService::class.java))
+            }
         }
     }
 }

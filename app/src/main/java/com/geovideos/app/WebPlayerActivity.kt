@@ -90,7 +90,11 @@ class WebPlayerActivity : ComponentActivity() {
         })
 
         val time = if (startSeconds > 0L) "&t=${startSeconds}s" else ""
-        view.loadUrl("https://m.youtube.com/watch?v=$videoId$time")
+        val short = intent.getBooleanExtra(EXTRA_SHORT, false)
+        view.loadUrl(
+            if (short) "https://m.youtube.com/shorts/$videoId"
+            else "https://m.youtube.com/watch?v=$videoId$time"
+        )
     }
 
     private var hideCustomView: (() -> Unit)? = null
@@ -147,6 +151,7 @@ class WebPlayerActivity : ComponentActivity() {
     companion object {
         private const val EXTRA_VIDEO_ID = "com.geovideos.app.extra.WEB_VIDEO_ID"
         private const val EXTRA_START_SECONDS = "com.geovideos.app.extra.WEB_START_SECONDS"
+        private const val EXTRA_SHORT = "com.geovideos.app.extra.WEB_SHORT"
 
         /** La página cree que siempre está a la vista (si no, YouTube pausa al salir). */
         private const val KEEP_PLAYING_JS =
@@ -158,10 +163,11 @@ class WebPlayerActivity : ComponentActivity() {
                 "window.addEventListener('blur',function(e){e.stopImmediatePropagation();},true);}" +
                 "}catch(e){}})();"
 
-        fun open(context: Context, videoId: String, startSeconds: Long = 0L) {
+        fun open(context: Context, videoId: String, startSeconds: Long = 0L, short: Boolean = false) {
             val intent = Intent(context, WebPlayerActivity::class.java)
                 .putExtra(EXTRA_VIDEO_ID, videoId)
                 .putExtra(EXTRA_START_SECONDS, startSeconds)
+                .putExtra(EXTRA_SHORT, short)
             if (context !is android.app.Activity) intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             context.startActivity(intent)
         }
