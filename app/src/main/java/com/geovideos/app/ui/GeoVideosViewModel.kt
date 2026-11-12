@@ -417,7 +417,12 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
         com.geovideos.app.playback.StreamResolver.sessionEmbeddedProvider = { id, sts ->
             if (!youtubeSession.hasStoredSession()) null else innerTube.sessionEmbeddedStreams(id, sts)
         }
-        // App de YouTube para Android sin cuenta: lo que usaba el ZIP original (va primero).
+        // Página de YouTube escondida (como Muka/Daylitube): pasa el control de robot también con VPN.
+        com.geovideos.app.playback.WebPageCapture.init(getApplication<Application>())
+        com.geovideos.app.playback.StreamResolver.webPageProvider = { id ->
+            com.geovideos.app.playback.WebPageCapture.streamingData(id)
+        }
+        // App de YouTube para Android sin cuenta: lo que usaba el ZIP original.
         com.geovideos.app.playback.StreamResolver.androidProvider = { id -> innerTube.androidReelStreams(id) }
         // TV Samsung sin cuenta: última opción, funciona aunque no hayas iniciado sesión.
         com.geovideos.app.playback.StreamResolver.anonymousTvProvider = { id, sts ->

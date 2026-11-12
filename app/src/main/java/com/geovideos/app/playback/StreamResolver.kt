@@ -162,9 +162,15 @@ internal object StreamResolver {
         rejectedLinks[videoId] = System.currentTimeMillis() + 30 * 60_000L
         // Si el enlace malo vino de una forma alternativa, no repetirla para este video.
         resolvedWith.remove(videoId)?.let { client ->
+            if (client == FallbackClient.WEB_PAGE && webPageRetried.add(videoId)) {
+                // Primera falla con la página escondida: volver a pedirla fresca (sin descartarla).
+                WebPageCapture.invalidate(videoId)
+                return
+            }
             excludedClients[videoId] = excludedClients[videoId].orEmpty() + client
             if (lastWorkingClient == client) lastWorkingClient = null
             if (client == FallbackClient.SAFARI_HLS) sessionCache.remove(videoId)
+            if (client == FallbackClient.WEB_PAGE) WebPageCapture.invalidate(videoId)
         }
     }
 
@@ -324,6 +330,17 @@ internal object StreamResolver {
     @Volatile
     var sessionEmbeddedProvider: (suspend (videoId: String, signatureTimestamp: Int?) -> org.json.JSONObject?)? = null
 
+    /**
+     * Página de YouTube escondida (como un navegador, igual que Muka/Daylitube): la forma que
+     * pasa el control de "no eres un robot" también con VPN. Va primero.
+     */
+    @Volatile
+    var webPageProvider: (suspend (videoId: String) -> org.json.JSONObject?)? = null
+
+    /** La precarga no usa la página escondida (así no hace esperar al video que tocas). */
+    private object NoWebPage : kotlin.coroutines.AbstractCoroutineContextElement(NoWebPageKey)
+    private object NoWebPageKey : kotlin.coroutines.CoroutineContext.Key<NoWebPage>
+
     /** App de YouTube para Android sin cuenta (lo que usaba el ZIP original). */
     @Volatile
     var androidProvider: (suspend (videoId: String) -> org.json.JSONObject?)? = null
@@ -341,7 +358,7 @@ internal object StreamResolver {
     }
 
     /** Formas de pedir el video a YouTube cuando la vía de NewPipe falla. */
-    private enum class FallbackClient { ANDROID, EMBEDDED, TV, SAFARI_HLS, TV_ANONYMOUS }
+    private enum class FallbackClient { WEB_PAGE, ANDROID, EMBEDDED, TV, SAFARI_HLS, TV_ANONYMOUS }
 
     /**
      * Cuando YouTube rechaza TODAS las formas (pasa con algunas VPN), durante unos minutos no
@@ -368,6 +385,7 @@ internal object StreamResolver {
 
     /** Con qué forma se obtuvo el enlace de cada video (para descartarla si el enlace falla). */
     private val resolvedWith = ConcurrentHashMap<String, FallbackClient>()
+    private val webPageRetried: MutableSet<String> = ConcurrentHashMap.newKeySet()
     private val excludedClients = ConcurrentHashMap<String, Set<FallbackClient>>()
 
     @Volatile
@@ -405,10 +423,20 @@ internal object StreamResolver {
 
     /** streamingData de la primera forma (sin HLS) que responda: para calidades y descargas. */
     private suspend fun fallbackStreamingData(videoId: String, sts: Int?): org.json.JSONObject? {
-        val base = listOf(FallbackClient.TV, FallbackClient.EMBEDDED, FallbackClient.TV_ANONYMOUS, FallbackClient.ANDROID)
+        val base = listOf(
+            FallbackClient.WEB_PAGE,
+            FallbackClient.TV,
+            FallbackClient.EMBEDDED,
+            FallbackClient.TV_ANONYMOUS,
+            FallbackClient.ANDROID
+        )
         val order = lastWorkingClient?.takeIf { it in base }?.let { listOf(it) + (base - it) } ?: base
         for (client in order) {
             val provider: suspend (String, Int?) -> org.json.JSONObject? = when (client) {
+                FallbackClient.WEB_PAGE -> webPageProvider?.let { page ->
+                    val wrapped: suspend (String, Int?) -> org.json.JSONObject? = { id, _ -> page(id) }
+                    wrapped
+                }
                 FallbackClient.ANDROID -> androidProvider?.let { android ->
                     val wrapped: suspend (String, Int?) -> org.json.JSONObject? = { id, _ -> android(id) }
                     wrapped
@@ -467,6 +495,7 @@ internal object StreamResolver {
         refreshPlayerJsIfStale()
         val sts = runCatching { org.schabi.newpipe.extractor.services.youtube.YoutubeJavaScriptPlayerManager.getSignatureTimestamp(video.id) }.getOrNull()
         val base = listOf(
+            FallbackClient.WEB_PAGE,
             FallbackClient.EMBEDDED,
             FallbackClient.TV,
             FallbackClient.SAFARI_HLS,
@@ -496,7 +525,7 @@ internal object StreamResolver {
         }
         // Ninguna funcionó: mostrar el motivo más útil (privado, edad, país... antes que "recargar").
         val reasons = errors.filter { it.message.orEmpty().startsWith("Got error") }
-        nativeBlockedUntilMs = System.currentTimeMillis() + 3 * 60_000L
+        nativeBlockedUntilMs = System.currentTimeMillis() + 60_000L
         nativeBlockedReason = (reasons.firstOrNull { !isBotBlock(it) } ?: reasons.firstOrNull())?.message
             ?: "Got error: \"YouTube rechazó esta conexión\""
         reasons.firstOrNull { !isBotBlock(it) }?.let { throw it }
@@ -511,6 +540,19 @@ internal object StreamResolver {
         preferredHeight: Int?,
         sts: Int?
     ): ResolvedMedia? = when (client) {
+        FallbackClient.WEB_PAGE -> if (kotlin.coroutines.coroutineContext[NoWebPageKey] != null) {
+            null
+        } else {
+            webPageProvider?.invoke(video.id)?.let { data ->
+                val hls = data.optString("hlsManifestUrl")
+                if (video.isLive && hls.isNotBlank()) {
+                    StreamUserAgents.registerPageStream(hls)
+                    ResolvedMedia(hls, MimeTypes.APPLICATION_M3U8)
+                } else {
+                    tvMedia(video.id, data, dataSaver, preferredHeight)
+                }
+            }
+        }
         FallbackClient.ANDROID -> androidProvider?.invoke(video.id)
             ?.let { tvMedia(video.id, it, dataSaver, preferredHeight) }
         FallbackClient.EMBEDDED -> sessionEmbeddedProvider?.invoke(video.id, sts)
@@ -707,7 +749,8 @@ internal object StreamResolver {
         if (forceFresh && safeAttempt >= 2) sessionCache.remove(video.id)
         if (isNativeBlocked()) throw java.io.IOException(nativeBlockedReason)
         val media = withContext(Dispatchers.IO) {
-            val sessionFirst = isAnonymousBlocked() || preferSession(video.id, safeAttempt)
+            val sessionFirst = isAnonymousBlocked() || preferSession(video.id, safeAttempt) ||
+                lastWorkingClient == FallbackClient.WEB_PAGE
             if (sessionFirst && !hasPreferredDub(video.id)) {
                 runCatching { sessionFallback(video, dataSaver, preferredHeight) }.getOrNull()
                     ?.let { return@withContext it }
@@ -1006,7 +1049,7 @@ internal object StreamResolver {
         videos: List<VideoItem>,
         dataSaver: Boolean,
         preferredHeight: Int? = null
-    ): Unit = withContext(Dispatchers.IO) { preloadOnIo(videos, dataSaver, preferredHeight) }
+    ): Unit = withContext(Dispatchers.IO + NoWebPage) { preloadOnIo(videos, dataSaver, preferredHeight) }
 
     private suspend fun preloadOnIo(
         videos: List<VideoItem>,

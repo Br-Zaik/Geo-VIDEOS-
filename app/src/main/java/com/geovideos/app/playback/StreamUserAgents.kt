@@ -21,9 +21,30 @@ internal object StreamUserAgents {
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.5 Safari/605.1.15,gzip(gfe)"
 
     private val clientParam = Regex("[?&/]c[=/]([A-Z0-9_]+)")
+    private val idParam = Regex("[?&]id=([^&]+)")
+
+    /** User-Agent de la página escondida de YouTube (WebPageCapture). */
+    @Volatile
+    var pageUserAgent: String = ""
+
+    /** Flujos que entregó la página escondida: se bajan con el mismo User-Agent de esa página. */
+    private val pageStreams = java.util.concurrent.ConcurrentHashMap<String, Long>()
+
+    fun streamId(url: String): String? = idParam.find(url)?.groupValues?.getOrNull(1)?.takeIf { it.isNotBlank() }
+
+    fun registerPageStream(url: String) {
+        val id = streamId(url) ?: return
+        if (pageStreams.size > 400) pageStreams.clear()
+        pageStreams[id] = System.currentTimeMillis()
+    }
 
     fun forUrl(url: String): String {
         if (!url.contains("googlevideo.com") && !url.contains("youtube.com/api/manifest")) return DEFAULT
+        val page = pageUserAgent
+        if (page.isNotBlank()) {
+            val id = streamId(url)
+            if (id != null && pageStreams.containsKey(id)) return page
+        }
         return when (clientParam.find(url)?.groupValues?.getOrNull(1)) {
             "VISIONOS" -> VISIONOS
             "ANDROID", "ANDROID_VR" -> ANDROID

@@ -1,0 +1,289 @@
+package com.geovideos.app.playback
+
+import android.annotation.SuppressLint
+import android.content.Context
+import android.webkit.CookieManager
+import android.webkit.JavascriptInterface
+import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
+import android.webkit.WebView
+import android.webkit.WebViewClient
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
+import org.json.JSONObject
+import java.io.IOException
+import java.util.concurrent.ConcurrentHashMap
+
+/**
+ * Pide el video como lo hace un navegador de verdad (igual que Muka/Daylitube):
+ * abre m.youtube.com/watch?v=ID en una página ESCONDIDA con tu sesión, deja que el propio
+ * código de YouTube haga la petición (pasa el control de "no eres un robot") y copia lo que
+ * YouTube le responde: la lista de calidades y el código de seguridad (pot) que usa la página
+ * para bajar el video. Con eso el reproductor propio de Geo Videos reproduce y descarga.
+ */
+internal object WebPageCapture {
+
+    private const val CAPTURE_TIMEOUT_MS = 20_000L
+    private const val POT_WAIT_MS = 7_000L
+    private const val CACHE_TTL_MS = 3 * 60 * 60_000L
+
+    private var appContext: Context? = null
+    private val mutex = Mutex()
+    private val cache = ConcurrentHashMap<String, Pair<String, Long>>()
+
+    // Estado de la captura en curso (la página escondida atiende un video a la vez).
+    @Volatile private var targetVideoId: String = ""
+    @Volatile private var responseDeferred: CompletableDeferred<String>? = null
+    /** id del flujo (parámetro "id=" de googlevideo) → pot que usó la página. */
+    private val potsByStream = ConcurrentHashMap<String, String>()
+    @Volatile private var anyPot: String = ""
+
+    private var webView: WebView? = null
+
+    fun init(context: Context) {
+        appContext = context.applicationContext
+    }
+
+    fun invalidate(videoId: String) {
+        cache.remove(videoId)
+    }
+
+    /** streamingData lista para el reproductor (con el pot ya puesto en cada enlace). */
+    suspend fun streamingData(videoId: String): JSONObject? {
+        if (videoId.isBlank()) return null
+        cached(videoId)?.let { return it }
+        val context = appContext ?: return null
+        return mutex.withLock {
+            cached(videoId)?.let { return@withLock it }
+            try {
+                val result = withTimeoutOrNull(CAPTURE_TIMEOUT_MS) { capture(context, videoId) }
+                if (result != null) {
+                    cache[videoId] = result.toString() to (System.currentTimeMillis() + CACHE_TTL_MS)
+                }
+                result
+            } finally {
+                withContext(Dispatchers.Main) { stopPage() }
+            }
+        }
+    }
+
+    private fun cached(videoId: String): JSONObject? {
+        val entry = cache[videoId] ?: return null
+        if (entry.second < System.currentTimeMillis()) {
+            cache.remove(videoId)
+            return null
+        }
+        return runCatching { JSONObject(entry.first) }.getOrNull()
+    }
+
+    private suspend fun capture(context: Context, videoId: String): JSONObject? {
+        val deferred = CompletableDeferred<String>()
+        potsByStream.clear()
+        anyPot = ""
+        responseDeferred = deferred
+        targetVideoId = videoId
+        withContext(Dispatchers.Main) {
+            val view = webView ?: createWebView(context).also { webView = it }
+            StreamUserAgents.pageUserAgent = view.settings.userAgentString.orEmpty()
+            view.loadUrl("https://m.youtube.com/watch?v=$videoId")
+        }
+        val text = deferred.await()
+        val player = JSONObject(text)
+        val playability = player.optJSONObject("playabilityStatus")
+        val status = playability?.optString("status").orEmpty()
+        if (status.isNotBlank() && !status.equals("OK", ignoreCase = true)) {
+            val reason = playability?.optString("reason").orEmpty()
+                .ifBlank { playability?.optJSONObject("errorScreen")?.toString()?.take(120).orEmpty() }
+            throw IOException("Got error $status: \"$reason\"")
+        }
+        val data = player.optJSONObject("streamingData") ?: return null
+        val streamIds = streamIdsOf(data)
+        // Esperar a que la página empiece a bajar el video para copiar su código de seguridad.
+        var pot = ""
+        val waited = withTimeoutOrNull(POT_WAIT_MS) {
+            while (true) {
+                pot = streamIds.firstNotNullOfOrNull { potsByStream[it] }.orEmpty()
+                if (pot.isNotBlank()) break
+                delay(150L)
+            }
+            true
+        }
+        if (waited == null || pot.isBlank()) pot = anyPot
+        val usable = injectPot(data, pot)
+        // Formatos sin enlace (solo para el modo SABR) no sirven para el reproductor propio.
+        val hasLinks = listOf("formats", "adaptiveFormats").any { key ->
+            val array = usable.optJSONArray(key) ?: return@any false
+            (0 until array.length()).any { index ->
+                val format = array.optJSONObject(index)
+                format != null && (format.optString("url").isNotBlank() ||
+                    format.optString("signatureCipher").isNotBlank() || format.optString("cipher").isNotBlank())
+            }
+        }
+        if (!hasLinks && usable.optString("hlsManifestUrl").isBlank()) return null
+        return usable
+    }
+
+    /** Agrega &pot=… a cada enlace y avisa qué User-Agent usar con esos enlaces. */
+    private fun injectPot(data: JSONObject, pot: String): JSONObject {
+        val copy = JSONObject(data.toString())
+        for (key in listOf("formats", "adaptiveFormats")) {
+            val array = copy.optJSONArray(key) ?: continue
+            for (index in 0 until array.length()) {
+                val format = array.optJSONObject(index) ?: continue
+                val url = format.optString("url")
+                if (url.isNotBlank()) {
+                    StreamUserAgents.registerPageStream(url)
+                    if (pot.isNotBlank() && !url.contains("&pot=")) format.put("url", "$url&pot=$pot")
+                    continue
+                }
+                val cipherKey = if (format.optString("signatureCipher").isNotBlank()) "signatureCipher" else "cipher"
+                val cipher = format.optString(cipherKey)
+                if (cipher.isBlank()) continue
+                val parts = cipher.split("&").map { part ->
+                    val separator = part.indexOf('=')
+                    if (separator <= 0 || part.substring(0, separator) != "url") return@map part
+                    val inner = java.net.URLDecoder.decode(part.substring(separator + 1), "UTF-8")
+                    StreamUserAgents.registerPageStream(inner)
+                    val withPot = if (pot.isNotBlank() && !inner.contains("&pot=")) "$inner&pot=$pot" else inner
+                    "url=" + java.net.URLEncoder.encode(withPot, "UTF-8")
+                }
+                format.put(cipherKey, parts.joinToString("&"))
+            }
+        }
+        return copy
+    }
+
+    private fun streamIdsOf(data: JSONObject): Set<String> {
+        val ids = HashSet<String>()
+        for (key in listOf("formats", "adaptiveFormats")) {
+            val array = data.optJSONArray(key) ?: continue
+            for (index in 0 until array.length()) {
+                val format = array.optJSONObject(index) ?: continue
+                val url = format.optString("url").ifBlank {
+                    val cipher = format.optString("signatureCipher").ifBlank { format.optString("cipher") }
+                    cipher.split("&").firstOrNull { it.startsWith("url=") }
+                        ?.let { java.net.URLDecoder.decode(it.removePrefix("url="), "UTF-8") }
+                        .orEmpty()
+                }
+                StreamUserAgents.streamId(url)?.let(ids::add)
+            }
+        }
+        return ids
+    }
+
+    private fun stopPage() {
+        targetVideoId = ""
+        responseDeferred = null
+        runCatching { webView?.loadUrl("about:blank") }
+    }
+
+    @SuppressLint("SetJavaScriptEnabled", "JavascriptInterface")
+    private fun createWebView(context: Context): WebView = WebView(context).apply {
+        settings.javaScriptEnabled = true
+        settings.domStorageEnabled = true
+        settings.mediaPlaybackRequiresUserGesture = false
+        settings.loadsImagesAutomatically = false
+        CookieManager.getInstance().setAcceptCookie(true)
+        CookieManager.getInstance().setAcceptThirdPartyCookies(this, true)
+        // Tamaño de un teléfono aunque no se vea, para que la página funcione normal.
+        measure(
+            android.view.View.MeasureSpec.makeMeasureSpec(720, android.view.View.MeasureSpec.EXACTLY),
+            android.view.View.MeasureSpec.makeMeasureSpec(1280, android.view.View.MeasureSpec.EXACTLY)
+        )
+        layout(0, 0, 720, 1280)
+        addJavascriptInterface(Bridge(), "GeoCapture")
+        webViewClient = object : WebViewClient() {
+            override fun onPageStarted(view: WebView, url: String?, favicon: android.graphics.Bitmap?) {
+                super.onPageStarted(view, url, favicon)
+                if (url.orEmpty().contains("youtube.com")) view.evaluateJavascript(CAPTURE_JS, null)
+            }
+
+            override fun onPageFinished(view: WebView, url: String?) {
+                super.onPageFinished(view, url)
+                if (url.orEmpty().contains("youtube.com")) view.evaluateJavascript(CAPTURE_JS, null)
+            }
+
+            override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? {
+                val url = request.url
+                if (url.host.orEmpty().endsWith("googlevideo.com") && url.path.orEmpty().contains("videoplayback")) {
+                    val pot = url.getQueryParameter("pot").orEmpty()
+                    if (pot.isNotBlank()) {
+                        anyPot = pot
+                        url.getQueryParameter("id")?.takeIf { it.isNotBlank() }?.let { potsByStream[it] = pot }
+                    }
+                }
+                return null
+            }
+        }
+    }
+
+    private class Bridge {
+        @JavascriptInterface
+        fun onPlayer(text: String?) {
+            val body = text ?: return
+            val target = targetVideoId
+            if (target.isBlank()) return
+            val id = runCatching {
+                JSONObject(body).optJSONObject("videoDetails")?.optString("videoId").orEmpty()
+            }.getOrDefault("")
+            if (id == target) responseDeferred?.complete(body)
+        }
+    }
+
+    /** Silencia la página escondida y copia la respuesta del reproductor de YouTube. */
+    private const val CAPTURE_JS = """
+(function(){
+  if (window.__geoCap) return; window.__geoCap = 1;
+  var sent = '';
+  function mute(){ try { document.querySelectorAll('video').forEach(function(v){ v.muted = true; v.volume = 0; }); } catch(e){} }
+  function send(r){
+    try {
+      if (!r || !r.videoDetails || !r.playabilityStatus) return;
+      var id = r.videoDetails.videoId || '';
+      var ok = r.playabilityStatus.status === 'OK';
+      if (ok && !r.streamingData) return;
+      if (sent === id + ok) return;
+      sent = id + ok;
+      GeoCapture.onPlayer(JSON.stringify({ videoDetails: { videoId: id }, playabilityStatus: r.playabilityStatus, streamingData: r.streamingData || null }));
+    } catch(e){}
+  }
+  try {
+    var of = window.fetch;
+    if (of) window.fetch = function(input, init){
+      var u = (typeof input === 'string') ? input : ((input && input.url) || '');
+      var p = of.apply(this, arguments);
+      if (String(u).indexOf('/youtubei/v1/player') >= 0) {
+        p.then(function(res){ res.clone().json().then(send).catch(function(){}); }).catch(function(){});
+      }
+      return p;
+    };
+    var oo = XMLHttpRequest.prototype.open, os = XMLHttpRequest.prototype.send;
+    XMLHttpRequest.prototype.open = function(m, u){ this.__geoU = u; return oo.apply(this, arguments); };
+    XMLHttpRequest.prototype.send = function(){
+      var x = this;
+      if (String(x.__geoU || '').indexOf('/youtubei/v1/player') >= 0) {
+        x.addEventListener('load', function(){ try { send(JSON.parse(x.responseText)); } catch(e){} });
+      }
+      return os.apply(this, arguments);
+    };
+  } catch(e){}
+  var n = 0;
+  var t = setInterval(function(){
+    n++; mute();
+    try {
+      var p = document.getElementById('movie_player');
+      var r = (p && p.getPlayerResponse && p.getPlayerResponse()) || window.ytInitialPlayerResponse;
+      send(r);
+      var v = document.querySelector('video');
+      if (v && v.paused) { v.muted = true; var pr = v.play(); if (pr && pr.catch) pr.catch(function(){}); }
+    } catch(e){}
+    if (n > 80) clearInterval(t);
+  }, 300);
+})();
+"""
+}
