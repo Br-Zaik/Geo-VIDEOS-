@@ -1287,6 +1287,27 @@ internal fun UnifiedPlayerOverlay(
                         gesturesEnabled = !screenLocked
                     )
                 }
+            }
+            // Mientras carga (o sin video aún) un toque igual muestra/oculta los controles.
+            if (
+                !(controller != null &&
+                    controller?.currentMediaItem?.mediaId == video.id &&
+                    !playback.connecting &&
+                    !playback.resolving)
+            ) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .pointerInput(screenLocked, fullscreen, expanded) {
+                            detectTapGestures(onTap = {
+                                if (!screenLocked && (fullscreen || (expanded && !dragging && !settling))) {
+                                    playerControlsVisible = !playerControlsVisible
+                                }
+                            })
+                        }
+                )
+            }
+            run {
 
                 if (
                     playerControlsVisible &&

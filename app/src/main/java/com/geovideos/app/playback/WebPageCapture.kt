@@ -62,10 +62,58 @@ internal object WebPageCapture {
 
     fun init(context: Context) {
         appContext = context.applicationContext
+        rememberedWorks = context.applicationContext
+            .getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getBoolean(KEY_WORKS, false)
     }
+
+    /** La página escondida ya funcionó antes (se recuerda al reabrir la app: ahorra segundos). */
+    @Volatile
+    var rememberedWorks: Boolean = false
+        private set
+
+    fun rememberWorks(works: Boolean) {
+        if (rememberedWorks == works) return
+        rememberedWorks = works
+        appContext?.getSharedPreferences(PREFS, Context.MODE_PRIVATE)?.edit()?.putBoolean(KEY_WORKS, works)?.apply()
+    }
+
+    /** Deja lista la página escondida al abrir la app, así el primer video no espera a crearla. */
+    suspend fun prewarm() {
+        val context = appContext ?: return
+        if (mutex.isLocked) return
+        withContext(Dispatchers.Main) {
+            if (webView == null) {
+                webView = createWebView(context).also { view ->
+                    StreamUserAgents.pageUserAgent = view.settings.userAgentString.orEmpty()
+                    view.loadUrl("about:blank")
+                }
+            }
+        }
+    }
+
+    private const val PREFS = "geo_web_capture"
+    private const val KEY_WORKS = "web_page_works"
+
+    /** Videos cuyo enlace falló: la próxima vez se espera un código de seguridad nuevo. */
+    private val needsFresh: MutableSet<String> = ConcurrentHashMap.newKeySet()
 
     fun invalidate(videoId: String) {
         cache.remove(videoId)
+        needsFresh.add(videoId)
+    }
+
+    /** Enlaces que la propia página ya pidió (firma y "n" resueltos por YouTube): itag → enlace. */
+    private val pageResolvedUrls = ConcurrentHashMap<Int, String>()
+
+    /** Quita del enlace de la página los datos de "este pedacito" (rango, contador...). */
+    private fun cleanPageUrl(raw: android.net.Uri): String {
+        val skip = setOf("range", "rn", "rbuf", "alr", "ump", "srfvp", "cpn", "cver")
+        val builder = raw.buildUpon().clearQuery()
+        raw.queryParameterNames.filter { it !in skip }.forEach { name ->
+            raw.getQueryParameters(name).forEach { value -> builder.appendQueryParameter(name, value) }
+        }
+        return builder.build().toString()
     }
 
     /**
@@ -112,7 +160,9 @@ internal object WebPageCapture {
     private suspend fun capture(context: Context, videoId: String): JSONObject? {
         val deferred = CompletableDeferred<String>()
         potsByStream.clear()
+        pageResolvedUrls.clear()
         anyPot = ""
+        val fresh = needsFresh.remove(videoId)
         responseDeferred = deferred
         targetVideoId = videoId
         withContext(Dispatchers.Main) {
@@ -138,7 +188,7 @@ internal object WebPageCapture {
         // Esperar a que la página empiece a bajar el video para copiar su código de seguridad.
         var pot = ""
         // Si ya hay un código que sirvió, no se hace esperar: solo un momento por uno nuevo.
-        val potWait = if (lastPot.isNotBlank()) 1_200L else POT_WAIT_MS
+        val potWait = if (lastPot.isNotBlank() && !fresh) 600L else POT_WAIT_MS
         val waited = withTimeoutOrNull(potWait) {
             while (true) {
                 pot = streamIds.firstNotNullOfOrNull { potsByStream[it] }.orEmpty()
@@ -153,9 +203,12 @@ internal object WebPageCapture {
             lastPot.isNotBlank() -> "reusado"
             else -> "ninguno"
         }
-        if (pot.isBlank()) pot = anyPot.ifBlank { lastPot }
+        if (pot.isBlank()) pot = anyPot.ifBlank { if (fresh) "" else lastPot }
         if (pot.isNotBlank()) lastPot = pot
         val usable = injectPot(data, pot)
+        // Los formatos que la página ya pidió van con su enlace listo (no hace falta descifrarlos):
+        // sirven de respaldo seguro si el descifrado propio falla.
+        markPageResolved(usable)
         lastNote = "Página: respuesta OK, código de seguridad $potSource, " +
             "${usable.optJSONArray("adaptiveFormats")?.length() ?: 0} formatos\n"
         // Formatos sin enlace (solo para el modo SABR) no sirven para el reproductor propio.
@@ -199,6 +252,18 @@ internal object WebPageCapture {
             }
         }
         return copy
+    }
+
+    private fun markPageResolved(data: JSONObject) {
+        if (pageResolvedUrls.isEmpty()) return
+        for (key in listOf("formats", "adaptiveFormats")) {
+            val array = data.optJSONArray(key) ?: continue
+            for (index in 0 until array.length()) {
+                val format = array.optJSONObject(index) ?: continue
+                val resolved = pageResolvedUrls[format.optInt("itag", -1)] ?: continue
+                format.put("geoPageUrl", resolved)
+            }
+        }
     }
 
     private fun streamIdsOf(data: JSONObject): Set<String> {
@@ -256,6 +321,16 @@ internal object WebPageCapture {
                 val host = url.host.orEmpty()
                 if (host.endsWith("googlevideo.com") && url.path.orEmpty().contains("videoplayback")) {
                     val pot = url.getQueryParameter("pot").orEmpty()
+                    if (request.method.equals("GET", ignoreCase = true) &&
+                        url.getQueryParameter("sabr") == null
+                    ) {
+                        url.getQueryParameter("itag")?.toIntOrNull()?.let { itag ->
+                            runCatching { cleanPageUrl(url) }.getOrNull()?.let { clean ->
+                                StreamUserAgents.registerPageStream(clean)
+                                pageResolvedUrls[itag] = clean
+                            }
+                        }
+                    }
                     if (pot.isNotBlank()) {
                         anyPot = pot
                         url.getQueryParameter("id")?.takeIf { it.isNotBlank() }?.let { potsByStream[it] = pot }
@@ -266,6 +341,8 @@ internal object WebPageCapture {
                 }
                 // Imágenes y anuncios no hacen falta: la página carga más rápido y gasta menos datos.
                 if (BLOCKED_HOSTS.any { host == it || host.endsWith(".$it") }) return emptyResponse()
+                val path = url.path.orEmpty()
+                if (host.endsWith("youtube.com") && BLOCKED_PATHS.any { path.startsWith(it) }) return emptyResponse()
                 return null
             }
         }
@@ -273,7 +350,14 @@ internal object WebPageCapture {
 
     private val BLOCKED_HOSTS = listOf(
         "i.ytimg.com", "yt3.ggpht.com", "yt3.googleusercontent.com", "doubleclick.net",
-        "googlesyndication.com", "googleadservices.com", "google-analytics.com", "googletagservices.com"
+        "googlesyndication.com", "googleadservices.com", "google-analytics.com", "googletagservices.com",
+        "fonts.gstatic.com", "fonts.googleapis.com"
+    )
+
+    /** Pedidos de la página que no hacen falta para sacar el video (estadísticas, anuncios). */
+    private val BLOCKED_PATHS = listOf(
+        "/youtubei/v1/log_event", "/api/stats/qoe", "/api/stats/ads", "/generate_204",
+        "/pagead/", "/ptracking", "/youtubei/v1/notification", "/youtubei/v1/guide"
     )
 
     private fun emptyResponse(): WebResourceResponse = WebResourceResponse(

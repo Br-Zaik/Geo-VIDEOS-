@@ -12,7 +12,15 @@ import android.os.Bundle
 import android.os.SystemClock
 import android.provider.Settings
 import android.util.Rational
+import android.view.ViewGroup
 import androidx.activity.ComponentActivity
+import androidx.lifecycle.lifecycleScope
+import com.geovideos.app.ui.AuthStatus
+import com.geovideos.app.ui.LaunchLoadingView
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
@@ -68,8 +76,8 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        // Permiso de batería al toque, apenas se abre la app (solo la primera vez).
-        if (savedInstanceState == null) window.decorView.postDelayed({ askBatteryFreeAtStart() }, 500L)
+        val openedFromPlayer = intent?.getBooleanExtra(EXTRA_OPEN_FULLSCREEN_PLAYER, false) == true ||
+            intent?.getBooleanExtra(EXTRA_EXPAND_PLAYER, false) == true
         setContent {
             GeoVideosTheme {
                 GeoVideosApp(
@@ -101,7 +109,51 @@ class MainActivity : ComponentActivity() {
             }
         }
 
+        if (savedInstanceState == null) {
+            if (openedFromPlayer) {
+                // Volver al video desde la notificación: directo, sin pantalla de carga.
+                window.decorView.postDelayed({ askBatteryFreeAtStart() }, 500L)
+            } else {
+                showLaunchLoading()
+            }
+        }
+
         handlePlaybackIntent(intent)
+    }
+
+    /**
+     * Al abrir la app, como YouTube: play y barra roja que avanza hasta que el inicio está listo
+     * (videos guardados o recién cargados), luego se desvanece suave. Máximo 4 segundos.
+     * El permiso de batería se pide al toque, apenas desaparece (solo la primera vez).
+     */
+    private fun showLaunchLoading() {
+        val decor = window.decorView as? ViewGroup
+        if (decor == null) {
+            window.decorView.postDelayed({ askBatteryFreeAtStart() }, 500L)
+            return
+        }
+        val loading = LaunchLoadingView(this)
+        decor.addView(
+            loading,
+            ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
+        )
+        lifecycleScope.launch {
+            val started = SystemClock.uptimeMillis()
+            withTimeoutOrNull(LAUNCH_LOADING_MAX_MS) {
+                viewModel.uiState.first { state ->
+                    state.authStatus != AuthStatus.CONNECTED ||
+                        state.personalized.isNotEmpty() ||
+                        state.homeFeed.isNotEmpty() ||
+                        !state.loading
+                }
+            }
+            // Un instante mínimo para que la barra se vea avanzar y el inicio ya esté dibujado debajo.
+            val shown = SystemClock.uptimeMillis() - started
+            if (shown < LAUNCH_LOADING_MIN_MS) delay(LAUNCH_LOADING_MIN_MS - shown)
+            loading.finish {
+                window.decorView.postDelayed({ askBatteryFreeAtStart() }, 150L)
+            }
+        }
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -374,6 +426,8 @@ class MainActivity : ComponentActivity() {
         private const val KEY_FLOATING_OFFERED = "floating_offered"
         // Clave nueva: así se pregunta aunque antes se hubiera marcado como preguntado.
         private const val KEY_BATTERY_ASKED = "battery_asked_v66"
+        private const val LAUNCH_LOADING_MAX_MS = 4_000L
+        private const val LAUNCH_LOADING_MIN_MS = 450L
     }
 }
 

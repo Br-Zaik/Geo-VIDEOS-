@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Pantalla de arranque: botón de play y barra de carga (igual a la que sigue dentro de la app). -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="288dp"
+    android:height="288dp"
+    android:viewportWidth="288"
+    android:viewportHeight="288">
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M59,137L71,144L59,151Z" />
+    <path
+        android:fillColor="#CCCCCC"
+        android:pathData="M79,142.5h150v3h-150z" />
+    <path
+        android:fillColor="#FF0033"
+        android:pathData="M79,142.5h30v3h-30z" />
+</vector>

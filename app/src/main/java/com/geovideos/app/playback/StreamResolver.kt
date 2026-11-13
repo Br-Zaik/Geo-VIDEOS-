@@ -413,7 +413,8 @@ internal object StreamResolver {
     fun isNativeBlocked(): Boolean = System.currentTimeMillis() < nativeBlockedUntilMs
 
     /** true cuando los videos salen por la página escondida (la vía que pasa con VPN). */
-    fun usesWebPage(): Boolean = lastWorkingClient == FallbackClient.WEB_PAGE
+    fun usesWebPage(): Boolean = lastWorkingClient == FallbackClient.WEB_PAGE ||
+        (lastWorkingClient == null && WebPageCapture.rememberedWorks)
 
     /** Lo que pasó al pedir el último video (para el botón "Copiar diagnóstico"). */
     @Volatile
@@ -573,6 +574,7 @@ internal object StreamResolver {
             }
             if (media != null) {
                 lastWorkingClient = client
+                WebPageCapture.rememberWorks(client == FallbackClient.WEB_PAGE)
                 resolvedWith[video.id] = client
                 if (!background) lastTrace = "${video.id} OK con ${client.name} (${System.currentTimeMillis() - startedAt} ms)\n" + WebPageCapture.lastNote
                 return media
@@ -609,7 +611,7 @@ internal object StreamResolver {
                     StreamUserAgents.registerPageStream(hls)
                     ResolvedMedia(hls, MimeTypes.APPLICATION_M3U8)
                 } else {
-                    tvMedia(video.id, data, dataSaver, preferredHeight)
+                    tvMedia(video.id, data, dataSaver, preferredHeight, usePageUrls = video.id in webPageRetried)
                 }
             }
         }
@@ -646,7 +648,8 @@ internal object StreamResolver {
             .getUrlWithThrottlingParameterDeobfuscated(videoId, url)
     }.getOrDefault(url)
 
-    private fun tvFormatUrl(videoId: String, format: org.json.JSONObject): String? {
+    private fun tvFormatUrl(videoId: String, format: org.json.JSONObject, usePageUrl: Boolean = false): String? {
+        if (usePageUrl) format.optString("geoPageUrl").takeIf { it.isNotBlank() }?.let { return it }
         format.optString("url").takeIf { it.isNotBlank() }?.let { return nsig(videoId, it) }
         val cipher = format.optString("signatureCipher").ifBlank { format.optString("cipher") }
         if (cipher.isBlank()) return null
@@ -664,7 +667,28 @@ internal object StreamResolver {
         return nsig(videoId, baseUrl + "&" + name + "=" + java.net.URLEncoder.encode(signature, "UTF-8"))
     }
 
-    private fun tvMedia(videoId: String, data: org.json.JSONObject, dataSaver: Boolean, preferredHeight: Int?): ResolvedMedia? {
+    /** El par video + audio que la página escondida ya pidió (enlaces listos de YouTube). */
+    private fun pageUrlMedia(data: org.json.JSONObject): ResolvedMedia? {
+        val adaptive = data.optJSONArray("adaptiveFormats") ?: return null
+        val formats = (0 until adaptive.length()).mapNotNull { adaptive.optJSONObject(it) }
+            .filter { it.optString("geoPageUrl").isNotBlank() }
+        val video = formats.filter { it.optString("mimeType").startsWith("video/") }
+            .maxByOrNull { it.optInt("height") } ?: return null
+        val audio = formats.filter { it.optString("mimeType").startsWith("audio/") }
+            .maxByOrNull { it.optInt("bitrate") } ?: return null
+        val videoMime = if (video.optString("mimeType").startsWith("video/webm")) MimeTypes.VIDEO_WEBM else MimeTypes.VIDEO_MP4
+        val audioMime = if (audio.optString("mimeType").startsWith("audio/webm")) MimeTypes.AUDIO_WEBM else MimeTypes.AUDIO_MP4
+        return ResolvedMedia(video.optString("geoPageUrl"), videoMime, audio.optString("geoPageUrl"), audioMime)
+    }
+
+    private fun tvMedia(
+        videoId: String,
+        data: org.json.JSONObject,
+        dataSaver: Boolean,
+        preferredHeight: Int?,
+        usePageUrls: Boolean = false
+    ): ResolvedMedia? {
+        if (usePageUrls) pageUrlMedia(data)?.let { return it }
         fun list(key: String): List<org.json.JSONObject> {
             val array = data.optJSONArray(key) ?: return emptyList()
             return (0 until array.length()).mapNotNull { array.optJSONObject(it) }
@@ -681,8 +705,8 @@ internal object StreamResolver {
         val videoFormat = videos.firstOrNull()
         val audioFormat = audios.firstOrNull()
         if (videoFormat != null && audioFormat != null) {
-            val videoUrl = tvFormatUrl(videoId, videoFormat)
-            val audioUrl = tvFormatUrl(videoId, audioFormat)
+            val videoUrl = tvFormatUrl(videoId, videoFormat, usePageUrls)
+            val audioUrl = tvFormatUrl(videoId, audioFormat, usePageUrls)
             if (videoUrl != null && audioUrl != null) {
                 return ResolvedMedia(videoUrl, MimeTypes.VIDEO_MP4, audioUrl, MimeTypes.AUDIO_MP4)
             }
@@ -809,8 +833,7 @@ internal object StreamResolver {
         if (forceFresh && safeAttempt >= 2) sessionCache.remove(video.id)
         if (isNativeBlocked()) throw java.io.IOException(nativeBlockedReason)
         val media = withContext(Dispatchers.IO) {
-            val sessionFirst = isAnonymousBlocked() || preferSession(video.id, safeAttempt) ||
-                lastWorkingClient == FallbackClient.WEB_PAGE
+            val sessionFirst = isAnonymousBlocked() || preferSession(video.id, safeAttempt) || usesWebPage()
             if (sessionFirst && !hasPreferredDub(video.id)) {
                 runCatching { sessionFallback(video, dataSaver, preferredHeight) }.getOrNull()
                     ?.let { return@withContext it }

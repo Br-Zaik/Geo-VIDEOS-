@@ -15,6 +15,7 @@ import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.TextView
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -28,6 +29,7 @@ import androidx.recyclerview.widget.ListAdapter
 import androidx.recyclerview.widget.RecyclerView
 import com.bumptech.glide.Glide
 import com.geovideos.app.data.HomeFeedEntry
+import com.geovideos.app.data.NewBadges
 import com.geovideos.app.data.VideoItem
 import kotlin.math.roundToInt
 
@@ -60,6 +62,18 @@ internal fun RecyclerHomeFeed(
             onOpenShort = onOpenShort,
             onWatchLater = onWatchLater
         )
+    }
+
+    // "Nuevo" en Shorts recién subidos: se pide la fecha de los Shorts del inicio.
+    val shortIds = remember(shorts, orderedFeed) {
+        (orderedFeed.flatMap { entry -> (entry as? HomeFeedEntry.Shorts)?.shorts.orEmpty() } + shorts)
+            .map { it.id }
+            .distinct()
+    }
+    LaunchedEffect(shortIds) { NewBadges.resolve(shortIds) }
+    val badgeVersion by NewBadges.version.collectAsState()
+    LaunchedEffect(badgeVersion) {
+        if (badgeVersion > 0) adapter.refreshBadges()
     }
 
     LaunchedEffect(scrollToTopSignal) {
@@ -427,6 +441,22 @@ private class HomeFeedAdapter(
         }
     }
 
+    /** Solo vuelve a pintar las etiquetas "Nuevo" (sin recargar miniaturas). */
+    fun refreshBadges() {
+        if (itemCount > 0) notifyItemRangeChanged(0, itemCount, BADGES_PAYLOAD)
+    }
+
+    override fun onBindViewHolder(holder: RecyclerView.ViewHolder, position: Int, payloads: MutableList<Any>) {
+        if (payloads.isNotEmpty() && payloads.all { it == BADGES_PAYLOAD }) {
+            when (holder) {
+                is ShortsGridHolder -> holder.refreshBadges()
+                is VideoHolder -> holder.refreshBadge()
+            }
+            return
+        }
+        onBindViewHolder(holder, position)
+    }
+
     override fun onViewRecycled(holder: RecyclerView.ViewHolder) {
         super.onViewRecycled(holder)
         when (holder) {
@@ -438,6 +468,7 @@ private class HomeFeedAdapter(
     }
 
     companion object {
+        const val BADGES_PAYLOAD = "geo-badges"
         const val TYPE_SHORTS = 1
         const val TYPE_MIX = 2
         const val TYPE_VIDEO = 3
@@ -490,9 +521,16 @@ private class VideoHolder(
     private val card = itemView as VideoCardView
     private var current: VideoItem? = null
 
+    private var metaText: String = ""
+
     init {
         card.setOnClickListener { current?.let(onPlay) }
         card.moreButton.setOnClickListener { current?.let(onWatchLater) }
+    }
+
+    fun refreshBadge() {
+        val video = current ?: return
+        card.channelView.text = withNewBadge(metaText, NewBadges.showOnVideo(video))
     }
 
     fun bind(
@@ -502,7 +540,10 @@ private class VideoHolder(
         onWatchLater: (VideoItem) -> Unit
     ) {
         current = video
-        card.setOnClickListener { onPlay(video) }
+        card.setOnClickListener {
+            NewBadges.markSeen(video.id)
+            onPlay(video)
+        }
         card.moreButton.setOnClickListener { onWatchLater(video) }
         card.titleView.text = video.title
         val metaText = buildString {
@@ -517,7 +558,8 @@ private class VideoHolder(
                 append(published)
             }
         }
-        card.channelView.text = withNewBadge(metaText, video.isNew)
+        this.metaText = metaText
+        card.channelView.text = withNewBadge(metaText, NewBadges.showOnVideo(video))
         card.moreButton.text = if (saved) "✓" else "⋮"
         card.liveBadge.visibility = if (video.isLive) View.VISIBLE else View.GONE
         card.durationBadge.text = formatRecyclerDuration(video.durationMs)
@@ -601,8 +643,17 @@ private class ShortsShelfHolder(
 
 private class ShortsGridHolder(context: Context) : RecyclerView.ViewHolder(ShortsGridView(context)) {
     private val grid = itemView as ShortsGridView
+    private var shown: List<VideoItem> = emptyList()
+
+    fun refreshBadges() {
+        grid.tiles.forEachIndexed { index, tile ->
+            val video = shown.getOrNull(index) ?: return@forEachIndexed
+            tile.badge.visibility = if (NewBadges.showOnShort(video)) View.VISIBLE else View.GONE
+        }
+    }
 
     fun bind(videos: List<VideoItem>, onOpenShort: (VideoItem) -> Unit) {
+        shown = videos
         grid.tiles.forEachIndexed { index, tile ->
             val video = videos.getOrNull(index)
             if (video == null) {
@@ -611,8 +662,11 @@ private class ShortsGridHolder(context: Context) : RecyclerView.ViewHolder(Short
             } else {
                 tile.visibility = View.VISIBLE
                 tile.title.text = video.title
-                tile.badge.visibility = if (video.isNew) View.VISIBLE else View.GONE
-                tile.setOnClickListener { onOpenShort(video) }
+                tile.badge.visibility = if (NewBadges.showOnShort(video)) View.VISIBLE else View.GONE
+                tile.setOnClickListener {
+                    NewBadges.markSeen(video.id)
+                    onOpenShort(video)
+                }
                 loadClearThumbnail(tile.image, video.thumbnailUrl, 360, 540)
             }
         }

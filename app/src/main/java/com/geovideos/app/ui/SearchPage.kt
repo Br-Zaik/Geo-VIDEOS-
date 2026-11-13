@@ -392,7 +392,7 @@ private fun SearchVideoCard(video: VideoItem, onPlay: () -> Unit, onWatchLater: 
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.padding(top = 3.dp)
                 )
-                if (video.isNew) {
+                if (com.geovideos.app.data.NewBadges.showOnVideo(video)) {
                     Text(
                         "Nuevo",
                         color = Color.White,

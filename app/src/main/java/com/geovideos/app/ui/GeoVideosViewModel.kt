@@ -422,6 +422,15 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
         com.geovideos.app.playback.StreamResolver.webPageProvider = { id ->
             com.geovideos.app.playback.WebPageCapture.streamingData(id)
         }
+        if (com.geovideos.app.playback.WebPageCapture.rememberedWorks) {
+            viewModelScope.launch {
+                kotlinx.coroutines.delay(1_500L)
+                runCatching { com.geovideos.app.playback.WebPageCapture.prewarm() }
+            }
+        }
+        // Etiqueta "Nuevo" de los Shorts: se mira la fecha de subida de cada uno (una sola vez).
+        com.geovideos.app.data.NewBadges.init(getApplication<Application>())
+        com.geovideos.app.data.NewBadges.fetcher = { id -> innerTube.publishTimeMs(id) }
         // App de YouTube para Android sin cuenta: lo que usaba el ZIP original.
         com.geovideos.app.playback.StreamResolver.androidProvider = { id -> innerTube.androidReelStreams(id) }
         // TV Samsung sin cuenta: última opción, funciona aunque no hayas iniciado sesión.
@@ -2153,6 +2162,7 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     fun play(video: VideoItem) {
+        com.geovideos.app.data.NewBadges.markSeen(video.id)
         if (looksLikeShort(video)) {
             previewShort(video)
             return

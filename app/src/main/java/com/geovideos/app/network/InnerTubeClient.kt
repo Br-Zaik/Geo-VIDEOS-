@@ -1544,6 +1544,62 @@ class InnerTubeClient(private val cookieProvider: () -> String) {
         )
     }
 
+    /**
+     * Fecha de subida de un video (para la etiqueta "Nuevo" de los Shorts).
+     * Primero la pide sin tu cuenta (no toca tu historial); si YouTube no la da, la lee de la página del video.
+     */
+    suspend fun publishTimeMs(videoId: String): Long? = withContext(Dispatchers.IO) {
+        val playerBody = baseBody(WEB, anonymous = true)
+            .put("videoId", videoId)
+            .put("contentCheckOk", true)
+            .put("racyCheckOk", true)
+        val player = runCatching { request("player", playerBody, WEB, anonymous = true) }.getOrNull()
+        val micro = player?.optJSONObject("microformat")?.optJSONObject("playerMicroformatRenderer")
+        val iso = micro?.optString("publishDate").orEmpty().ifBlank { micro?.optString("uploadDate").orEmpty() }
+        parseIsoTimeMs(iso)?.let { return@withContext it }
+        val page = runCatching { next(videoId) }.getOrNull() ?: return@withContext null
+        val relative = text(findFirst(page, "relativeDateText"))
+            .ifBlank { text(findFirst(page, "publishedTimeText")) }
+            .ifBlank { text(findFirst(page, "timestampText")) }
+        parseRelativeAgoMs(relative)?.let { return@withContext System.currentTimeMillis() - it }
+        parseIsoTimeMs(findFirstString(page, "publishDate") { it.length >= 10 }.orEmpty())
+    }
+
+    private fun parseIsoTimeMs(raw: String): Long? {
+        val value = raw.trim()
+        if (value.length < 10) return null
+        return runCatching {
+            if (value.length > 10) {
+                java.time.OffsetDateTime.parse(value).toInstant().toEpochMilli()
+            } else {
+                // Solo la fecha: se toma el mediodía de California (hora de YouTube).
+                java.time.LocalDate.parse(value).atTime(12, 0)
+                    .atOffset(java.time.ZoneOffset.ofHours(-8)).toInstant().toEpochMilli()
+            }
+        }.getOrNull()
+    }
+
+    /** "hace 5 horas", "hace 1 día", "3 hours ago"… → cuánto tiempo pasó (ms). */
+    private fun parseRelativeAgoMs(raw: String): Long? {
+        val value = raw.lowercase(Locale.ROOT)
+        if (value.isBlank()) return null
+        val match = Regex("(\\d+)\\s*(seg|sec|min|hora|hour|h\\b|d[ií]a|day|semana|week|mes|month|año|ano|year)").find(value)
+            ?: return null
+        val amount = match.groupValues[1].toLongOrNull() ?: return null
+        val unit = match.groupValues[2]
+        val minute = 60_000L
+        val unitMs = when {
+            unit.startsWith("seg") || unit.startsWith("sec") -> 1_000L
+            unit.startsWith("min") -> minute
+            unit.startsWith("hora") || unit.startsWith("hour") || unit.startsWith("h") -> 60L * minute
+            unit.startsWith("d") -> 24L * 60L * minute
+            unit.startsWith("sem") || unit.startsWith("week") -> 7L * 24L * 60L * minute
+            unit.startsWith("mes") || unit.startsWith("month") -> 30L * 24L * 60L * minute
+            else -> 365L * 24L * 60L * minute
+        }
+        return amount * unitMs
+    }
+
     private fun compactCount(value: Long): String = when {
         value >= 1_000_000_000L -> String.format(Locale.US, "%.1f mil M", value / 1_000_000_000.0).replace(".0 ", " ")
         value >= 1_000_000L -> String.format(Locale.US, "%.1f M", value / 1_000_000.0).replace(".0 ", " ")
