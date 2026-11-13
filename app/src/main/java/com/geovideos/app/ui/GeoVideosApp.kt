@@ -413,7 +413,10 @@ fun GeoVideosApp(
                         onDataSaverChange = viewModel::setDataSaver,
                         onNotificationsChange = viewModel::setNotificationsEnabled,
                         onMessage = viewModel::showMessage,
-                        miniPlayerVisible = selectedVideo != null && !state.playerExpanded && state.section != MainSection.SHORTS
+                        // Solo la barra compacta (Mix) necesita espacio abajo; el mini flotante va encima,
+                        // como en YouTube (antes quedaba una franja negra vacía).
+                        miniPlayerVisible = selectedVideo?.isMix == true && !state.playerExpanded &&
+                            state.section != MainSection.SHORTS
                     )
                 }
 

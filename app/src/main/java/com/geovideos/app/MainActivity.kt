@@ -100,7 +100,6 @@ class MainActivity : ComponentActivity() {
         }
 
         handlePlaybackIntent(intent)
-        window.decorView.postDelayed({ askBatteryExemptionOnce() }, 4_000L)
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -217,6 +216,10 @@ class MainActivity : ComponentActivity() {
     override fun onStart() {
         super.onStart()
         GeoPlayerConnection.get(applicationContext).setAppInBackground(false)
+        if (backgroundPlaybackUsed) {
+            backgroundPlaybackUsed = false
+            window.decorView.postDelayed({ askBatteryExemptionOnce() }, 1_200L)
+        }
     }
 
     override fun onStop() {
@@ -230,9 +233,14 @@ class MainActivity : ComponentActivity() {
                 connection.pause()
             } else {
                 connection.setAppInBackground(true)
+                // Se usó "seguir sonando con la app atrás o la pantalla apagada": recién entonces
+                // tiene sentido pedir el permiso de batería (al volver a la app).
+                if (connection.controller.value?.isPlaying == true) backgroundPlaybackUsed = true
             }
         }
     }
+
+    private var backgroundPlaybackUsed = false
 
     /**
      * Una sola vez: pedir a Android que no corte la app con la pantalla apagada

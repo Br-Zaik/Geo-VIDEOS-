@@ -137,7 +137,9 @@ internal object WebPageCapture {
         val streamIds = streamIdsOf(data)
         // Esperar a que la página empiece a bajar el video para copiar su código de seguridad.
         var pot = ""
-        val waited = withTimeoutOrNull(POT_WAIT_MS) {
+        // Si ya hay un código que sirvió, no se hace esperar: solo un momento por uno nuevo.
+        val potWait = if (lastPot.isNotBlank()) 1_200L else POT_WAIT_MS
+        val waited = withTimeoutOrNull(potWait) {
             while (true) {
                 pot = streamIds.firstNotNullOfOrNull { potsByStream[it] }.orEmpty()
                 if (pot.isNotBlank()) break
@@ -343,8 +345,8 @@ internal object WebPageCapture {
       var v = document.querySelector('video');
       if (v && v.paused) { v.muted = true; var pr = v.play(); if (pr && pr.catch) pr.catch(function(){}); }
     } catch(e){}
-    if (n > 40) clearInterval(t);
-  }, 500);
+    if (n > 60) clearInterval(t);
+  }, 250);
 })();
 """
 }

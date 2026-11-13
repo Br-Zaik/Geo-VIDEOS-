@@ -298,6 +298,7 @@ class GeoPlayerConnection private constructor(context: Context) {
         repeat: Boolean = false
     ) {
         val controllerNow = _controller.value
+        HoldSpeed.release(controllerNow)
         val retryingFailedVideo = _state.value.currentVideoId == video.id && _state.value.error != null
         val resumePosition = if (retryingFailedVideo) {
             controllerNow?.currentPosition?.takeIf { it >= 0L } ?: video.resumePositionMs
@@ -629,6 +630,9 @@ class GeoPlayerConnection private constructor(context: Context) {
     fun seekTo(positionMs: Long) = withController { it.seekTo(positionMs.coerceAtLeast(0L)) }
     fun setMuted(muted: Boolean) = withController { it.volume = if (muted) 0f else 1f }
     fun setSpeed(speed: Float) = withController { it.setPlaybackSpeed(speed.coerceIn(0.25f, 2f)) }
+
+    /** Cierra un "mantener = 2x" que haya quedado abierto (al cambiar de video o achicarlo). */
+    fun releaseHoldSpeed() = withController { HoldSpeed.release(it) }
     fun setMaxVideoHeight(height: Int) = withController { controller ->
         val builder = controller.trackSelectionParameters
             .buildUpon()

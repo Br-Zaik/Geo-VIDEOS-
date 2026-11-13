@@ -237,39 +237,77 @@ internal object StreamResolver {
             return (0 until array.length()).mapNotNull { array.optJSONObject(it) }
                 .filter { it.optJSONArray("drmFamilies") == null }
         }
+        fun size(format: org.json.JSONObject?): Long = format?.optString("contentLength")?.toLongOrNull() ?: -1L
         val adaptive = list("adaptiveFormats")
-        val audio = adaptive.filter { it.optString("mimeType").startsWith("audio/mp4") }
+        // Como Muka: MP4 (avc1 + m4a) y, para lo que MP4 no tiene (1440p, 2160p...), WebM (vp9 + opus).
+        val audioMp4 = adaptive.filter { it.optString("mimeType").startsWith("audio/mp4") }
             .maxByOrNull { it.optInt("bitrate") }
-        val audioUrl = audio?.let { tvFormatUrl(videoId, it) }
-        val byHeight = adaptive.filter {
+        val audioWebm = adaptive.filter { it.optString("mimeType").startsWith("audio/webm") }
+            .maxByOrNull { it.optInt("bitrate") }
+        val audioMp4Url = audioMp4?.let { tvFormatUrl(videoId, it) }
+        val audioWebmUrl = audioWebm?.let { tvFormatUrl(videoId, it) }
+        fun videosOf(prefix: String, codec: String) = adaptive.filter {
             val mime = it.optString("mimeType")
-            mime.startsWith("video/mp4") && mime.contains("avc1") && it.optInt("height") > 0
+            mime.startsWith(prefix) && mime.contains(codec) && it.optInt("height") > 0
         }.groupBy { it.optInt("height") }
+        val mp4ByHeight = videosOf("video/mp4", "avc1")
+        val webmByHeight = videosOf("video/webm", "vp9")
         val result = ArrayList<DownloadStreamOption>()
-        if (audioUrl != null) {
-            byHeight.keys.sortedDescending().forEach { height ->
-                val format = byHeight[height]?.maxByOrNull { it.optInt("bitrate") } ?: return@forEach
-                val videoUrl = tvFormatUrl(videoId, format) ?: return@forEach
-                result.add(
-                    DownloadStreamOption(
-                        id = "session:$height",
-                        label = "Video ${height}p",
-                        height = height,
-                        uri = videoUrl,
-                        mimeType = MimeTypes.VIDEO_MP4,
-                        extension = "mp4",
-                        audioUri = audioUrl,
-                        audioMimeType = MimeTypes.AUDIO_MP4,
-                        audioExtension = "m4a"
-                    )
+        fun add(
+            id: String,
+            height: Int,
+            format: org.json.JSONObject,
+            extension: String,
+            mime: String,
+            audioUrl: String,
+            audioFormat: org.json.JSONObject?,
+            audioMime: String,
+            audioExtension: String
+        ) {
+            val videoUrl = tvFormatUrl(videoId, format) ?: return
+            val videoBytes = size(format)
+            val audioBytes = size(audioFormat)
+            result.add(
+                DownloadStreamOption(
+                    id = "$id:$height",
+                    label = "Video ${height}p",
+                    height = height,
+                    uri = videoUrl,
+                    mimeType = mime,
+                    extension = extension,
+                    audioUri = audioUrl,
+                    audioMimeType = audioMime,
+                    audioExtension = audioExtension,
+                    videoSizeBytes = videoBytes,
+                    audioSizeBytes = audioBytes,
+                    estimatedSizeBytes = if (videoBytes > 0L && audioBytes > 0L) videoBytes + audioBytes else -1L
                 )
+            )
+        }
+        if (audioMp4Url != null) {
+            mp4ByHeight.keys.sortedDescending().forEach { height ->
+                val format = mp4ByHeight[height]?.maxByOrNull { it.optInt("bitrate") } ?: return@forEach
+                add("session", height, format, "mp4", MimeTypes.VIDEO_MP4, audioMp4Url, audioMp4, MimeTypes.AUDIO_MP4, "m4a")
+            }
+        }
+        if (audioWebmUrl != null) {
+            webmByHeight.keys.filter { it !in mp4ByHeight.keys }.sortedDescending().forEach { height ->
+                val format = webmByHeight[height]?.maxByOrNull { it.optInt("bitrate") } ?: return@forEach
+                add("session-webm", height, format, "webm", MimeTypes.VIDEO_WEBM, audioWebmUrl, audioWebm, MimeTypes.AUDIO_WEBM, "webm")
             }
         }
         list("formats").maxByOrNull { it.optInt("height") }?.let { muxed ->
             val height = muxed.optInt("height")
             if (result.none { it.height == height }) {
                 tvFormatUrl(videoId, muxed)?.let { url ->
-                    result.add(DownloadStreamOption("session-direct:$height", "Video ${height}p", height, url, MimeTypes.VIDEO_MP4, "mp4"))
+                    val bytes = size(muxed)
+                    result.add(
+                        DownloadStreamOption(
+                            "session-direct:$height", "Video ${height}p", height, url, MimeTypes.VIDEO_MP4, "mp4",
+                            videoSizeBytes = bytes,
+                            estimatedSizeBytes = bytes
+                        )
+                    )
                 }
             }
         }
@@ -297,7 +335,8 @@ internal object StreamResolver {
             val data = fallbackStreamingData(video.id, sts)
             if (data != null) {
                 val options = tvDownloads(video.id, data)
-                downloads = if (includeDownloadSizes) attachSizes(options) else options
+                // YouTube ya dice el tamaño de cada formato: solo se mide lo que falte.
+                downloads = if (includeDownloadSizes && options.any { it.estimatedSizeBytes <= 0L }) attachSizes(options) else options
             }
         }
         // Calidades que no salieron por el cliente TV: descargarlas desde el HLS (último recurso).

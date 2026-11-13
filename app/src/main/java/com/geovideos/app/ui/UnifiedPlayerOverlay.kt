@@ -325,13 +325,8 @@ internal fun UnifiedPlayerOverlay(
             }
         }
     }
-    // La primera vez que se ve un video se ofrece (una sola vez) el permiso de ventana emergente.
-    LaunchedEffect(mainActivity, playback.isPlaying) {
-        if (playback.isPlaying && !isInPictureInPictureMode) {
-            delay(3_000L)
-            mainActivity?.offerFloatingPermission()
-        }
-    }
+    // El permiso de ventana emergente se pide SOLO al usar esa opción (botón "Ventana
+    // emergente" o el ajuste "Ventana emergente al salir"), nunca solo.
     DisposableEffect(mainActivity, video.id) {
         onDispose { mainActivity?.setVideoPictureInPictureEnabled(false) }
     }
@@ -562,6 +557,7 @@ internal fun UnifiedPlayerOverlay(
             ) { value: Float, _: Float -> transition = value.coerceIn(0f, 1f) }
             if (target >= 0.999f) {
                 saveProgress()
+                playerConnection.releaseHoldSpeed()
                 onMinimize()
             } else {
                 onExpand()
@@ -902,13 +898,12 @@ internal fun UnifiedPlayerOverlay(
                 .pointerInput(miniHiddenSide) {
                     detectTapGestures(
                         onTap = {
-                            when {
-                                miniHiddenSide != 0 -> {
-                                    miniHiddenSide = 0
-                                    playerConnection.play()
-                                }
-                                !miniControlsVisible -> miniControlsVisible = true
-                                else -> settle(0f, fast = true)
+                            if (miniHiddenSide != 0) {
+                                miniHiddenSide = 0
+                                playerConnection.play()
+                            } else {
+                                // Un toque: se abre el video arriba, suave.
+                                settle(0f)
                             }
                         },
                         onDoubleTap = { if (miniHiddenSide == 0) miniLarge = !miniLarge }
@@ -1080,7 +1075,8 @@ internal fun UnifiedPlayerOverlay(
                             val ended = !playback.isPlaying && progressState.durationMs > 0L &&
                                 progressState.positionMs >= progressState.durationMs - 800L
                             val controlsAlpha by animateFloatAsState(
-                                targetValue = if (miniControlsVisible || ended) 1f else 0f,
+                                // Pausa/reanudar y cerrar siempre visibles (arriba a la izquierda y a la derecha).
+                                targetValue = 1f,
                                 animationSpec = tween(220),
                                 label = "miniControls"
                             )

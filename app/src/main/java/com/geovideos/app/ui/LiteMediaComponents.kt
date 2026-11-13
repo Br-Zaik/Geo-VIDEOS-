@@ -159,8 +159,7 @@ internal fun LitePlayerView(
                             holdSeeking = false
                             holdStartX = e.x
                             holdStartPosition = controller.currentPosition
-                            holdPreviousSpeed = controller.playbackParameters.speed
-                            controller.setPlaybackSpeed(2f)
+                            com.geovideos.app.playback.HoldSpeed.start(controller)
                             playerView.parent?.requestDisallowInterceptTouchEvent(true)
                             currentOnHoldFeedback?.invoke("2x ▶▶")
                         }
@@ -215,7 +214,7 @@ internal fun LitePlayerView(
                                 val slop = 24f * context.resources.displayMetrics.density
                                 if (!holdSeeking && kotlin.math.abs(dx) > slop) {
                                     holdSeeking = true
-                                    controller.setPlaybackSpeed(holdPreviousSpeed)
+                                    com.geovideos.app.playback.HoldSpeed.release(controller)
                                 }
                                 if (holdSeeking) {
                                     val duration = controller.duration.takeIf { it > 0L } ?: 0L
@@ -233,7 +232,7 @@ internal fun LitePlayerView(
                                 return@setOnTouchListener true
                             }
                             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                                if (!holdSeeking) controller.setPlaybackSpeed(holdPreviousSpeed)
+                                com.geovideos.app.playback.HoldSpeed.release(controller)
                                 holdActive = false
                                 holdSeeking = false
                                 currentOnHoldFeedback?.invoke(null)
@@ -244,6 +243,18 @@ internal fun LitePlayerView(
                     false
                 }
                 applyPlayerZoom(this, localZoom)
+                // Si la vista desaparece con el dedo puesto (se achica el video, etc.), volver a 1x.
+                addOnAttachStateChangeListener(object : View.OnAttachStateChangeListener {
+                    override fun onViewAttachedToWindow(v: View) = Unit
+                    override fun onViewDetachedFromWindow(v: View) {
+                        if (holdActive) {
+                            com.geovideos.app.playback.HoldSpeed.release(controller)
+                            holdActive = false
+                            holdSeeking = false
+                            currentOnHoldFeedback?.invoke(null)
+                        }
+                    }
+                })
             }
         },
         update = { view ->

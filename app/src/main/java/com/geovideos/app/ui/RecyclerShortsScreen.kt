@@ -923,8 +923,7 @@ private class ShortPageView(context: Context) : FrameLayout(context) {
                 val edge = width > 0 && (e.x < width * 0.25f || e.x > width * 0.75f)
                 val controller = attachedController
                 if (edge && controller != null) {
-                    previousSpeed = controller.playbackParameters.speed
-                    controller.setPlaybackSpeed(2f)
+                    com.geovideos.app.playback.HoldSpeed.start(controller)
                     holdSpeedActive = true
                     errorText.text = "2x ▶▶"
                     errorText.visibility = View.VISIBLE
@@ -943,7 +942,7 @@ private class ShortPageView(context: Context) : FrameLayout(context) {
             if (holdSpeedActive && (event.actionMasked == android.view.MotionEvent.ACTION_UP ||
                     event.actionMasked == android.view.MotionEvent.ACTION_CANCEL)
             ) {
-                attachedController?.setPlaybackSpeed(previousSpeed)
+                com.geovideos.app.playback.HoldSpeed.release(attachedController)
                 holdSpeedActive = false
                 errorText.visibility = View.GONE
                 view.isPressed = false
