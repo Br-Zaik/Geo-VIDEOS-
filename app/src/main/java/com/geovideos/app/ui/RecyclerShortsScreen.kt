@@ -920,7 +920,8 @@ private class ShortPageView(context: Context) : FrameLayout(context) {
         val detector = android.view.GestureDetector(context, object : android.view.GestureDetector.SimpleOnGestureListener() {
             override fun onDown(e: android.view.MotionEvent): Boolean = true
             override fun onLongPress(e: android.view.MotionEvent) {
-                val edge = width > 0 && (e.x < width * 0.25f || e.x > width * 0.75f)
+                // Sin 2x al mantener presionado: mantener = ver el Short sin textos.
+                val edge = false
                 val controller = attachedController
                 if (edge && controller != null) {
                     com.geovideos.app.playback.HoldSpeed.start(controller)

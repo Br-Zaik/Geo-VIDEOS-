@@ -68,6 +68,8 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Permiso de batería al toque, apenas se abre la app (solo la primera vez).
+        if (savedInstanceState == null) window.decorView.postDelayed({ askBatteryFreeAtStart() }, 500L)
         setContent {
             GeoVideosTheme {
                 GeoVideosApp(
@@ -216,10 +218,7 @@ class MainActivity : ComponentActivity() {
     override fun onStart() {
         super.onStart()
         GeoPlayerConnection.get(applicationContext).setAppInBackground(false)
-        if (backgroundPlaybackUsed) {
-            backgroundPlaybackUsed = false
-            window.decorView.postDelayed({ askBatteryExemptionOnce() }, 1_200L)
-        }
+        backgroundPlaybackUsed = false
     }
 
     override fun onStop() {
@@ -243,16 +242,27 @@ class MainActivity : ComponentActivity() {
     private var backgroundPlaybackUsed = false
 
     /**
-     * Una sola vez: pedir a Android que no corte la app con la pantalla apagada
-     * (algunos teléfonos detienen la música/descargas para ahorrar batería).
+     * Al abrir la app (una sola vez, apenas se ve la pantalla): pedir a Android que no corte
+     * Geo Videos con la pantalla apagada. Si dices que no, queda la opción en el reproductor.
      */
-    private fun askBatteryExemptionOnce() {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return
+    private fun askBatteryFreeAtStart() {
+        if (isBatteryFree()) return
         val prefs = getSharedPreferences(BACKGROUND_PREFS, MODE_PRIVATE)
-        if (prefs.getBoolean("battery_asked", false)) return
+        if (prefs.getBoolean(KEY_BATTERY_ASKED, false)) return
+        prefs.edit().putBoolean(KEY_BATTERY_ASKED, true).apply()
+        requestBatteryFree()
+    }
+
+    /** true si Android ya deja a Geo Videos seguir con la pantalla apagada sin cortarla. */
+    fun isBatteryFree(): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return true
         val power = getSystemService(POWER_SERVICE) as android.os.PowerManager
-        if (power.isIgnoringBatteryOptimizations(packageName)) return
-        prefs.edit().putBoolean("battery_asked", true).apply()
+        return power.isIgnoringBatteryOptimizations(packageName)
+    }
+
+    /** Abre la ventana de Android para permitir que no se corte con la pantalla apagada. */
+    fun requestBatteryFree() {
+        if (isBatteryFree()) return
         runCatching {
             startActivity(
                 Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:$packageName"))
@@ -362,6 +372,8 @@ class MainActivity : ComponentActivity() {
         const val EXTRA_EXPAND_PLAYER = "com.geovideos.app.extra.EXPAND_PLAYER"
         private const val BACKGROUND_PREFS = "geo_background"
         private const val KEY_FLOATING_OFFERED = "floating_offered"
+        // Clave nueva: así se pregunta aunque antes se hubiera marcado como preguntado.
+        private const val KEY_BATTERY_ASKED = "battery_asked_v66"
     }
 }
 

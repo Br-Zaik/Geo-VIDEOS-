@@ -154,6 +154,9 @@ internal fun LitePlayerView(
                         }
 
                         override fun onLongPress(e: MotionEvent) {
+                            // Brian: nada de 2x al mantener presionado; la velocidad se cambia
+                            // solo desde las opciones del reproductor.
+                            if (!HOLD_FOR_SPEED_ENABLED) return
                             if (!currentGesturesEnabled) return
                             holdActive = true
                             holdSeeking = false
@@ -363,3 +366,5 @@ internal tailrec fun Context.findActivityLite(): Activity? = when (this) {
     is ContextWrapper -> baseContext.findActivityLite()
     else -> null
 }
+
+private const val HOLD_FOR_SPEED_ENABLED = false

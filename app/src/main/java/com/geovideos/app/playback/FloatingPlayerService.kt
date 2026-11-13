@@ -350,17 +350,17 @@ class FloatingPlayerService : Service() {
         }
         qualityText = compactTextButton("Auto") { toggleQualityPanel() }
         speedText = compactTextButton("1x") { toggleSpeedPanel() }
-        topRow.addView(qualityText, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(28)))
-        topRow.addView(speedText, LinearLayout.LayoutParams(dp(42), dp(28)).apply { marginStart = dp(4) })
+        topRow.addView(qualityText, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(36)))
+        topRow.addView(speedText, LinearLayout.LayoutParams(dp(52), dp(36)).apply { marginStart = dp(6) })
         topRow.addView(
-            textButton("×", 20f) { closeFloatingAndStopPlayback() },
-            LinearLayout.LayoutParams(dp(34), dp(28)).apply { marginStart = dp(3) }
+            textButton("×", 24f) { closeFloatingAndStopPlayback() },
+            LinearLayout.LayoutParams(dp(44), dp(36)).apply { marginStart = dp(6) }
         )
         layer.addView(
             topRow,
             FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
-                dp(36),
+                dp(46),
                 Gravity.TOP
             )
         )
@@ -369,8 +369,8 @@ class FloatingPlayerService : Service() {
             layer.addView(
                 panel,
                 FrameLayout.LayoutParams(dp(156), ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.END).apply {
-                    topMargin = dp(38)
-                    marginEnd = dp(78)
+                    topMargin = dp(46)
+                    marginEnd = dp(100)
                 }
             )
         }
@@ -378,8 +378,8 @@ class FloatingPlayerService : Service() {
             layer.addView(
                 panel,
                 FrameLayout.LayoutParams(dp(128), ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.END).apply {
-                    topMargin = dp(38)
-                    marginEnd = dp(42)
+                    topMargin = dp(46)
+                    marginEnd = dp(50)
                 }
             )
         }
@@ -395,8 +395,8 @@ class FloatingPlayerService : Service() {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
         }.also { controlsRow = it }
-        openAppButton = textButton("↩", 18f) { openPlayerInApp() }.also { button ->
-            controls.addView(button, LinearLayout.LayoutParams(dp(34), dp(32)))
+        openAppButton = textButton("↩", 22f) { openPlayerInApp() }.also { button ->
+            controls.addView(button, LinearLayout.LayoutParams(dp(44), dp(40)))
         }
         controls.addView(View(this), LinearLayout.LayoutParams(0, dp(30), 1f))
         previousButton = mediaButton(android.R.drawable.ic_media_previous, "Anterior") {
@@ -418,26 +418,26 @@ class FloatingPlayerService : Service() {
             setColorFilter(Color.WHITE)
             setBackgroundColor(Color.TRANSPARENT)
             scaleType = android.widget.ImageView.ScaleType.CENTER_INSIDE
-            setPadding(dp(6), dp(6), dp(4), dp(4))
+            setPadding(dp(8), dp(8), dp(4), dp(4))
             installResizeGesture(this)
         }.also { handle ->
-            controls.addView(handle, LinearLayout.LayoutParams(dp(40), dp(36)))
+            controls.addView(handle, LinearLayout.LayoutParams(dp(48), dp(44)))
         }
         bottomPanel.addView(
             controls,
-            LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(32))
+            LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(44))
         )
 
         timeText = TextView(this).apply {
             text = "0:00 / 0:00"
             setTextColor(Color.WHITE)
-            textSize = 10.5f
+            textSize = 12f
             gravity = Gravity.CENTER
             setShadowLayer(3f, 0f, 1f, Color.BLACK)
         }
         bottomPanel.addView(
             timeText,
-            LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(16))
+            LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(18))
         )
 
         progressSeek = SeekBar(this).apply {
@@ -468,14 +468,14 @@ class FloatingPlayerService : Service() {
         }
         bottomPanel.addView(
             progressSeek,
-            LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(14))
+            LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(22))
         )
 
         layer.addView(
             bottomPanel,
             FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
-                dp(64),
+                dp(88),
                 Gravity.BOTTOM
             )
         )
@@ -653,14 +653,35 @@ class FloatingPlayerService : Service() {
         var startWindowY = 0
         var draggingWindow = false
 
+        // Dos dedos (pellizcar/abrir) = agrandar o achicar la ventana, suave y en vivo.
+        var pinchStartWidth = 0
+        var pinchStartSpan = 1f
         val scaleDetector = ScaleGestureDetector(
             this,
             object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
-                override fun onScale(detector: ScaleGestureDetector): Boolean {
-                    zoomScale = (zoomScale * detector.scaleFactor).coerceIn(1f, 3f)
-                    applyZoom()
-                    showFeedback("Zoom ${(zoomScale * 100f).roundToInt()}%")
+                override fun onScaleBegin(detector: ScaleGestureDetector): Boolean {
+                    windowAnimator?.cancel()
+                    pinchStartWidth = windowParams?.width ?: 0
+                    pinchStartSpan = detector.currentSpan.coerceAtLeast(1f)
+                    hideChoicePanels()
                     return true
+                }
+
+                override fun onScale(detector: ScaleGestureDetector): Boolean {
+                    val params = windowParams ?: return true
+                    val factor = detector.currentSpan / pinchStartSpan
+                    val oldWidth = params.width
+                    val oldHeight = params.height
+                    applyWindowWidth(params, (pinchStartWidth * factor).roundToInt())
+                    // Crece desde el centro, no desde la esquina.
+                    params.x -= (params.width - oldWidth) / 2
+                    params.y -= (params.height - oldHeight) / 2
+                    clampWindowPosition(params)
+                    return true
+                }
+
+                override fun onScaleEnd(detector: ScaleGestureDetector) {
+                    saveWindowState()
                 }
             }
         )
@@ -697,6 +718,7 @@ class FloatingPlayerService : Service() {
             val params = windowParams
             when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
+                    windowAnimator?.cancel()
                     downRawX = event.rawX
                     downRawY = event.rawY
                     startWindowX = params?.x ?: 0
@@ -717,21 +739,79 @@ class FloatingPlayerService : Service() {
                             params.x = startWindowX + dx.roundToInt()
                             params.y = startWindowY + dy.roundToInt()
                             clampWindowPosition(params)
-                            overlayRoot?.let {
-                                runCatching { windowManager.updateViewLayout(it, params) }
-                            }
+                            requestWindowUpdate()
                         }
                     }
                 }
 
+                MotionEvent.ACTION_POINTER_DOWN -> {
+                    // Segundo dedo: es para cambiar el tamaño, no para mover.
+                    draggingWindow = false
+                }
+
                 MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                    if (draggingWindow) saveWindowState()
+                    if (draggingWindow) settleToEdge()
                     draggingWindow = false
                     if (controlsVisible) scheduleControlsHide()
                 }
             }
             true
         }
+    }
+
+    /** Junta los cambios de posición/tamaño y aplica uno por cuadro de pantalla (fluido). */
+    private var layoutPending = false
+
+    private fun requestWindowUpdate() {
+        if (layoutPending) return
+        val root = overlayRoot ?: return
+        layoutPending = true
+        root.postOnAnimation {
+            layoutPending = false
+            val params = windowParams ?: return@postOnAnimation
+            val current = overlayRoot ?: return@postOnAnimation
+            runCatching { windowManager.updateViewLayout(current, params) }
+        }
+    }
+
+    private var windowAnimator: android.animation.ValueAnimator? = null
+
+    /** Al soltar, la ventana se acomoda suave al borde más cercano (como YouTube). */
+    private fun settleToEdge() {
+        val params = windowParams ?: return
+        val screenWidth = resources.displayMetrics.widthPixels
+        val margin = dp(8)
+        val targetX = if (params.x + params.width / 2 < screenWidth / 2) margin
+        else (screenWidth - params.width - margin).coerceAtLeast(0)
+        val startX = params.x
+        windowAnimator?.cancel()
+        windowAnimator = android.animation.ValueAnimator.ofInt(startX, targetX).apply {
+            duration = 220L
+            interpolator = android.view.animation.DecelerateInterpolator()
+            addUpdateListener { animator ->
+                val p = windowParams ?: return@addUpdateListener
+                p.x = animator.animatedValue as Int
+                requestWindowUpdate()
+            }
+            addListener(object : android.animation.AnimatorListenerAdapter() {
+                override fun onAnimationEnd(animation: android.animation.Animator) {
+                    saveWindowState()
+                }
+            })
+        }.also { animator -> animator.start() }
+    }
+
+    /** Cambia el tamaño manteniendo 16:9, entre un mínimo cómodo y casi todo el ancho. */
+    private fun applyWindowWidth(params: WindowManager.LayoutParams, requested: Int) {
+        val screenWidth = resources.displayMetrics.widthPixels
+        val minWidth = dp(200)
+        val maxWidth = (screenWidth * MAX_WIDTH_FRACTION).roundToInt().coerceAtLeast(minWidth)
+        params.width = requested.coerceIn(minWidth, maxWidth)
+        params.height = (params.width * 9f / 16f).roundToInt()
+        windowLarge = params.width >= (screenWidth * LARGE_CONTROL_THRESHOLD).roundToInt()
+        clampWindowPosition(params)
+        requestWindowUpdate()
+        updateControlDensity()
     }
 
     private fun showAccumulatedSeek(direction: Int) {
@@ -780,7 +860,7 @@ class FloatingPlayerService : Service() {
 
     private fun scheduleControlsHide() {
         handler.removeCallbacks(hideControlsRunnable)
-        handler.postDelayed(hideControlsRunnable, 2_600L)
+        handler.postDelayed(hideControlsRunnable, 3_500L)
     }
 
     private fun hideControls() {
@@ -801,30 +881,27 @@ class FloatingPlayerService : Service() {
 
     private fun installResizeGesture(handle: View) {
         var downRawX = 0f
+        var downRawY = 0f
         var startWidth = 0
         handle.setOnTouchListener { _, event ->
             val params = windowParams ?: return@setOnTouchListener false
             val root = overlayRoot ?: return@setOnTouchListener false
             when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
+                    windowAnimator?.cancel()
                     downRawX = event.rawX
+                    downRawY = event.rawY
                     startWidth = params.width
                     handler.removeCallbacks(hideControlsRunnable)
                     hideChoicePanels()
                     true
                 }
                 MotionEvent.ACTION_MOVE -> {
-                    val screenWidth = resources.displayMetrics.widthPixels
-                    val minWidth = dp(180)
-                    val maxWidth = (screenWidth * MAX_WIDTH_FRACTION).roundToInt()
-                        .coerceAtLeast(minWidth)
-                    val requested = (startWidth + (event.rawX - downRawX)).roundToInt()
-                    params.width = requested.coerceIn(minWidth, maxWidth)
-                    params.height = (params.width * 9f / 16f).roundToInt()
-                    windowLarge = params.width >= (screenWidth * LARGE_CONTROL_THRESHOLD).roundToInt()
-                    clampWindowPosition(params)
-                    runCatching { windowManager.updateViewLayout(root, params) }
-                    updateControlDensity()
+                    // Arrastre en diagonal (derecha o abajo agranda), en vivo y sin saltos.
+                    val dx = event.rawX - downRawX
+                    val dy = (event.rawY - downRawY) * 16f / 9f
+                    val delta = if (kotlin.math.abs(dx) >= kotlin.math.abs(dy)) dx else dy
+                    if (root.isAttachedToWindow) applyWindowWidth(params, (startWidth + delta).roundToInt())
                     true
                 }
                 MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
@@ -839,7 +916,7 @@ class FloatingPlayerService : Service() {
 
     private fun updateControlDensity() {
         val width = windowParams?.width ?: return
-        val compact = width < dp(300)
+        val compact = width < dp(250)
         openAppButton?.visibility = if (compact) View.GONE else View.VISIBLE
         previousButton?.visibility = if (compact) View.GONE else View.VISIBLE
         timeText?.visibility = if (compact) View.GONE else View.VISIBLE
@@ -963,9 +1040,9 @@ class FloatingPlayerService : Service() {
         TextView(this).apply {
             text = label
             setTextColor(Color.WHITE)
-            textSize = 10.5f
+            textSize = 13f
             gravity = Gravity.CENTER
-            setPadding(dp(7), 0, dp(7), 0)
+            setPadding(dp(10), 0, dp(10), 0)
             background = roundedBackground(0xC826262C.toInt(), 7f)
             setOnClickListener {
                 onClick()
@@ -997,7 +1074,8 @@ class FloatingPlayerService : Service() {
         setBackgroundColor(Color.TRANSPARENT)
         scaleType = android.widget.ImageView.ScaleType.CENTER_INSIDE
         setOnClickListener { onClick() }
-        layoutParams = LinearLayout.LayoutParams(dp(30), dp(30))
+        layoutParams = LinearLayout.LayoutParams(dp(46), dp(44))
+        setPadding(dp(8), dp(8), dp(8), dp(8))
     }
 
     private fun roundedBackground(color: Int, radiusDp: Float) = GradientDrawable().apply {

@@ -1531,6 +1531,8 @@ internal fun UnifiedPlayerOverlay(
                     autoplay = autoplay,
                     repeatOne = extras.repeatOne,
                     autoFloating = autoFloating,
+                    batteryFree = mainActivity?.isBatteryFree() ?: true,
+                    onBatteryFree = { mainActivity?.requestBatteryFree() },
                     doubleTapSeconds = doubleTapSeconds,
                     qualities = streamOptions?.qualities.orEmpty(),
                     audioTracks = playbackExtras.audioTracks,
@@ -2135,6 +2137,8 @@ private fun PlayerSettingsOverlay(
     autoplay: Boolean,
     repeatOne: Boolean,
     autoFloating: Boolean,
+    batteryFree: Boolean,
+    onBatteryFree: () -> Unit,
     doubleTapSeconds: Int,
     qualities: List<com.geovideos.app.playback.StreamQualityOption>,
     audioTracks: List<AudioTrackOption>,
@@ -2240,6 +2244,10 @@ private fun PlayerSettingsOverlay(
                     PlayerSettingsToggleRow(Icons.Rounded.RepeatOne, "Repetir video", repeatOne, onRepeatOneChange)
                     PlayerSettingsToggleRow(Icons.Rounded.SlowMotionVideo, "Reproducción automática", autoplay, onAutoplayChange)
                     PlayerSettingsToggleRow(Icons.Rounded.PictureInPictureAlt, "Ventana emergente al salir", autoFloating, onAutoFloatingChange)
+                    // El permiso de batería se pide solo si lo activas aquí.
+                    PlayerSettingsToggleRow(Icons.Rounded.SlowMotionVideo, "Sin cortes con pantalla apagada", batteryFree) { enabled ->
+                        if (enabled) onBatteryFree()
+                    }
                 }
 
                 PlayerSettingsPage.QUALITY -> when {
