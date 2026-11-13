@@ -7,6 +7,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -372,6 +373,13 @@ internal object StreamResolver {
 
     fun isNativeBlocked(): Boolean = System.currentTimeMillis() < nativeBlockedUntilMs
 
+    /** true cuando los videos salen por la página escondida (la vía que pasa con VPN). */
+    fun usesWebPage(): Boolean = lastWorkingClient == FallbackClient.WEB_PAGE
+
+    /** Lo que pasó al pedir el último video (para el botón "Copiar diagnóstico"). */
+    @Volatile
+    var lastTrace: String = ""
+
     /** El botón Reintentar vuelve a probar todas las formas. */
     fun clearNativeBlock() {
         nativeBlockedUntilMs = 0L
@@ -508,21 +516,32 @@ internal object StreamResolver {
             excludedClients.remove(video.id)
             order = base
         }
+        val background = kotlin.coroutines.coroutineContext[NoWebPageKey] != null
+        // En la precarga, si ya se sabe que solo funciona la página, no probar las demás formas.
+        if (background && lastWorkingClient == FallbackClient.WEB_PAGE) order = order.filter { it == FallbackClient.WEB_PAGE }
         val errors = mutableListOf<Throwable>()
+        val trace = StringBuilder()
         for (client in order) {
+            val startedAt = System.currentTimeMillis()
+            val errorsBefore = errors.size
             val media = try {
                 tryFallbackClient(client, video, dataSaver, preferredHeight, sts)
             } catch (error: Exception) {
                 if (error is kotlinx.coroutines.CancellationException) throw error
                 errors += error
+                trace.append(client.name).append(": ").append(error.message.orEmpty().take(90)).append('\n')
                 null
             }
             if (media != null) {
                 lastWorkingClient = client
                 resolvedWith[video.id] = client
+                if (!background) lastTrace = "${video.id} OK con ${client.name} (${System.currentTimeMillis() - startedAt} ms)\n" + WebPageCapture.lastNote
                 return media
             }
+            if (errors.size == errorsBefore) trace.append(client.name).append(": sin enlaces\n")
         }
+        if (background) return null
+        lastTrace = "${video.id} FALLÓ\n$trace" + WebPageCapture.lastNote
         // Ninguna funcionó: mostrar el motivo más útil (privado, edad, país... antes que "recargar").
         val reasons = errors.filter { it.message.orEmpty().startsWith("Got error") }
         nativeBlockedUntilMs = System.currentTimeMillis() + 60_000L
@@ -540,10 +559,12 @@ internal object StreamResolver {
         preferredHeight: Int?,
         sts: Int?
     ): ResolvedMedia? = when (client) {
-        FallbackClient.WEB_PAGE -> if (kotlin.coroutines.coroutineContext[NoWebPageKey] != null) {
-            null
-        } else {
-            webPageProvider?.invoke(video.id)?.let { data ->
+        FallbackClient.WEB_PAGE -> run {
+            val background = kotlin.coroutines.coroutineContext[NoWebPageKey] != null
+            // En la precarga se usa la página solo si está libre (y se cede apenas tocas un video).
+            val data = if (background) WebPageCapture.streamingData(video.id, background = true)
+            else webPageProvider?.invoke(video.id)
+            data?.let { data ->
                 val hls = data.optString("hlsManifestUrl")
                 if (video.isLive && hls.isNotBlank()) {
                     StreamUserAgents.registerPageStream(hls)
@@ -1060,13 +1081,16 @@ internal object StreamResolver {
         // as normal playback so the result is consumed directly from resolvedCache.
         // Con YouTube bloqueando la vía anónima no se insiste por ahí (cada intento suma al
         // bloqueo): se precarga con tu sesión, así el siguiente video/Short arranca al instante.
+        // Con la página escondida solo se prepara el siguiente video (es trabajo pesado).
+        val count = if (usesWebPage()) 1 else PRELOAD_COUNT
         if (System.currentTimeMillis() < anonymousBlockedUntilMs) {
             if (lastWorkingClient == null) return
             videos.asSequence()
                 .filter { it.mediaKind == MediaKind.YOUTUBE && it.id.isNotBlank() }
                 .distinctBy { it.id }
-                .take(PRELOAD_COUNT)
+                .take(count)
                 .forEach { video ->
+                    kotlin.coroutines.coroutineContext.ensureActive()
                     val cached = sessionCache[video.id]
                         ?.takeIf { it.expiresAtMs > System.currentTimeMillis() && it.hlsUrl.isNotBlank() }
                     if (cached == null) runCatching { resolve(video, dataSaver, preferredHeight) }
@@ -1076,8 +1100,9 @@ internal object StreamResolver {
         videos.asSequence()
             .filter { it.mediaKind == MediaKind.YOUTUBE && it.id.isNotBlank() }
             .distinctBy { it.id }
-            .take(PRELOAD_COUNT)
+            .take(count)
             .forEach { video ->
+                kotlin.coroutines.coroutineContext.ensureActive()
                 runCatching {
                     resolve(
                         video = video,

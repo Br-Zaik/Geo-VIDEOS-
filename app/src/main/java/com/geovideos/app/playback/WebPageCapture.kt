@@ -10,6 +10,8 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -35,6 +37,11 @@ internal object WebPageCapture {
     private var appContext: Context? = null
     private val mutex = Mutex()
     private val cache = ConcurrentHashMap<String, Pair<String, Long>>()
+    /** Enlaces de registro (historial de YouTube) que dio la página para cada video. */
+    private val trackingByVideo = ConcurrentHashMap<String, String>()
+
+    fun playbackTracking(videoId: String): JSONObject? =
+        trackingByVideo[videoId]?.let { runCatching { JSONObject(it) }.getOrNull() }
 
     // Estado de la captura en curso (la página escondida atiende un video a la vez).
     @Volatile private var targetVideoId: String = ""
@@ -42,6 +49,14 @@ internal object WebPageCapture {
     /** id del flujo (parámetro "id=" de googlevideo) → pot que usó la página. */
     private val potsByStream = ConcurrentHashMap<String, String>()
     @Volatile private var anyPot: String = ""
+    /** Último código de seguridad que sirvió: se reusa si la página no alcanza a dar uno nuevo. */
+    @Volatile private var lastPot: String = ""
+    /** Captura de precarga en curso: se cancela apenas tocas un video. */
+    @Volatile private var backgroundJob: Job? = null
+
+    /** Resumen de la última captura (para "Copiar diagnóstico"). */
+    @Volatile
+    var lastNote: String = ""
 
     private var webView: WebView? = null
 
@@ -53,21 +68,34 @@ internal object WebPageCapture {
         cache.remove(videoId)
     }
 
-    /** streamingData lista para el reproductor (con el pot ya puesto en cada enlace). */
-    suspend fun streamingData(videoId: String): JSONObject? {
+    /**
+     * streamingData lista para el reproductor (con el pot ya puesto en cada enlace).
+     * Con [background] (precarga) solo trabaja si la página está libre y cede ante un video tocado.
+     */
+    suspend fun streamingData(videoId: String, background: Boolean = false): JSONObject? {
         if (videoId.isBlank()) return null
         cached(videoId)?.let { return it }
         val context = appContext ?: return null
+        if (background) {
+            if (mutex.isLocked) return null
+        } else {
+            backgroundJob?.cancel()
+        }
         return mutex.withLock {
             cached(videoId)?.let { return@withLock it }
+            if (background) backgroundJob = kotlin.coroutines.coroutineContext[Job]
+            val startedAt = System.currentTimeMillis()
             try {
                 val result = withTimeoutOrNull(CAPTURE_TIMEOUT_MS) { capture(context, videoId) }
                 if (result != null) {
                     cache[videoId] = result.toString() to (System.currentTimeMillis() + CACHE_TTL_MS)
+                } else if (!background) {
+                    lastNote = "Página: sin respuesta útil en ${System.currentTimeMillis() - startedAt} ms\n"
                 }
                 result
             } finally {
-                withContext(Dispatchers.Main) { stopPage() }
+                if (background) backgroundJob = null
+                withContext(NonCancellable + Dispatchers.Main) { stopPage() }
             }
         }
     }
@@ -101,6 +129,10 @@ internal object WebPageCapture {
                 .ifBlank { playability?.optJSONObject("errorScreen")?.toString()?.take(120).orEmpty() }
             throw IOException("Got error $status: \"$reason\"")
         }
+        player.optJSONObject("playbackTracking")?.let { tracking ->
+            if (trackingByVideo.size > 200) trackingByVideo.clear()
+            trackingByVideo[videoId] = tracking.toString()
+        }
         val data = player.optJSONObject("streamingData") ?: return null
         val streamIds = streamIdsOf(data)
         // Esperar a que la página empiece a bajar el video para copiar su código de seguridad.
@@ -113,8 +145,17 @@ internal object WebPageCapture {
             }
             true
         }
-        if (waited == null || pot.isBlank()) pot = anyPot
+        val potSource = when {
+            pot.isNotBlank() -> "del video"
+            anyPot.isNotBlank() -> "de la página"
+            lastPot.isNotBlank() -> "reusado"
+            else -> "ninguno"
+        }
+        if (pot.isBlank()) pot = anyPot.ifBlank { lastPot }
+        if (pot.isNotBlank()) lastPot = pot
         val usable = injectPot(data, pot)
+        lastNote = "Página: respuesta OK, código de seguridad $potSource, " +
+            "${usable.optJSONArray("adaptiveFormats")?.length() ?: 0} formatos\n"
         // Formatos sin enlace (solo para el modo SABR) no sirven para el reproductor propio.
         val hasLinks = listOf("formats", "adaptiveFormats").any { key ->
             val array = usable.optJSONArray(key) ?: return@any false
@@ -210,17 +251,37 @@ internal object WebPageCapture {
 
             override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? {
                 val url = request.url
-                if (url.host.orEmpty().endsWith("googlevideo.com") && url.path.orEmpty().contains("videoplayback")) {
+                val host = url.host.orEmpty()
+                if (host.endsWith("googlevideo.com") && url.path.orEmpty().contains("videoplayback")) {
                     val pot = url.getQueryParameter("pot").orEmpty()
                     if (pot.isNotBlank()) {
                         anyPot = pot
                         url.getQueryParameter("id")?.takeIf { it.isNotBlank() }?.let { potsByStream[it] = pot }
+                        // Ya tenemos el código: la página escondida no necesita bajar el video.
+                        return emptyResponse()
                     }
+                    return null
                 }
+                // Imágenes y anuncios no hacen falta: la página carga más rápido y gasta menos datos.
+                if (BLOCKED_HOSTS.any { host == it || host.endsWith(".$it") }) return emptyResponse()
                 return null
             }
         }
     }
+
+    private val BLOCKED_HOSTS = listOf(
+        "i.ytimg.com", "yt3.ggpht.com", "yt3.googleusercontent.com", "doubleclick.net",
+        "googlesyndication.com", "googleadservices.com", "google-analytics.com", "googletagservices.com"
+    )
+
+    private fun emptyResponse(): WebResourceResponse = WebResourceResponse(
+        "application/octet-stream",
+        null,
+        204,
+        "No Content",
+        emptyMap(),
+        java.io.ByteArrayInputStream(ByteArray(0))
+    )
 
     private class Bridge {
         @JavascriptInterface
@@ -249,7 +310,7 @@ internal object WebPageCapture {
       if (ok && !r.streamingData) return;
       if (sent === id + ok) return;
       sent = id + ok;
-      GeoCapture.onPlayer(JSON.stringify({ videoDetails: { videoId: id }, playabilityStatus: r.playabilityStatus, streamingData: r.streamingData || null }));
+      GeoCapture.onPlayer(JSON.stringify({ videoDetails: { videoId: id }, playabilityStatus: r.playabilityStatus, streamingData: r.streamingData || null, playbackTracking: r.playbackTracking || null }));
     } catch(e){}
   }
   try {
@@ -282,8 +343,8 @@ internal object WebPageCapture {
       var v = document.querySelector('video');
       if (v && v.paused) { v.muted = true; var pr = v.play(); if (pr && pr.catch) pr.catch(function(){}); }
     } catch(e){}
-    if (n > 80) clearInterval(t);
-  }, 300);
+    if (n > 40) clearInterval(t);
+  }, 500);
 })();
 """
 }

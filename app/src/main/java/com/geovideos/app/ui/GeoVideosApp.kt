@@ -358,6 +358,7 @@ fun GeoVideosApp(
                         },
                         onSearch = viewModel::search,
                         onRefresh = viewModel::refresh,
+                        onHomeAtTopChanged = viewModel::setHomeAtTop,
                         onLoadMoreHome = viewModel::loadMoreHome,
                         onLoadMoreShorts = viewModel::loadMoreShorts,
                         onRefreshShorts = viewModel::refreshShorts,
@@ -691,6 +692,7 @@ private fun MainShell(
     onDislike: (VideoItem) -> Unit,
     onSearch: (String) -> Unit,
     onRefresh: () -> Unit,
+    onHomeAtTopChanged: (Boolean) -> Unit = {},
     onLoadMoreHome: (HomeCategory) -> Unit,
     onLoadMoreShorts: () -> Unit,
     onRefreshShorts: () -> Unit,
@@ -920,7 +922,10 @@ private fun MainShell(
                 onOpenShort = onPreviewShort,
                 onWatchLater = onWatchLater,
                 scrollToTopSignal = homeScrollToTopSignal,
-                onAtTopChanged = { homeAtTop = it },
+                onAtTopChanged = {
+                    homeAtTop = it
+                    onHomeAtTopChanged(it)
+                },
                 youtubeChips = state.homeChips,
                 selectedYouTubeChip = state.selectedHomeChip,
                 chipLoading = state.homeChipLoading,

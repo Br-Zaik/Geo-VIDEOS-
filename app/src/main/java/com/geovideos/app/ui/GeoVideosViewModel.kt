@@ -4221,6 +4221,14 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
 
     private var lastSessionRefreshAt = 0L
 
+    /** true mientras el inicio NO está arriba del todo (el usuario está bajando por la lista). */
+    @Volatile
+    private var homeScrolledAway = false
+
+    fun setHomeAtTop(atTop: Boolean) {
+        homeScrolledAway = !atTop
+    }
+
     private fun refreshYouTubeSession(force: Boolean = false) {
         if (!youtubeSession.hasStoredSession()) return
         val now = System.currentTimeMillis()
@@ -4242,7 +4250,10 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
                     val laterDeferred = async { runCatching { innerTube.watchLater() } }
                     val home = homeDeferred.await()
                     // Mostrar el inicio apenas llega, sin esperar historial ni Ver más tarde.
-                    home.getOrNull()?.let { firstPage ->
+                    // Una actualización automática nunca cambia el inicio mientras lo estás bajando
+                    // (como YouTube): lo nuevo se ve al volver arriba o al tirar para actualizar.
+                    val keepCurrentFeed = !force && homeScrolledAway && _uiState.value.homeFeed.isNotEmpty()
+                    home.getOrNull()?.takeUnless { keepCurrentFeed }?.let { firstPage ->
                         val firstVideos = firstPage.videos.filter(::isNormalHomeVideo)
                         if (firstVideos.isNotEmpty() || firstPage.feed.isNotEmpty()) {
                             youtubeHomeActive = true
@@ -4277,15 +4288,20 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
                     val homePage = home.getOrNull()
                     val historyPage = history.getOrNull()
                     val laterPage = later.getOrNull()
-                    if (homePage != null) {
+                    if (homePage != null && (!keepCurrentFeed || youtubeHomeContinuation.isBlank())) {
                         youtubeHomeContinuation = homePage.continuation
                         savedAllHome = null
+                    }
+                    // Aunque se conserve la lista que estás viendo, seguir cargando más al bajar.
+                    if (keepCurrentFeed && homePage != null && homePage.continuation.isNotBlank()) {
+                        youtubeHomeActive = true
+                        _uiState.update { it.copy(canLoadMoreForYou = true) }
                     }
                     if (historyPage != null) youtubeHistoryContinuation = historyPage.continuation
                     if (laterPage != null) youtubeWatchLaterContinuation = laterPage.continuation
 
-                    val homeVideos = homePage?.videos.orEmpty().filter(::isNormalHomeVideo)
-                    val homeShorts = homePage?.shorts.orEmpty()
+                    val homeVideos = if (keepCurrentFeed) emptyList() else homePage?.videos.orEmpty().filter(::isNormalHomeVideo)
+                    val homeShorts = if (keepCurrentFeed) emptyList() else homePage?.shorts.orEmpty()
                     if (homeVideos.isNotEmpty()) youtubeHomeActive = true
 
                     _uiState.update { state ->
@@ -4296,8 +4312,8 @@ class GeoVideosViewModel(application: Application) : AndroidViewModel(applicatio
                             youtubeHistoryFetchedAtMs = if (historyPage != null) fetchedAt else state.youtubeHistoryFetchedAtMs,
                             historyCanLoadMore = youtubeHistoryContinuation.isNotBlank(),
                             youtubeWatchLater = laterPage?.videos ?: state.youtubeWatchLater,
-                            homeMixes = if (homePage != null && homePage.mixes.isNotEmpty()) homePage.mixes else state.homeMixes,
-                            homeFeed = if (homePage != null && homePage.feed.isNotEmpty()) homePage.feed else state.homeFeed,
+                            homeMixes = if (!keepCurrentFeed && homePage != null && homePage.mixes.isNotEmpty()) homePage.mixes else state.homeMixes,
+                            homeFeed = if (!keepCurrentFeed && homePage != null && homePage.feed.isNotEmpty()) homePage.feed else state.homeFeed,
                             homeChips = homePage?.chips
                                 ?.filterNot { chip -> chip.title.equals("Todos", true) || chip.title.equals("All", true) }
                                 ?.takeIf { it.isNotEmpty() }

@@ -16,6 +16,7 @@ import androidx.compose.material.icons.filled.KeyboardArrowLeft
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.snap
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
@@ -544,6 +545,7 @@ internal fun UnifiedPlayerOverlay(
         if (settling) return
         settling = true
         scope.launch {
+          try {
             val distance = abs(target - transition).coerceIn(0f, 1f)
             val duration = if (fast) {
                 (105 + 75 * distance).roundToInt()
@@ -564,8 +566,12 @@ internal fun UnifiedPlayerOverlay(
             } else {
                 onExpand()
             }
+          } finally {
+            // Pase lo que pase, el video queda arriba o abajo (nunca a medias ni bloqueado).
+            transition = if (target >= 0.5f) 1f else 0f
             dragging = false
             settling = false
+          }
         }
     }
 
@@ -636,7 +642,8 @@ internal fun UnifiedPlayerOverlay(
         val keepNaturalShape = !dragging && !settling && transition <= 0.001f
         val fullPlayerHeightPx by animateFloatAsState(
             targetValue = if (keepNaturalShape) naturalHeightPx.coerceIn(wideHeightPx, maxPlayerHeightPx) else wideHeightPx,
-            animationSpec = tween(durationMillis = 260, easing = FastOutSlowInEasing),
+            // Al arrastrar cambia al instante (sin animación que pelee con el dedo).
+            animationSpec = if (keepNaturalShape) tween(durationMillis = 260, easing = FastOutSlowInEasing) else snap(),
             label = "playerHeight"
         )
         // Cuando no es un Mix, el usuario prefirió un mini reproductor grande tipo YouTube,
@@ -718,7 +725,7 @@ internal fun UnifiedPlayerOverlay(
                 val target = when {
                     velocity >= velocityThresholdPx -> 1f
                     velocity <= -velocityThresholdPx -> 0f
-                    transition >= 0.42f -> 1f
+                    transition >= 0.28f -> 1f
                     else -> 0f
                 }
                 settle(target, fast = abs(velocity) >= velocityThresholdPx)
@@ -1479,6 +1486,22 @@ internal fun UnifiedPlayerOverlay(
                             }
                         ) {
                             Text("Abrir en la app de YouTube", color = Color.White.copy(alpha = 0.8f))
+                        }
+                        // Para enviar a Claude qué pasó exactamente con este video.
+                        androidx.compose.material3.TextButton(
+                            onClick = {
+                                val report = "Geo Videos ${com.geovideos.app.BuildConfig.VERSION_NAME}\n" +
+                                    "Video: ${video.id}\nError: ${playback.error.orEmpty()}\n" +
+                                    com.geovideos.app.playback.StreamResolver.lastTrace
+                                runCatching {
+                                    val clipboard = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE)
+                                        as android.content.ClipboardManager
+                                    clipboard.setPrimaryClip(android.content.ClipData.newPlainText("Diagnóstico Geo Videos", report))
+                                }
+                                onMessage("Diagnóstico copiado. Pégalo en el chat con Claude.")
+                            }
+                        ) {
+                            Text("Copiar diagnóstico", color = Color.White.copy(alpha = 0.6f))
                         }
                     }
                 }

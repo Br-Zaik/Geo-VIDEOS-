@@ -632,11 +632,20 @@ class InnerTubeClient(private val cookieProvider: () -> String) {
     /** Avisa a YouTube que empezó a verse el video: así aparece en el historial. */
     suspend fun startWatch(videoId: String) = withContext(Dispatchers.IO) {
         if (videoId.isBlank() || watch?.videoId == videoId) return@withContext
-        for (client in listOf(WEB, MWEB)) {
-            val json = runCatching {
+        // Con la página escondida (cuando YouTube rechaza a la app) los enlaces de registro
+        // vienen de esa página: se esperan hasta 25 s mientras abre el video.
+        var pageTracking: JSONObject? = null
+        for (attempt in 0 until 50) {
+            pageTracking = com.geovideos.app.playback.WebPageCapture.playbackTracking(videoId)
+            if (pageTracking != null || !com.geovideos.app.playback.StreamResolver.usesWebPage()) break
+            kotlinx.coroutines.delay(500L)
+        }
+        val sources: List<Pair<ClientInfo, JSONObject?>> =
+            listOfNotNull(pageTracking?.let { MWEB to it }) + listOf(WEB to null, MWEB to null)
+        for ((client, known) in sources) {
+            val tracking = known ?: runCatching {
                 post("player", baseBody(client).put("videoId", videoId), client)
-            }.getOrNull() ?: continue
-            val tracking = json.optJSONObject("playbackTracking") ?: continue
+            }.getOrNull()?.optJSONObject("playbackTracking") ?: continue
             val playback = tracking.optJSONObject("videostatsPlaybackUrl")?.optString("baseUrl").orEmpty()
             val watchtime = tracking.optJSONObject("videostatsWatchtimeUrl")?.optString("baseUrl").orEmpty()
             if (playback.isBlank()) continue
